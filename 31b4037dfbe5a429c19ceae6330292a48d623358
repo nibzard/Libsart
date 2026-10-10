@@ -1,0 +1,1 @@
+Continue the remaining work in to-do.json. At publication, T035 is in progress. T061, T062, and T063 track hidden edits under index flags, index writes during recovery inspection, and hook effects after successful checkpoints. Interactive and integration workflows remain unfinished.
