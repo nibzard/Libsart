@@ -1,22 +1,51 @@
-garden-demo  on writing
+Tmux demonstration: draft changes (Git) and reviewed documents (Margin).
 
-$ margin status
-margin: preservation=captured review=pending operation=idle branch=refs/heads/writing
+LEFT PANE
+$ git diff start draft
+diff --git a/article.md b/article.md
+index 2ebd0f7..f604ca4 100644
+--- a/article.md
++++ b/article.md
+@@ -2,4 +2,3 @@
 
-$ margin diff
-margin: review=sha1:79ffae6fe67e4a1bc91bf562fb0df70e23ece62c files=3 groups=4 returned=4 complete=true
+-The garden is a place where neighbors
+-can spend some time together while
+-they grow vegetables and flowers.
++Neighbors grow food, share skills,
++and spend a quiet morning together.
+diff --git a/notes.md b/notes.md
+index f748cb5..ac0c4cc 100644
+--- a/notes.md
++++ b/notes.md
+@@ -2,3 +2,3 @@
 
-$ margin review --input review.json
-margin: review=sha1:79ffae6fe67e4a1bc91bf562fb0df70e23ece62c restore=2 keep=2 tree=550c9c2ca42e2eccc516b5ec45b27
-2db294a11ad paths=content/field-notes.md commit=6cad701e7f9883fae5f4dd4493706f0f922a4cd4
+-- Meet at the north gate at 09:00.
+-- Give the tomatoes 12 liters of water.
++- Meet at the north gate at 10:00.
++- Give the tomatoes 20 liters of water.
 
-$ margin status
-margin: preservation=captured review=reviewed operation=idle branch=refs/heads/writing
+$
 
-$ margin log
-margin: timeline head=6cad701e7f9883fae5f4dd4493706f0f922a4cd4 entries=3 complete=true
-review 6cad701e7f98 Keep clearer prose; restore the field notes
-draft 73e5b6413c9b Revise the garden documents
-start 1cb40ab9f1d6 margin: capture starting point
+RIGHT PANE
+$ margin show --path article.md --revision HEAD \
+  --format raw --allow-tty
+# A morning in the garden
+
+Neighbors grow food, share skills,
+and spend a quiet morning together.
+
+$ margin show --path notes.md --revision HEAD \
+  --format raw --allow-tty
+# Saturday session
+
+- Meet at the north gate at 09:00.
+- Give the tomatoes 12 liters of water.
+
+$ margin status --json | \
+  jq -C '.data | {preservation, review}'
+{
+  "preservation": "captured",
+  "review": "reviewed"
+}
 
 $

@@ -2,7 +2,11 @@
 
 Save and review Markdown edits through ordinary Git history.
 
-![Margin terminal session showing pending changes, selective review, reviewed status, and Git history.](docs/assets/margin-terminal.png)
+![A tmux demonstration: draft edits on the left; clearer prose, restored facts, and reviewed status on the right.](docs/assets/margin-terminal.png)
+
+*Example review in tmux. Git shows the draft changes on the left. Margin
+shows the reviewed documents on the right: keep the shorter opening and
+restore the original facts.*
 
 Margin is a command-line tool for writing projects. Capture a draft,
 inspect its changes, then keep or restore selected passages.
