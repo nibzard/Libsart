@@ -1,0 +1,1 @@
+The repository name Libsart came from an earlier instruction and was corrected to margin at the user request. Update public links and the README title. Include the requested image rendered from real tmux output. Verified README links, Cargo metadata, image integrity, and staged whitespace. Leave ongoing recovery implementation changes outside this commit.
