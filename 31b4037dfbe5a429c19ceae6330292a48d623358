@@ -1,0 +1,1 @@
+Publish the existing Margin implementation under the Libsart repository name. Keep the margin executable name. Include all source files, examples, formal evidence, tests, and the task backlog. Add the quick-start README and Apache-2.0 license. Validation: cargo test --all-targets --locked passed 462 tests across 30 suites; the example walkthrough also passed.
