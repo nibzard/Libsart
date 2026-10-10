@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "review-introduction-01",
+  "review_id": "sha1:1111111111111111111111111111111111111111",
+  "branch_ref": "refs/heads/writing",
+  "scope_id": "sha1:2222222222222222222222222222222222222222",
+  "baseline_oid": "3333333333333333333333333333333333333333",
+  "candidate_oid": "4444444444444444444444444444444444444444",
+  "restore": [
+    "sha1:5555555555555555555555555555555555555555"
+  ],
+  "keep_remaining": true,
+  "message": "Keep the shorter opening",
+  "approved_by": "the agent"
+}

@@ -1,0 +1,26 @@
+--- a/MarginReview.tla
++++ b/MarginReview.tla
+@@ -111,13 +111,7 @@
+                         \/ index # expected THEN "stale"
+                 ELSE IF HeadId = MaxCommits THEN "model-bound"
+                 ELSE "none"
+-     IN IF oid # 0 THEN
+-          /\ reply' = Reply(
+-               IF SamePlan(history[oid], b, c, rs, done)
+-                 THEN "success" ELSE "request-conflict",
+-               r, b, c, rs, done, oid)
+-          /\ UNCHANGED <<phase, pending, remaining>>
+-        ELSE IF err # "none" THEN
++     IN IF err # "none" THEN
+           /\ reply' = Reply(err, r, b, c, rs, done, 0)
+           /\ UNCHANGED <<phase, pending, remaining>>
+         ELSE
+@@ -152,7 +146,7 @@
+ Publish ==
+   /\ phase = "commit" /\ repoReady
+   /\ HeadId = pending.cand /\ baseline = pending.base
+-  /\ HeadId < MaxCommits /\ Receipt(pending.req) = 0
++  /\ HeadId < MaxCommits
+   /\ index = Target /\ ScopedEqual(work, Target)
+   /\ history' = Append(history,
+        Commit(Target, "review", pending.req, pending.base,

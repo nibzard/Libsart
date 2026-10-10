@@ -1,0 +1,11 @@
+--- a/MarginReview.tla
++++ b/MarginReview.tla
+@@ -114,7 +114,7 @@
+      IN IF oid # 0 THEN
+           /\ reply' = Reply(
+                IF SamePlan(history[oid], b, c, rs, done)
+-                 THEN "success" ELSE "request-conflict",
++                 THEN "success" ELSE "success",
+                r, b, c, rs, done, oid)
+           /\ UNCHANGED <<phase, pending, remaining>>
+         ELSE IF err # "none" THEN

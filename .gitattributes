@@ -1,0 +1,4 @@
+# Fixture modules carry exact source bytes: trailing spaces, tabs, carriage
+# returns, bidirectional controls, and escape sequences. Git must never
+# normalize them on checkin or checkout.
+tests/fixtures/c0/*.rs -text

@@ -1,0 +1,14 @@
+{
+  "message": "Keep the shorter opening",
+  "restore": [
+    "sha1:5555555555555555555555555555555555555555"
+  ],
+  "keep_remaining": true,
+  "candidate_oid": "4444444444444444444444444444444444444444",
+  "baseline_oid": "3333333333333333333333333333333333333333",
+  "scope_id": "sha1:2222222222222222222222222222222222222222",
+  "branch_ref": "refs/heads/writing",
+  "review_id": "sha1:1111111111111111111111111111111111111111",
+  "request_id": "review-introduction-01",
+  "schema_version": 1
+}

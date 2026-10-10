@@ -1,0 +1,24 @@
+run started (UTC): 2026-10-10T17:04:07Z
+tools jar: https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+7beec0f04818732a62fa193731711a99aa4f11279499b2360a7d156c519ea78d  tools/tla2tools-1.8.0.jar
+openjdk version "21.0.12.1" 2026-08-18
+OpenJDK Runtime Environment (build 21.0.12.1+1-1-24.04.4-Ubuntu)
+OpenJDK 64-Bit Server VM (build 21.0.12.1+1-1-24.04.4-Ubuntu, mixed mode, sharing)
+machine: Linux 6.8.0-139-generic x86_64, 4 CPUs, 12th Gen Intel(R) Core(TM) i9-12900HK
+base source, configs, and mutation patches sha256:
+c1a36527e2a1944d2b304ff3fd921b57420361dc46787c1a7a0be52c56129347  MarginReview.tla
+9afd2b0192cc7c0c1ae6919a565b51140a1b3191d9e7e9c9a6fb4d35f30bfe4a  MarginReview.cfg
+a153e997000b6e79b0073a6893f6198ebf108723703f9604aba6f7601e081e00  MarginReviewCooperative.cfg
+060c7859853c83dc625c7ecf086a36462ba417b31ec5781f0b454c957486306c  MarginReviewLive.cfg
+91b158cf2e4c1adc8da61eeeb92aa71fe274925f750c7c3fe86b001bfdeb0ed2  MarginReviewNightly.cfg
+5574e936c02eb3315c94615733a28b85f01fa9be9b5e195b504b571fcbb4efb6  MarginReviewUncooperative.cfg
+16f98661c3c5df47f65c2238eddb84b7995b49f5879ce82ce3b31ffebff1b4a6  mutations/01-draft-advances-baseline.patch
+93d78ff01205ec013d113ef9ded6bb7e1726bad2d358b7a960bcae834c01f1fe  mutations/02-admit-incomplete-plan.patch
+4402f68f1fefe8bd7bfa6f9323c707be7b32664e4f1ba27c3f6001902e62630f  mutations/03-drop-stale-bc-validation.patch
+f4ed0bfd196c48692f637568162825b57c1cdfb5f6203c202ee346bb210bbed9  mutations/04-bypass-receipt-uniqueness.patch
+560d46a583c6e26973f0506b252e710148d6c38735b72915fcaf00936c637391  mutations/05-existing-id-different-payload-success.patch
+b4361d139d41277168ebcc4a1b32abfaa3d0b87828bd5725fdff84f5196738ea  mutations/06-premature-success.patch
+32db41a73c4dbec4cba9f1004535ab45ae6b36549e0cc68bffaacd48dab069e3  mutations/07-publish-during-recovery.patch
+6c4e27f38506f17565d89f9c768727a6f808ce2846729029340605dd927d4e65  mutations/08-outside-writes-in-apply-interval.patch
+15fe92123412616f8e7311286c597e1f09d1c7a6cb937b70e426a1f1a23be00a  mutations/09-hook-corruption-control.patch
+e59f0fdc9feb36bfc841c8e22887a4c896b46fc482a1670545ae0f1d77f27c1f  mutations/10-remove-intended-tree-check.patch

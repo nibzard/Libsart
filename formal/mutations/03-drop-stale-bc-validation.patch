@@ -1,0 +1,12 @@
+--- a/MarginReview.tla
++++ b/MarginReview.tla
+@@ -106,8 +106,7 @@
+                      ELSE HeadTree
+          err == IF ~done THEN "incomplete"
+                 ELSE IF ~repoReady THEN "precondition"
+-                ELSE IF b # baseline \/ c # HeadId
+-                        \/ ~ScopedEqual(work, expected)
++                ELSE IF ~ScopedEqual(work, expected)
+                         \/ index # expected THEN "stale"
+                 ELSE IF HeadId = MaxCommits THEN "model-bound"
+                 ELSE "none"

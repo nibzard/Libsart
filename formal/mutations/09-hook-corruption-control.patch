@@ -1,0 +1,32 @@
+--- a/MarginReview.tla
++++ b/MarginReview.tla
+@@ -147,6 +147,12 @@
+   /\ UNCHANGED <<history, baseline, work, pending, remaining,
+                   repoReady, reply, unseenOverwrite>>
+ 
++\* EXTENSION: a commit hook rewrites staged content before publication.
++HookCorruptsIndex(t) ==
++  /\ phase = "commit" /\ t # Target /\ index' = t
++  /\ UNCHANGED <<history, baseline, work, phase, pending,
++                  remaining, repoReady, reply, unseenOverwrite>>
++
+ \* Models successful expected-parent publication of an exact Git tree.
+ \* Review metadata and the idempotency receipt belong to this same commit.
+ Publish ==
+@@ -155,7 +161,7 @@
+   /\ HeadId < MaxCommits /\ Receipt(pending.req) = 0
+   /\ index = Target /\ ScopedEqual(work, Target)
+   /\ history' = Append(history,
+-       Commit(Target, "review", pending.req, pending.base,
++       Commit(index, "review", pending.req, pending.base,
+               pending.cand, pending.restore, pending.complete))
+   /\ baseline' = HeadId + 1 /\ phase' = "respond"
+   /\ UNCHANGED <<work, index, pending, remaining,
+@@ -198,6 +204,7 @@
+                \/ (\E ok \in BOOLEAN : RepositoryCondition(ok))
+ NormalNext == Environment \/ Commands \/ Advance
+ Next == NormalNext \/ Fail \/ Crash \/ Restart \/ InspectRecovery
++        \/ (\E t \in Trees : HookCorruptsIndex(t))
+ Spec == Init /\ [][Next]_vars
+ \* Conditional liveness: cooperative, failure-free execution plus scheduling.
+ LiveSpec == Init /\ [][NormalNext]_vars /\ WF_vars(Advance)

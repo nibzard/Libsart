@@ -1,0 +1,12 @@
+--- a/MarginReview.tla
++++ b/MarginReview.tla
+@@ -94,7 +94,8 @@
+         Commit(CaptureTree, "draft", NoRequest, 0, 0, {}, FALSE))
+   /\ index' = CaptureTree
+   /\ reply' = NoReply
+-  /\ UNCHANGED <<baseline, work, phase, pending, remaining,
++  /\ baseline' = HeadId + 1
++  /\ UNCHANGED <<work, phase, pending, remaining,
+                   repoReady, unseenOverwrite>>
+ 
+ \* The caller retains/recreates a plan; Margin has no durable plan journal.

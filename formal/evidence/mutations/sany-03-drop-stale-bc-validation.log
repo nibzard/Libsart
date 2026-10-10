@@ -1,0 +1,12 @@
+
+****** SANY2 Version 2.2 created 08 July 2020
+
+Parsing file /tmp/tmp.Wy0MgKM2Tp/03-drop-stale-bc-validation/MarginReview.tla
+Parsing file /tmp/tlc-10136052245499935378/Naturals.tla (jar:file:/home/agent/margin/formal/tools/tla2tools-1.8.0.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /tmp/tlc-10136052245499935378/Sequences.tla (jar:file:/home/agent/margin/formal/tools/tla2tools-1.8.0.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /tmp/tlc-10136052245499935378/FiniteSets.tla (jar:file:/home/agent/margin/formal/tools/tla2tools-1.8.0.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module MarginReview
+Linting of module MarginReview

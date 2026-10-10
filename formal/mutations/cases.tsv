@@ -1,0 +1,31 @@
+# Formal mutation checks (SPEC 15.6, Appendix A.9). Read by
+# formal/run-mutations.sh and tests/formal_mutations.rs.
+#
+# Columns, separated by tabs:
+#   id           Case name. Also the prefix of its evidence files.
+#   patches      Space-separated patches from formal/mutations/, applied in
+#                order to a copy of formal/MarginReview.tla. "-" applies none
+#                and checks the unmutated base model.
+#   config       TLC configuration (file name in formal/) for the run.
+#   expect       pass, or violated:<property> for the designated detector
+#                that TLC must report.
+#   trace_action TLC names the action that produced the final counterexample
+#                state. The runner validates it against the dumped JSON
+#                trace. "-" skips the check for passing cases.
+#
+# The two control rows re-run the matched cooperative/uncooperative writer
+# pair from SPEC 15.6 next to mutation 08, so one summary table shows that
+# the base model passes where the mutant fails.
+#	id	patches	config	expect	trace_action
+cooperative-control	-	MarginReviewCooperative	pass	-
+uncooperative-control	-	MarginReviewUncooperative	violated:NoUnseenOverwrite	ApplyGroup
+01-draft-advances-baseline	01-draft-advances-baseline.patch	MarginReviewCooperative	violated:BaselineIsReviewed	Checkpoint
+02-admit-incomplete-plan	02-admit-incomplete-plan.patch	MarginReviewCooperative	violated:ApprovalExact	Publish
+03-drop-stale-bc-validation	03-drop-stale-bc-validation.patch	MarginReviewCooperative	violated:PinnedWhileApplying	Commands
+04-bypass-receipt-uniqueness	04-bypass-receipt-uniqueness.patch	MarginReviewCooperative	violated:RequestAtMostOnce	Publish
+05-existing-id-different-payload-success	05-existing-id-different-payload-success.patch	MarginReviewCooperative	violated:SuccessHasReceipt	Commands
+06-premature-success	06-premature-success.patch	MarginReviewCooperative	violated:SuccessHasReceipt	Commands
+07-publish-during-recovery	07-publish-during-recovery.patch	MarginReviewCooperative	violated:RecoveryDoesNotPublish	InspectRecovery
+08-outside-writes-in-apply-interval	08-outside-writes-in-apply-interval.patch	MarginReviewCooperative	violated:NoUnseenOverwrite	ApplyGroup
+09-hook-corruption-control	09-hook-corruption-control.patch	MarginReviewCooperative	pass	-
+10-remove-intended-tree-check	09-hook-corruption-control.patch 10-remove-intended-tree-check.patch	MarginReviewCooperative	violated:ApprovalExact	Publish

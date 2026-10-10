@@ -1,0 +1,7 @@
+/target/
+
+# Pinned formal tools: only the checksum file is tracked; the jar is fetched
+# and verified by formal/run-profiles.sh.
+/formal/tools/*.jar
+/formal/states/
+/formal/MarginReview_TTrace_*

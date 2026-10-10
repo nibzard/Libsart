@@ -1,0 +1,1248 @@
+{
+  "schema_version": 1,
+  "project": {
+    "name": "Margin",
+    "root": "."
+  },
+  "source_files": [
+    "SPEC.md"
+  ],
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "Create the Rust package and module boundaries",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: A pinned stable toolchain builds one Cargo package with a library and executable. The planned modules exist, the six planned runtime crates have pinned versions and minimal features, and cargo check and cargo test pass. See SPEC 13.",
+      "depends_on": [],
+      "updated_at": "2026-10-09T23:09:47Z",
+      "files": [
+        ".gitignore",
+        "Cargo.lock",
+        "Cargo.toml",
+        "rust-toolchain.toml",
+        "src/app.rs",
+        "src/cli.rs",
+        "src/domain.rs",
+        "src/git.rs",
+        "src/integrations/claude.rs",
+        "src/integrations/mod.rs",
+        "src/integrations/tmux.rs",
+        "src/lib.rs",
+        "src/main.rs",
+        "src/markdown.rs",
+        "src/tui/mod.rs"
+      ]
+    },
+    {
+      "id": "T002",
+      "title": "Extract the formal model from the specification",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: formal/MarginReview.tla and all five configuration files match Appendix A exactly. A repeatable extraction check detects drift between the canonical files and the specification. See SPEC 15 and Appendix A.",
+      "depends_on": [],
+      "updated_at": "2026-10-09T23:15:04Z",
+      "files": [
+        "formal/MarginReview.cfg",
+        "formal/MarginReview.tla",
+        "formal/MarginReviewCooperative.cfg",
+        "formal/MarginReviewLive.cfg",
+        "formal/MarginReviewNightly.cfg",
+        "formal/MarginReviewUncooperative.cfg",
+        "tests/formal_extraction.rs"
+      ]
+    },
+    {
+      "id": "T003",
+      "title": "Run and record the formal model profiles",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: SANY and the four positive TLC profiles pass with a pinned official tools artifact. The uncooperative profile fails specifically on NoUnseenOverwrite. Record hashes, bounds, state counts, duration, tool versions, and the counterexample. See SPEC 15.8.",
+      "depends_on": [
+        "T002"
+      ],
+      "updated_at": "2026-10-10T00:27:58Z",
+      "files": [
+        ".gitignore",
+        "SPEC.md",
+        "formal/MarginReview.tla",
+        "formal/evidence/T003-formal-profiles.md",
+        "formal/evidence/logs/MarginReviewUncooperative.counterexample.json",
+        "formal/evidence/logs/environment.txt",
+        "formal/evidence/logs/sany.log",
+        "formal/evidence/logs/summary.tsv",
+        "formal/evidence/logs/tlc-MarginReview.log",
+        "formal/evidence/logs/tlc-MarginReviewCooperative.log",
+        "formal/evidence/logs/tlc-MarginReviewLive.log",
+        "formal/evidence/logs/tlc-MarginReviewNightly.log",
+        "formal/evidence/logs/tlc-MarginReviewUncooperative.log",
+        "formal/run-profiles.sh",
+        "formal/tools/tla2tools-1.8.0.jar.sha256"
+      ]
+    },
+    {
+      "id": "T004",
+      "title": "Add formal mutation checks",
+      "priority": 2,
+      "status": "done",
+      "details": "Acceptance: Each deliberate defect listed in Appendix A.9 fails its designated property, including the matched cooperative and uncooperative writer cases. Preserve traces and document the exact model change for each case. See SPEC 15.6.",
+      "depends_on": [
+        "T003"
+      ],
+      "updated_at": "2026-10-10T17:12:12Z",
+      "files": [
+        "formal/evidence/T004-mutation-checks.md",
+        "formal/evidence/mutations/01-draft-advances-baseline.counterexample.json",
+        "formal/evidence/mutations/02-admit-incomplete-plan.counterexample.json",
+        "formal/evidence/mutations/03-drop-stale-bc-validation.counterexample.json",
+        "formal/evidence/mutations/04-bypass-receipt-uniqueness.counterexample.json",
+        "formal/evidence/mutations/05-existing-id-different-payload-success.counterexample.json",
+        "formal/evidence/mutations/06-premature-success.counterexample.json",
+        "formal/evidence/mutations/07-publish-during-recovery.counterexample.json",
+        "formal/evidence/mutations/08-outside-writes-in-apply-interval.counterexample.json",
+        "formal/evidence/mutations/10-remove-intended-tree-check.counterexample.json",
+        "formal/evidence/mutations/environment.txt",
+        "formal/evidence/mutations/sany-01-draft-advances-baseline.log",
+        "formal/evidence/mutations/sany-02-admit-incomplete-plan.log",
+        "formal/evidence/mutations/sany-03-drop-stale-bc-validation.log",
+        "formal/evidence/mutations/sany-04-bypass-receipt-uniqueness.log",
+        "formal/evidence/mutations/sany-05-existing-id-different-payload-success.log",
+        "formal/evidence/mutations/sany-06-premature-success.log",
+        "formal/evidence/mutations/sany-07-publish-during-recovery.log",
+        "formal/evidence/mutations/sany-08-outside-writes-in-apply-interval.log",
+        "formal/evidence/mutations/sany-09-hook-corruption-control.log",
+        "formal/evidence/mutations/sany-10-remove-intended-tree-check.log",
+        "formal/evidence/mutations/sany-cooperative-control.log",
+        "formal/evidence/mutations/sany-uncooperative-control.log",
+        "formal/evidence/mutations/summary.tsv",
+        "formal/evidence/mutations/tlc-01-draft-advances-baseline.log",
+        "formal/evidence/mutations/tlc-02-admit-incomplete-plan.log",
+        "formal/evidence/mutations/tlc-03-drop-stale-bc-validation.log",
+        "formal/evidence/mutations/tlc-04-bypass-receipt-uniqueness.log",
+        "formal/evidence/mutations/tlc-05-existing-id-different-payload-success.log",
+        "formal/evidence/mutations/tlc-06-premature-success.log",
+        "formal/evidence/mutations/tlc-07-publish-during-recovery.log",
+        "formal/evidence/mutations/tlc-08-outside-writes-in-apply-interval.log",
+        "formal/evidence/mutations/tlc-09-hook-corruption-control.log",
+        "formal/evidence/mutations/tlc-10-remove-intended-tree-check.log",
+        "formal/evidence/mutations/tlc-cooperative-control.log",
+        "formal/evidence/mutations/tlc-uncooperative-control.log",
+        "formal/evidence/mutations/uncooperative-control.counterexample.json",
+        "formal/mutations/01-draft-advances-baseline.patch",
+        "formal/mutations/02-admit-incomplete-plan.patch",
+        "formal/mutations/03-drop-stale-bc-validation.patch",
+        "formal/mutations/04-bypass-receipt-uniqueness.patch",
+        "formal/mutations/05-existing-id-different-payload-success.patch",
+        "formal/mutations/06-premature-success.patch",
+        "formal/mutations/07-publish-during-recovery.patch",
+        "formal/mutations/08-outside-writes-in-apply-interval.patch",
+        "formal/mutations/09-hook-corruption-control.patch",
+        "formal/mutations/10-remove-intended-tree-check.patch",
+        "formal/mutations/README.md",
+        "formal/mutations/cases.tsv",
+        "formal/run-mutations.sh",
+        "tests/formal_mutations.rs"
+      ]
+    },
+    {
+      "id": "T005",
+      "title": "Build an isolated real Git test harness",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Each integration test uses a fresh repository, isolated home and Git config, deterministic identity, and stock Git oracles. Tests compare refs, index, trees, raw bytes, modes, and out-of-scope sentinels. See SPEC 16.3.",
+      "depends_on": [
+        "T001"
+      ],
+      "updated_at": "2026-10-10T00:45:28Z",
+      "files": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "tests/git_harness.rs",
+        "tests/support/env.rs",
+        "tests/support/mod.rs",
+        "tests/support/oracle.rs",
+        "tests/support/repo.rs"
+      ]
+    },
+    {
+      "id": "T006",
+      "title": "Create the C0 Markdown correctness corpus",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: At least 60 reviewed source pairs cover the content classes in SPEC 16.7. Each fixture records exact source changes, expected grouping or fallback, expected result trees, and reader-visible differences.",
+      "depends_on": [
+        "T005"
+      ],
+      "steps": [
+        "Build the correctness corpus before T024. Start with independent source pairs and expected Git results, then test the implementation against them.",
+        "Cover the required content classes and at least 60 reviewed pairs from SPEC 16.7. Record expected whole-file fallbacks as well as independent groups.",
+        "Keep fixture expectations independent of the manifest and grouping code. T025 must reuse these fixtures for exact restoration checks."
+      ],
+      "updated_at": "2026-10-10T09:08:41Z",
+      "files": [
+        ".gitattributes",
+        "tests/c0_corpus.rs",
+        "tests/fixtures/c0/README.md",
+        "tests/fixtures/c0/adversarial.rs",
+        "tests/fixtures/c0/links.rs",
+        "tests/fixtures/c0/mod.rs",
+        "tests/fixtures/c0/punctuation.rs",
+        "tests/fixtures/c0/structure.rs",
+        "tests/fixtures/c0/transitions.rs",
+        "tests/fixtures/c0/whitespace.rs",
+        "tests/support/mod.rs"
+      ]
+    },
+    {
+      "id": "T007",
+      "title": "Generate reproducible benchmark corpora",
+      "priority": 3,
+      "status": "todo",
+      "details": "Acceptance: Seeded generators create C1, C2, C3, and C4 with the exact sizes and Git histories in SPEC 17.2. Manifests record hashes, graph shape, expected results, object format, and storage state; reruns reproduce them.",
+      "depends_on": [
+        "T005"
+      ]
+    },
+    {
+      "id": "T008",
+      "title": "Implement the safe Git process adapter",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Git calls use argv, bounded output and time, literal paths, NUL protocols, and typed process failures. Read-only calls avoid optional index writes and lazy fetches. Tests cover unusual names, both object formats, timeouts, and malformed output. See SPEC 14.1.",
+      "depends_on": [
+        "T001",
+        "T005"
+      ],
+      "updated_at": "2026-10-10T01:19:47Z",
+      "files": [
+        "src/git.rs",
+        "tests/git_adapter.rs"
+      ]
+    },
+    {
+      "id": "T009",
+      "title": "Canonicalize and validate writing scopes",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: One resolver produces the canonical scope descriptor and digest. It handles tracked, eligible untracked, ignored, deleted, and oddly named paths; it rejects escapes, symlinks, nested repositories, and unsupported encoding. See SPEC 3.2.",
+      "depends_on": [
+        "T008"
+      ],
+      "updated_at": "2026-10-10T01:55:39Z",
+      "files": [
+        "src/app.rs",
+        "src/domain.rs",
+        "src/git.rs",
+        "tests/scope_resolver.rs",
+        "tests/support/mod.rs"
+      ]
+    },
+    {
+      "id": "T010",
+      "title": "Enforce repository and storage policy",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Mutation guards identify unsupported Git operations, index state, branches, repository layouts, attributes, and content transformations before writing. Supported identity-profile files preserve raw bytes; unsupported cases return a specific blocker. See SPEC 3.1 and 8.8.",
+      "depends_on": [
+        "T008",
+        "T009"
+      ],
+      "updated_at": "2026-10-10T02:23:27Z",
+      "files": [
+        "src/app.rs",
+        "src/git.rs",
+        "tests/policy_guards.rs"
+      ]
+    },
+    {
+      "id": "T011",
+      "title": "Implement canonical identities and fingerprints",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Scope, content, manifest, review, change, and plan IDs use domain-separated canonical bytes and Git hashing. Fixed inputs produce fixed IDs; changed contract inputs change the applicable ID. SHA-1 and SHA-256 work. See SPEC 8.6.",
+      "depends_on": [
+        "T008",
+        "T009"
+      ],
+      "updated_at": "2026-10-10T02:44:48Z",
+      "files": [
+        "src/app.rs",
+        "src/domain.rs",
+        "src/git.rs",
+        "tests/identities.rs"
+      ]
+    },
+    {
+      "id": "T012",
+      "title": "Write and validate commit metadata",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Start, draft, review, and restore commits use the required reserved trailers. Validation checks exact trailer counts, parent, full tree, scope, and out-of-scope equality; forged or hook-altered markers never confer approval. See SPEC 8.3-8.4.",
+      "depends_on": [
+        "T008",
+        "T011"
+      ],
+      "updated_at": "2026-10-10T04:01:18Z",
+      "files": [
+        "src/app.rs",
+        "src/domain.rs",
+        "src/git.rs",
+        "tests/commit_metadata.rs"
+      ]
+    },
+    {
+      "id": "T013",
+      "title": "Select the valid review baseline",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: An unfiltered first-parent walk finds the nearest valid matching start or review marker, including empty commits and B equal to C. A new start resets the anchor; unavailable history returns BASELINE_UNAVAILABLE. See SPEC 8.5.",
+      "depends_on": [
+        "T012"
+      ],
+      "updated_at": "2026-10-10T04:17:15Z",
+      "files": [
+        "src/app.rs",
+        "src/git.rs",
+        "tests/baseline_selection.rs"
+      ]
+    },
+    {
+      "id": "T014",
+      "title": "Define shared operations and effect reporting",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: The application layer exposes typed inspect, init, checkpoint, review, restore, and recovery results. Success and failure carry observed working-tree, index, commit, repository, configuration, and integration effects. Interfaces call these operations. See SPEC 7.1 and 13.2.",
+      "depends_on": [
+        "T001",
+        "T008",
+        "T012"
+      ],
+      "updated_at": "2026-10-10T04:40:01Z",
+      "files": [
+        "src/app.rs",
+        "tests/operations.rs"
+      ]
+    },
+    {
+      "id": "T015",
+      "title": "Implement the CLI envelope and command discovery",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: The executable provides the specified commands, global options, JSON envelope, typed exits, structured help, and version data. Parser errors with --json use one bounded envelope and no terminal decoration or prompt. See SPEC 6-7.",
+      "depends_on": [
+        "T014"
+      ],
+      "updated_at": "2026-10-10T05:11:13Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "src/main.rs",
+        "tests/cli_contract.rs"
+      ]
+    },
+    {
+      "id": "T016",
+      "title": "Read and update local Margin settings",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: The documented margin.* Git config keys store branch, scope, capture policy, and editor argv. Explicit updates preserve unrelated keys; omitted init settings keep their values and first-use defaults are off. See SPEC 6.2 and 8.2.",
+      "depends_on": [
+        "T008",
+        "T009"
+      ],
+      "updated_at": "2026-10-10T05:47:50Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "src/domain.rs",
+        "src/git.rs",
+        "tests/local_settings.rs"
+      ]
+    },
+    {
+      "id": "T017",
+      "title": "Initialize a writing scope and starting commit",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: init adopts an existing branch or explicitly creates a repository, captures eligible scoped content in a valid start commit, and persists settings only after commit verification. Empty and unborn cases work; dry run reports effects without creation. See SPEC 5.1.",
+      "depends_on": [
+        "T010",
+        "T012",
+        "T013",
+        "T015",
+        "T016"
+      ],
+      "updated_at": "2026-10-10T06:17:07Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "src/git.rs",
+        "tests/cli_contract.rs",
+        "tests/initialization.rs",
+        "tests/operations.rs"
+      ]
+    },
+    {
+      "id": "T018",
+      "title": "Handle repeat initialization and scope changes",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Same-scope init changes only supplied settings and adds no start commit. Changed scope, missing anchor, or --new-start creates a new anchor; A to B to A never revives old approval. Partial config failure reports the actual commit. See SPEC 8.2.",
+      "depends_on": [
+        "T017"
+      ],
+      "updated_at": "2026-10-10T06:36:36Z",
+      "files": [
+        "src/app.rs",
+        "tests/initialization.rs",
+        "tests/operations.rs"
+      ]
+    },
+    {
+      "id": "T019",
+      "title": "Report preservation and review status",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: status reports separate preservation, review, and operation states with branch, HEAD, baseline, scope, blockers, limits, and known or null counts. A query leaves refs, index, and working bytes unchanged. See SPEC 4.2 and 6.3.",
+      "depends_on": [
+        "T013",
+        "T014",
+        "T015",
+        "T017"
+      ],
+      "updated_at": "2026-10-10T07:09:58Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "src/domain.rs",
+        "src/git.rs",
+        "tests/git_adapter.rs",
+        "tests/initialization.rs",
+        "tests/local_settings.rs",
+        "tests/operations.rs",
+        "tests/status_report.rs"
+      ]
+    },
+    {
+      "id": "T020",
+      "title": "Create scoped draft checkpoints",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: checkpoint commits exactly eligible additions, edits, and deletions from a clean index, then verifies bytes, modes, parent, tree, and trailers. Unchanged content is a no-op; outside files and approval stay unchanged. See SPEC 9.2.",
+      "depends_on": [
+        "T010",
+        "T012",
+        "T014",
+        "T015",
+        "T017"
+      ],
+      "updated_at": "2026-10-10T07:39:46Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "tests/checkpoint.rs",
+        "tests/local_settings.rs",
+        "tests/operations.rs"
+      ]
+    },
+    {
+      "id": "T021",
+      "title": "Show exact historical document content",
+      "priority": 2,
+      "status": "done",
+      "details": "Acceptance: show distinguishes missing, empty, UTF-8, and opaque content at an immutable revision. JSON and text output obey bounds and escaping; explicit raw export returns exact bytes and protects terminal stdout. See SPEC 6.3.",
+      "depends_on": [
+        "T008",
+        "T015",
+        "T017"
+      ],
+      "updated_at": "2026-10-10T17:48:15Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "src/domain.rs",
+        "tests/cli_contract.rs",
+        "tests/show_document.rs"
+      ]
+    },
+    {
+      "id": "T022",
+      "title": "List ancestry-based editorial history",
+      "priority": 2,
+      "status": "done",
+      "details": "Acceptance: log paginates first-parent history with accurate start, draft, review, and restore labels. It retains access to collapsed checkpoints, uses ancestry order, and does not use path filtering for baseline discovery. See SPEC 5.5 and 6.3.",
+      "depends_on": [
+        "T012",
+        "T013",
+        "T015"
+      ],
+      "updated_at": "2026-10-10T19:48:13Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "src/domain.rs",
+        "src/git.rs",
+        "tests/cli_contract.rs",
+        "tests/editorial_log.rs"
+      ]
+    },
+    {
+      "id": "T023",
+      "title": "Build the canonical source patch manifest",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: A fixed Git diff contract captures every scoped B-to-C change, including additions, deletions, modes, whitespace, and opaque files. Full patch bytes and source ranges produce stable manifest and change IDs. See SPEC 10.1-10.2.",
+      "depends_on": [
+        "T005",
+        "T008",
+        "T009",
+        "T013"
+      ],
+      "updated_at": "2026-10-10T08:23:19Z",
+      "steps": [
+        "Finish this active task before selecting another task. Review on 2026-10-10 found 16 failures in tests/change_manifest.rs. This is a snapshot of ongoing work, not a reason to change its status.",
+        "Run cargo test --test change_manifest. Investigate empty patch output from Git::diff_tree_patch and the no-patch-section errors against an independent stock Git command.",
+        "Correct the invalid_revisions_fail_typed fixture so it reaches revision validation. Check the hunk counts in parser_accepts_a_well_formed_patch against its source bytes. Keep malformed-hunk rejection strict.",
+        "Verify exact patches for binary content, mode changes, unusual names, whitespace, both object formats, and hostile Git configuration. Do not weaken tree or byte oracles to make tests pass.",
+        "Run cargo test --all-targets --no-fail-fast before completion. Remove temporary diagnostic probes when they are no longer needed."
+      ],
+      "files": [
+        "src/app.rs",
+        "src/domain.rs",
+        "src/git.rs",
+        "tests/change_manifest.rs"
+      ]
+    },
+    {
+      "id": "T024",
+      "title": "Group changes into safe Markdown passages",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Presentation uses Markdown offsets without rewriting source. Groups contain complete hunks, couple dependent structures, and enlarge uncertain cases to a whole file. Headings, word hints, and exact-source fallback expose links and whitespace. See SPEC 10.2-10.5.",
+      "depends_on": [
+        "T006",
+        "T023",
+        "T028",
+        "T058"
+      ],
+      "updated_at": "2026-10-10T11:40:42Z",
+      "steps": [
+        "Complete the source corpus and manifest first. T028 and T058 are deliberate sequencing gates: repair existing capture commands before expanding the review workflow.",
+        "Keep Markdown parsing in the presentation layer. Group complete canonical hunks and prove fallback behavior from both source versions.",
+        "Assign final manifest, review, and change IDs only after grouping and exact-application validation. Never change groups after issuing actionable IDs."
+      ],
+      "files": [
+        "src/app.rs",
+        "src/git.rs",
+        "src/markdown.rs",
+        "tests/grouping.rs"
+      ]
+    },
+    {
+      "id": "T025",
+      "title": "Prove exact restoration for change groups",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Fixtures and property tests verify keep-all, restore-all, and selected-group results against independent Git tree or byte oracles. Every subset of up to eight independent groups passes; no source change disappears. See SPEC 10.6 and 16.4.",
+      "depends_on": [
+        "T006",
+        "T024"
+      ],
+      "updated_at": "2026-10-10T12:33:05Z",
+      "files": [
+        "tests/restoration.rs"
+      ]
+    },
+    {
+      "id": "T026",
+      "title": "Serve bounded pinned diff results",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: diff returns a whole-scope identity and totals even with a path filter. Detail pages obey the 50-group or 256-KiB default bound, expose omissions and cursors, reject stale cursors, and mark working previews non-actionable. See SPEC 6.3 and 7.2.",
+      "depends_on": [
+        "T015",
+        "T023",
+        "T024"
+      ],
+      "updated_at": "2026-10-10T13:16:30Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "src/domain.rs",
+        "tests/diff_results.rs",
+        "tests/operations.rs"
+      ]
+    },
+    {
+      "id": "T027",
+      "title": "Validate strict review plans",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: The parser and shipped JSON Schema reject unknown or duplicate fields and keys, invalid IDs, missing decisions, overlaps, and incomplete coverage. Canonical fingerprints include all required context, decisions, mode, and message. See SPEC 7.3.",
+      "depends_on": [
+        "T011",
+        "T015",
+        "T026"
+      ],
+      "updated_at": "2026-10-10T14:01:05Z",
+      "files": [
+        "schemas/review-plan-v1.json",
+        "src/app.rs",
+        "src/cli.rs",
+        "src/domain.rs",
+        "tests/fixtures/plans/README.md",
+        "tests/fixtures/plans/invalid",
+        "tests/fixtures/plans/valid/keep-explicit-complete.json",
+        "tests/fixtures/plans/valid/keep-explicit-empty.json",
+        "tests/fixtures/plans/valid/keep-explicit-false-flag.json",
+        "tests/fixtures/plans/valid/keep-remaining-default-message.json",
+        "tests/fixtures/plans/valid/keep-remaining.json",
+        "tests/fixtures/plans/valid/reordered-fields.json",
+        "tests/local_settings.rs",
+        "tests/operations.rs",
+        "tests/review_plans.rs"
+      ]
+    },
+    {
+      "id": "T028",
+      "title": "Serialize mutations and recheck shared guards",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: One nonblocking operating-system lock serializes all Margin writes, including init, repeat init settings, and checkpoint. A competing operation returns BUSY without intended effects. Hold the lock through postcondition inspection and settings persistence. Recheck branch, scope, HEAD, index, working content, path safety, and applicable writer activity before the first real mutation. Stale state refuses before staging. Compute and verify the intended init tree before staging the real index. See SPEC 9.1 and 14.3. Review finding: current init and checkpoint have no application mutation lock; checkpoint rechecks only the index. Implement this foundation before review features. The former dependency on T027 delayed protection for commands that already write.",
+      "depends_on": [
+        "T010",
+        "T014",
+        "T020",
+        "T059"
+      ],
+      "steps": [
+        "Use the supported standard-library file lock and a scoped guard. Verify compatibility with the declared minimum Rust version. Do not use a stale PID file as a lock.",
+        "Acquire the lock for existing repositories before mutation inspection. Serialize repository creation and adoption as far as the supported contract permits; document and test the bootstrap boundary.",
+        "Route init, repeat init settings, and checkpoint through the shared guard. Preserve explicit init adoption behavior and the T059 branch checks.",
+        "Compute the intended init result in a disposable index. Compare the real staged tree with that result before commit, as checkpoint already does.",
+        "Use deterministic synchronization in real-process tests. Prove BUSY behavior, release after failure, and refusal when HEAD, branch, index, scoped bytes, or path kinds change before mutation.",
+        "Keep receipt lookup before present-day eligibility checks when T030 is connected. Cover that ordering in receipt tests; do not wait for the plan parser to implement locking."
+      ],
+      "files": [
+        "Cargo.toml",
+        "src/app.rs",
+        "src/cli.rs",
+        "src/git.rs",
+        "tests/checkpoint.rs",
+        "tests/initialization.rs",
+        "tests/support/mod.rs",
+        "tests/support/mutation.rs"
+      ],
+      "updated_at": "2026-10-10T10:38:13Z"
+    },
+    {
+      "id": "T029",
+      "title": "Construct and validate dry-run result trees",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: review dry run uses a disposable index to compute the full intended tree and exact scoped result. It rejects unknown or stale groups and preserves real refs, index, working files, and approval state. See SPEC 6.4 and 9.3.",
+      "depends_on": [
+        "T023",
+        "T025",
+        "T027",
+        "T028"
+      ],
+      "updated_at": "2026-10-10T14:26:24Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "tests/operations.rs",
+        "tests/review_dry_run.rs",
+        "tests/review_plans.rs"
+      ]
+    },
+    {
+      "id": "T030",
+      "title": "Find and validate request receipts",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Review and restore receipt lookup scans reachable unfiltered first-parent history before present-day stale checks. An exact retry returns the original verified commit; changed fingerprints conflict and incomplete scans block a new mutation. See SPEC 8.7.",
+      "depends_on": [
+        "T012",
+        "T013",
+        "T027"
+      ],
+      "updated_at": "2026-10-10T14:54:39Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "tests/receipts.rs"
+      ]
+    },
+    {
+      "id": "T031",
+      "title": "Apply keep-all reviews",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: A complete keep-all plan creates one verified empty review commit with no file rewrite and the candidate full tree. The baseline advances only after parent, tree, and reserved metadata match the intended result. See SPEC 9.4.",
+      "depends_on": [
+        "T003",
+        "T029",
+        "T030"
+      ],
+      "updated_at": "2026-10-10T15:25:43Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "tests/local_settings.rs",
+        "tests/operations.rs",
+        "tests/review_apply.rs",
+        "tests/review_plans.rs"
+      ],
+      "steps": [
+        "Before completing this active task, test successful commit hooks as well as failed hooks. Review reproduction: initialize draft.md, edit and checkpoint it, then apply a keep-all plan with a post-commit hook that writes new bytes to draft.md. The current command succeeds with working_tree=unchanged and no warning.",
+        "Inspect working content and the index after a successful commit. Report actual hook effects and newer uncaptured content. Preserve the verified commit, but do not imply that the newer working bytes were reviewed.",
+        "Add real Git regressions for a successful hook that edits a scoped file, adds a scoped file, or stages content after the commit. Compare reported effects with independent before/after observations.",
+        "Keep success and failure observation rules shared across capture and review operations. Reuse the existing observation code where suitable instead of adding another independent effect policy.",
+        "Run review application, initialization, checkpoint, receipt, and status tests before marking this task done."
+      ]
+    },
+    {
+      "id": "T032",
+      "title": "Apply selective passage reviews",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Selected complete reverse patches apply through the guarded Git index path. The committed result exactly matches the preview; kept groups and out-of-scope entries match C. Stale or partial plans change nothing. See SPEC 9.4.",
+      "depends_on": [
+        "T025",
+        "T029",
+        "T030",
+        "T031",
+        "T060"
+      ],
+      "updated_at": "2026-10-10T16:46:26Z",
+      "steps": [
+        "Implement selective review only after the successful-hook observation fix in T031 and historical retry fix in T060.",
+        "Reuse the disposable-index proof and the exact selected reverse patch. Check and apply with the same explicit whitespace settings. Do not regenerate a different patch, restage working files, or broaden selected groups.",
+        "Verify the real index equals the preview tree and scoped working content equals the expected result before committing. Compare out-of-scope entries and kept groups against the candidate with independent Git or byte oracles.",
+        "Add deterministic failure tests in this task at the apply and commit boundaries. Cover apply failure with retained state, successful apply followed by commit rejection, changed working bytes before commit, successful hook edits, and commit success followed by a retry.",
+        "Report actual retained state and recovery guidance. Never claim rollback, automatically replay the patch, or grant approval to an unmatched result. T037 extends this coverage; it is not a reason to defer these tests.",
+        "Run restoration, dry-run, application, receipt, and effect regressions before completion."
+      ],
+      "files": [
+        "src/app.rs",
+        "src/git.rs",
+        "tests/receipts.rs",
+        "tests/review_apply.rs",
+        "tests/review_dry_run.rs"
+      ]
+    },
+    {
+      "id": "T033",
+      "title": "Restore one document from history",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: restore previews and commits one scoped document from an available adopted-history revision, including absence and mode. It preserves unrelated files, appends a restore receipt, leaves the baseline unchanged, and retries by receipt. See SPEC 7.4 and 9.5.",
+      "depends_on": [
+        "T021",
+        "T029",
+        "T030"
+      ],
+      "updated_at": "2026-10-10T18:36:31Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "src/domain.rs",
+        "tests/operations.rs",
+        "tests/restore_document.rs"
+      ]
+    },
+    {
+      "id": "T034",
+      "title": "Report recovery state with doctor",
+      "priority": 2,
+      "status": "done",
+      "details": "Acceptance: doctor reports HEAD, valid baseline, index tree, scoped working fingerprint, staged paths, and matching receipt with safe recovery argv. Its execution leaves refs, index, and working bytes unchanged. See SPEC 9.7.",
+      "depends_on": [
+        "T013",
+        "T028",
+        "T030"
+      ],
+      "updated_at": "2026-10-10T20:17:59Z",
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "tests/operations.rs",
+        "tests/recovery_doctor.rs"
+      ]
+    },
+    {
+      "id": "T035",
+      "title": "Resume an exact retained review plan",
+      "priority": 1,
+      "status": "doing",
+      "details": "Acceptance: review --resume recomputes the original intended tree and commits only when HEAD, index, scoped working result, branch, scope, and decisions match. It never reapplies a patch or approves an unmatched partial state. See SPEC 9.7.",
+      "depends_on": [
+        "T032",
+        "T034"
+      ],
+      "updated_at": "2026-10-10T20:19:23Z"
+    },
+    {
+      "id": "T036",
+      "title": "Capture inspected staged recovery content",
+      "priority": 1,
+      "status": "todo",
+      "details": "Acceptance: checkpoint --include-staged requires matching expected HEAD, index, and working fingerprints with all staged entries in scope. It saves exactly that state as an unreviewed draft; ordinary staged content still blocks normal checkpointing. See SPEC 9.7.",
+      "depends_on": [
+        "T020",
+        "T034"
+      ]
+    },
+    {
+      "id": "T037",
+      "title": "Test failure phases and truthful effects",
+      "priority": 1,
+      "status": "todo",
+      "details": "Acceptance: Failpoints and process tests cover each boundary in SPEC 16.6, including hooks, timeouts, crash, response loss, and partial writes. Every result reports the observed commit and file/index state, preserves recoverability, and grants no unearned approval.",
+      "depends_on": [
+        "T032",
+        "T033",
+        "T035",
+        "T036",
+        "T058",
+        "T059"
+      ],
+      "updated_at": "2026-10-10T08:16:25Z"
+    },
+    {
+      "id": "T038",
+      "title": "Map implementation transitions to the model",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: formal/refinement documentation maps every model action to an application operation and an independent real Git test. A trace check validates allowed transitions; protocol changes update model, tests, and error docs together. See SPEC 15.7.",
+      "depends_on": [
+        "T004",
+        "T037"
+      ]
+    },
+    {
+      "id": "T039",
+      "title": "Run CLI contract conformance tests",
+      "priority": 1,
+      "status": "todo",
+      "details": "Acceptance: The installed binary passes JSON/schema, parser-error, stdin-plan, cursor, output-limit, broken-pipe, exit-class, raw-export, and no-terminal cases. With an intact pipe, each JSON call emits one valid envelope. See SPEC 16.8.",
+      "depends_on": [
+        "T018",
+        "T026",
+        "T033",
+        "T035",
+        "T036"
+      ]
+    },
+    {
+      "id": "T040",
+      "title": "Complete the real Git behavior matrix",
+      "priority": 1,
+      "status": "todo",
+      "details": "Acceptance: The matrix in SPEC 16.5 passes for initialization, scope, baselines, storage policy, stale state, retries, hooks, object formats, limits, and removal. Independent stock Git checks prove retained content and exact tree equality.",
+      "depends_on": [
+        "T018",
+        "T020",
+        "T032",
+        "T033",
+        "T037"
+      ]
+    },
+    {
+      "id": "T041",
+      "title": "Build the TUI shell and Read view",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: tui opens read-only before adoption, displays a useful document with saved and review state, and retains document/source context across views. Layout works at specified widths and gives a useful minimum-size message. See SPEC 5 and 11.",
+      "depends_on": [
+        "T019",
+        "T021",
+        "T026"
+      ]
+    },
+    {
+      "id": "T042",
+      "title": "Build the Changes view and plan controls",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: Changes renders every group's source context and labels kept, restored, undecided, unavailable, and stale states. K and r change only an in-memory plan; source fallback and unvisited scope counts remain available. See SPEC 5.2 and 11.3.",
+      "depends_on": [
+        "T026",
+        "T041"
+      ]
+    },
+    {
+      "id": "T043",
+      "title": "Finish reviews through the shared operation",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: The finish flow summarizes the entire scope and requires explicit keep-remaining intent. Equivalent CLI and TUI plans yield the same result tree, marker meaning, errors, and effects; quit never commits selections. See SPEC 5.2 and 16.9.",
+      "depends_on": [
+        "T032",
+        "T042"
+      ]
+    },
+    {
+      "id": "T044",
+      "title": "Build History view and restore preview",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: History shows ancestry-based starts, drafts, reviews, and restorations; a selected document can be previewed and restored through the shared operation. Missing files remain distinct from empty files and the baseline stays unchanged. See SPEC 5.5.",
+      "depends_on": [
+        "T022",
+        "T033",
+        "T041"
+      ]
+    },
+    {
+      "id": "T045",
+      "title": "Refresh TUI state without losing pinned context",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: A worker keeps input responsive while two-second inspection polling detects edits. Stale plans stay readable but cannot apply; explicit refresh rebuilds the review, explains selection reset, and preserves source anchors. See SPEC 5.3 and 13.3.",
+      "depends_on": [
+        "T019",
+        "T041",
+        "T042"
+      ]
+    },
+    {
+      "id": "T046",
+      "title": "Implement accessible keyboard and terminal behavior",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: The keymap, action menu, focus, text-entry precedence, color-off labels, and reduced-update mode work in buffer tests. PTY tests prove cleanup on quit, Ctrl-C, errors, resize, and editor return. See SPEC 11.",
+      "depends_on": [
+        "T041",
+        "T043",
+        "T045"
+      ]
+    },
+    {
+      "id": "T047",
+      "title": "Hand off editing to a configured editor",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: edit and the TUI use explicit editor argv with literal file paths, restore terminal state after exit, and refresh document state. Editor exit never approves; capture occurs only when the configured policy enables it. See SPEC 5.6 and 12.5.",
+      "depends_on": [
+        "T020",
+        "T041"
+      ]
+    },
+    {
+      "id": "T048",
+      "title": "Translate supported Claude Code boundaries",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: The hook adapter validates bounded upstream payloads, uses enabled checkpoint policy, and emits only supported hook responses. Normal Stop never creates a continuation loop; missing or interrupted events never imply capture or approval. See SPEC 12.2-12.3.",
+      "depends_on": [
+        "T015",
+        "T020"
+      ]
+    },
+    {
+      "id": "T049",
+      "title": "Install and remove only Margin hook entries",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: Dry run shows the exact local config patch and capabilities. Install checks a config fingerprint, preserves unrelated keys/hooks, and removal deletes only identifiable Margin entries; repeated actions are no-ops. See SPEC 12.4.",
+      "depends_on": [
+        "T048"
+      ]
+    },
+    {
+      "id": "T050",
+      "title": "Compose an optional tmux writing desk",
+      "priority": 3,
+      "status": "todo",
+      "details": "Acceptance: desk launches explicit agent argv and a Margin pane or window without editing global tmux settings or unrelated panes. Narrow layouts remain readable, missing tmux has clear guidance, and quitting Margin leaves the agent running. See SPEC 12.6.",
+      "depends_on": [
+        "T041"
+      ]
+    },
+    {
+      "id": "T051",
+      "title": "Verify TUI and integration sequences",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: Buffer and PTY tests cover selection, finish, stale refresh, source/history, editor return, resize, errors, quit, hooks, and tmux. The supported terminal smoke matrix records observed behavior and CLI/TUI parity. See SPEC 16.9.",
+      "depends_on": [
+        "T046",
+        "T047",
+        "T049",
+        "T050"
+      ]
+    },
+    {
+      "id": "T052",
+      "title": "Configure continuous verification tiers",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: Pull request and nightly jobs run the gates in SPEC 18.3, including formal profiles, 256 or 10,000 property cases, Git/OS variants, and retained failure artifacts. Claimed Rust, Git, Linux, and macOS versions are documented.",
+      "depends_on": [
+        "T003",
+        "T004",
+        "T039",
+        "T040",
+        "T051"
+      ]
+    },
+    {
+      "id": "T053",
+      "title": "Build the benchmark harness and environment record",
+      "priority": 3,
+      "status": "todo",
+      "details": "Acceptance: A registered runner record contains actual hardware, software, build, and tool details. The harness times full fresh-process operations, resets mutation fixtures, records independent oracles and raw paired samples, and distinguishes unmeasured results. See SPEC 17.3-17.8.",
+      "depends_on": [
+        "T007",
+        "T051"
+      ]
+    },
+    {
+      "id": "T054",
+      "title": "Measure and meet release performance budgets",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: C1 and C2 primary metrics meet SPEC 17.4 on the registered runner under the stated sampling and regression policy. C3 fails within explicit limits without omitted approval; raw samples, memory definitions, and any failed gate remain visible.",
+      "depends_on": [
+        "T053"
+      ]
+    },
+    {
+      "id": "T055",
+      "title": "Evaluate the supported agent workflow",
+      "priority": 3,
+      "status": "todo",
+      "details": "Acceptance: The 10 AX scenarios run 20 fresh trials each with a pinned agent setup and independent Git grader. Record per-scenario counts, Wilson intervals, command/output costs, zero unsafe accepted mutations, and every unmet threshold. See SPEC 17.9.",
+      "depends_on": [
+        "T039",
+        "T048",
+        "T049"
+      ]
+    },
+    {
+      "id": "T056",
+      "title": "Evaluate the writer review workflow",
+      "priority": 3,
+      "status": "todo",
+      "details": "Acceptance: A frozen pilot and release protocol test at least 12 writers on the specified seeded document. Record raw workflow, recall, exact-restoration, state-comprehension, time, control, and failure results against SPEC 17.10 gates.",
+      "depends_on": [
+        "T043",
+        "T044",
+        "T046"
+      ]
+    },
+    {
+      "id": "T057",
+      "title": "Publish verification docs and close release gates",
+      "priority": 3,
+      "status": "todo",
+      "details": "Acceptance: Documentation covers CLI/schema, architecture, Git trailers, recovery, support, dependencies, formal evidence, benchmarks, and limitations. The SPEC 20.3 checklist has linked evidence; no unresolved preservation, approval, scope, or recovery defect is waived.",
+      "depends_on": [
+        "T038",
+        "T052",
+        "T054",
+        "T055",
+        "T056"
+      ]
+    },
+    {
+      "id": "T058",
+      "title": "Report observed effects after capture failures",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Init and checkpoint inspect actual repository state after staging and commit failures. A created commit is reported with its object ID even when metadata verification fails. An outcome that cannot be inspected remains unknown. Report observed working-file and index changes caused by hooks. Preserve partial state and withhold settings adoption after an invalid start marker. Review reproduction on 2026-10-10: In a fresh repository, a commit-msg hook appends a second Margin-Kind trailer. margin init --scope draft.md --json exits with CONTRACT_VIOLATION, but reports effects.commit=none and commit_oid=null while git rev-parse HEAD returns the newly created commit. initialize_scope drops MarkerCommitError::Verification into a generic error before recording the commit. See SPEC 7.1, 9.6, and 14.1.",
+      "steps": [
+        "Add an initialization regression for the duplicate reserved trailer reproduction. Assert the real HEAD, reported commit ID, unchanged adoption settings, and retained content with stock Git.",
+        "Share post-mutation observation between init and checkpoint. Preserve the primary error and report inspection failures without claiming unchanged state.",
+        "Cover staging failure after a partial write, hook rejection, hook edits to working files, metadata verification failure, timeout, and output-limit failure after a commit exists.",
+        "Inspect HEAD, index, and scoped working content after each mutation boundary. Distinguish a known created commit from an unknown process outcome.",
+        "Keep the focused tests in initialization and checkpoint suites. Run both suites and the full test suite. T037 later extends this mechanism to review and restore."
+      ],
+      "depends_on": [
+        "T017",
+        "T018",
+        "T020"
+      ],
+      "files": [
+        "src/app.rs",
+        "src/git.rs",
+        "tests/checkpoint.rs",
+        "tests/initialization.rs"
+      ],
+      "tags": [
+        "review-follow-up",
+        "correctness",
+        "effects"
+      ],
+      "created_at": "2026-10-10T08:16:25Z",
+      "updated_at": "2026-10-10T09:39:50Z"
+    },
+    {
+      "id": "T059",
+      "title": "Enforce the adopted branch before checkpointing",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: Normal checkpoint compares the current symbolic branch with the configured adopted branch before staging or committing. A mismatch returns BRANCH_CHANGED with unchanged refs, index, working files, and settings. Explicit init remains the path for adopting another branch. Review reproduction on 2026-10-10: Initialize draft.md on branch writing, run git switch -c other, edit draft.md, then run margin checkpoint --json. The command currently succeeds and advances other while margin.branch remains writing. mutation_context checks repository policy but never compares the configured branch. See SPEC 4.1, 8.2, and 9.1.",
+      "steps": [
+        "Add real Git and command-line regressions for switching to another branch after adoption, including another branch at the same commit.",
+        "Validate adopted branch context in the shared mutation path. Return BRANCH_CHANGED before any real index write. Do not update settings or switch branches automatically.",
+        "Test detached HEAD, missing adoption settings, and explicit init adoption of the new branch. Preserve existing refusal semantics for unsupported contexts.",
+        "Make status expose the branch mismatch as an actionable blocker. Keep queries read-only.",
+        "Run checkpoint, initialization, status, and command-line contract tests. T028 adds the second branch check immediately before mutation."
+      ],
+      "depends_on": [
+        "T018",
+        "T019",
+        "T020"
+      ],
+      "files": [
+        "src/app.rs",
+        "tests/checkpoint.rs",
+        "tests/cli_contract.rs",
+        "tests/initialization.rs",
+        "tests/status_report.rs"
+      ],
+      "tags": [
+        "review-follow-up",
+        "correctness",
+        "guards"
+      ],
+      "created_at": "2026-10-10T08:16:25Z",
+      "updated_at": "2026-10-10T10:01:12Z"
+    },
+    {
+      "id": "T060",
+      "title": "Return historical receipts without live scope resolution",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: An exact retry returns its verified historical receipt even when present-day scope roots become symlinks or otherwise cannot be resolved for a new mutation. Build receipt response data from the recorded canonical scope and immutable Git objects. Do not traverse current working paths or regenerate historical group identities with a changed engine merely to acknowledge completion. Missing required historical objects still produce an explicit unavailable result; never treat an incomplete scan as absence. Review reproduction on 2026-10-10: Complete a keep-all review for a draft.md scope, replace draft.md with a symlink, and repeat the identical review command. It currently returns INVALID_ARGUMENT from existing_receipt_decision calling resolve_scope, although lookup found the receipt. See SPEC 8.7 and 9.1.",
+      "steps": [
+        "Add executable and application regressions for exact retries after a scope root becomes a symlink, disappears, or becomes unreadable. Test both ordinary review and dry run. Assert no writes and the original receipt ID.",
+        "Separate historical receipt response construction from live scope eligibility. Use the recorded ScopeDescriptor directly for immutable tree computations. Never follow the new symlink.",
+        "Remove dependence on current Git or grouping versions for acknowledging a valid receipt. Define how optional reconstructed detail behaves when the historical engine is unavailable; document any required contract change instead of fabricating counts.",
+        "Audit historical receipt validation against all seven rules in SPEC 8.4. find_receipt currently calls validate_marker, while review baseline ancestry validation resides separately in select_baseline. Add a regression for an incorrect recorded review baseline and keep unsupported or unavailable context distinct from an absent receipt.",
+        "Run receipt and review application tests. Keep the existing tests for dirty content, staging, foreign branches, changed request fingerprints, and incomplete history scans."
+      ],
+      "depends_on": [
+        "T030",
+        "T031"
+      ],
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "tests/operations.rs",
+        "tests/receipts.rs",
+        "tests/review_apply.rs",
+        "tests/review_dry_run.rs"
+      ],
+      "tags": [
+        "review-follow-up",
+        "correctness",
+        "receipts"
+      ],
+      "created_at": "2026-10-10T15:25:43Z",
+      "updated_at": "2026-10-10T16:16:38Z"
+    },
+    {
+      "id": "T061",
+      "title": "Detect unsaved content hidden by index flags",
+      "priority": 1,
+      "status": "todo",
+      "details": "Acceptance: Scoped files marked assume-unchanged or skip-worktree cannot hide unsaved content. Status must not report captured when working bytes differ from the candidate. Checkpoint must either save the exact scoped content or refuse with a specific blocker before mutation. Review and restore guards must detect the same dirty state. Review reproduction on 2026-10-10: Initialize draft.md, run git update-index --assume-unchanged draft.md, and edit the file. margin status --json reports preservation=captured and uncaptured_total=0. margin checkpoint --json succeeds with changed=false while HEAD retains the old bytes. The same failure occurs with --skip-worktree. scoped_working_changes checks only paths reported by Git, which suppresses these entries. See SPEC 3.1, 4.2, 9.1, and 9.2.",
+      "steps": [
+        "Add real Git and executable regressions for both index flags. Compare working bytes with git show HEAD:draft.md independently.",
+        "Detect unsupported index flags or compare scoped content independently of flags that suppress Git change detection. Preserve user index flags during inspection.",
+        "Apply the same detection to status, checkpoint, working previews, and the dirty-content guards for review and restore.",
+        "Assert that a checkpoint never reports a successful no-op while scoped edits remain hidden. Verify unchanged state on refusal.",
+        "Run the affected status, checkpoint, policy, diff, review, and restore tests, then run cargo test --all-targets."
+      ],
+      "depends_on": [
+        "T010",
+        "T019",
+        "T020",
+        "T028"
+      ],
+      "files": [
+        "src/app.rs",
+        "src/git.rs",
+        "tests/status_report.rs",
+        "tests/checkpoint.rs",
+        "tests/policy_guards.rs",
+        "tests/diff_results.rs",
+        "tests/review_apply.rs",
+        "tests/restore_document.rs",
+        "tests/cli_contract.rs"
+      ],
+      "tags": [
+        "review-follow-up",
+        "correctness",
+        "preservation",
+        "guards"
+      ],
+      "created_at": "2026-10-10T20:17:23Z",
+      "updated_at": "2026-10-10T20:17:23Z"
+    },
+    {
+      "id": "T062",
+      "title": "Keep recovery inspection from changing the index",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: doctor reports the real index tree without changing any real index bytes, refs, or working files. Compute the tree with a disposable index or an equivalent read-only method. Review reproduction on 2026-10-10: Initialize draft.md, edit it, and run git add draft.md. Save the raw .git/index bytes, run margin doctor --json, and compare the index bytes again. They differ, but effects.index reports unchanged. inspect_recovery calls git write-tree on the real index, which updates its cache even with GIT_OPTIONAL_LOCKS=0. Existing snapshots compare index trees and call write-tree themselves, so they miss this change. See SPEC 9.7, 14.1, and 16.3.",
+      "steps": [
+        "Add a regression that captures raw index bytes immediately after staging and before any oracle calls write-tree.",
+        "Compute the index tree from a disposable copy or another method that leaves the real index untouched. Preserve conflict-state reporting and clean up temporary files.",
+        "Update recovery tests to compare raw index bytes as well as refs and working content. Avoid preparing the cache through the test oracle before inspection.",
+        "Run recovery, Git adapter, and executable contract tests, then run cargo test --all-targets."
+      ],
+      "depends_on": [
+        "T034"
+      ],
+      "files": [
+        "src/app.rs",
+        "src/git.rs",
+        "tests/recovery_doctor.rs",
+        "tests/support/oracle.rs",
+        "tests/git_adapter.rs"
+      ],
+      "tags": [
+        "review-follow-up",
+        "correctness",
+        "read-only",
+        "recovery"
+      ],
+      "created_at": "2026-10-10T20:17:23Z",
+      "updated_at": "2026-10-10T20:17:23Z"
+    },
+    {
+      "id": "T063",
+      "title": "Report hook edits after successful checkpoints",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: A successful checkpoint reports observed working-file effects against its initial state. If a hook changes scoped working bytes, effects.working_tree is changed and the response retains the verified commit and DIRTY_SCOPE warning. If final working state cannot be inspected, report unknown rather than unchanged. Review reproduction on 2026-10-10: Initialize draft.md, edit it, and install a successful pre-commit hook that overwrites draft.md without staging the hook edit. margin checkpoint --json creates the expected commit and emits DIRTY_SCOPE, but effects.working_tree remains unchanged. The success path only adds a warning and does not update the working-tree effect. See SPEC 7.1, 9.2, and 9.6.",
+      "steps": [
+        "Add a successful-hook regression that checks the original working bytes, committed bytes, final working bytes, warning, and reported effects independently.",
+        "Compare the final scoped working state with the recorded initial state on checkpoint success. Reuse shared observation code where appropriate.",
+        "Report unknown if final working state cannot be inspected. Preserve the verified commit and explain the inspection failure.",
+        "Cover a hook-created scoped file and the ordinary successful checkpoint with unchanged working bytes.",
+        "Run checkpoint and effect-reporting tests, then run cargo test --all-targets."
+      ],
+      "depends_on": [
+        "T020",
+        "T058"
+      ],
+      "files": [
+        "src/app.rs",
+        "tests/checkpoint.rs"
+      ],
+      "tags": [
+        "review-follow-up",
+        "correctness",
+        "effects"
+      ],
+      "created_at": "2026-10-10T20:17:23Z",
+      "updated_at": "2026-10-10T20:17:23Z"
+    }
+  ]
+}

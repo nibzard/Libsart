@@ -1,0 +1,11 @@
+--- a/MarginReview.tla
++++ b/MarginReview.tla
+@@ -118,7 +118,7 @@
+                r, b, c, rs, done, oid)
+           /\ UNCHANGED <<phase, pending, remaining>>
+         ELSE IF err # "none" THEN
+-          /\ reply' = Reply(err, r, b, c, rs, done, 0)
++          /\ reply' = Reply("success", r, b, c, rs, done, 0)
+           /\ UNCHANGED <<phase, pending, remaining>>
+         ELSE
+           /\ pending' = Plan(r, b, c, rs, done)

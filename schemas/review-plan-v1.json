@@ -1,0 +1,99 @@
+{
+  "$id": "https://margin.invalid/schemas/review-plan-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One complete decision set over a pinned Margin review. Inputs are strict: unknown fields, duplicate keys, invalid identifiers, missing or doubled decision modes, and incomplete coverage all fail validation.",
+  "oneOf": [
+    {
+      "not": {
+        "required": [
+          "keep"
+        ]
+      },
+      "properties": {
+        "keep_remaining": {
+          "const": true
+        }
+      },
+      "required": [
+        "keep_remaining"
+      ]
+    },
+    {
+      "properties": {
+        "keep_remaining": {
+          "const": false
+        }
+      },
+      "required": [
+        "keep"
+      ]
+    }
+  ],
+  "properties": {
+    "baseline_oid": {
+      "pattern": "^[0-9a-f]{40}$|^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "branch_ref": {
+      "pattern": "^(refs/[^\\u0000-\\u0020\\u007f]+|HEAD)$",
+      "type": "string"
+    },
+    "candidate_oid": {
+      "pattern": "^[0-9a-f]{40}$|^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "keep": {
+      "items": {
+        "pattern": "^sha1:[0-9a-f]{40}$|^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "keep_remaining": {
+      "type": "boolean"
+    },
+    "message": {
+      "maxLength": 4096,
+      "type": "string"
+    },
+    "request_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "type": "string"
+    },
+    "restore": {
+      "items": {
+        "pattern": "^sha1:[0-9a-f]{40}$|^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "review_id": {
+      "pattern": "^sha1:[0-9a-f]{40}$|^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "scope_id": {
+      "pattern": "^sha1:[0-9a-f]{40}$|^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "request_id",
+    "review_id",
+    "branch_ref",
+    "scope_id",
+    "baseline_oid",
+    "candidate_oid",
+    "restore"
+  ],
+  "title": "Margin review plan v1",
+  "type": "object"
+}

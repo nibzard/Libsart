@@ -1,0 +1,12 @@
+--- a/MarginReview.tla
++++ b/MarginReview.tla
+@@ -104,8 +104,7 @@
+   /\ LET oid == Receipt(r)
+          expected == IF mode = "resume" THEN Result(b, c, rs)
+                      ELSE HeadTree
+-         err == IF ~done THEN "incomplete"
+-                ELSE IF ~repoReady THEN "precondition"
++         err == IF ~repoReady THEN "precondition"
+                 ELSE IF b # baseline \/ c # HeadId
+                         \/ ~ScopedEqual(work, expected)
+                         \/ index # expected THEN "stale"

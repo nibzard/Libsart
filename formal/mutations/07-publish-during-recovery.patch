@@ -1,0 +1,34 @@
+--- a/MarginReview.tla
++++ b/MarginReview.tla
+@@ -172,8 +172,9 @@
+   /\ phase \in {"apply", "index", "commit"}
+   /\ reply' = Reply("failed", pending.req, pending.base, pending.cand,
+                     pending.restore, pending.complete, 0)
+-  /\ phase' = "recovery" /\ pending' = NoPlan /\ remaining' = {}
+-  /\ UNCHANGED <<history, baseline, work, index, repoReady, unseenOverwrite>>
++  /\ phase' = "recovery" /\ remaining' = {}
++  /\ UNCHANGED <<history, baseline, work, index, pending, repoReady,
++                  unseenOverwrite>>
+ Crash ==
+   /\ phase # "down"
+   /\ phase' = "down" /\ pending' = NoPlan
+@@ -184,9 +185,16 @@
+   /\ UNCHANGED <<history, baseline, work, index, pending, remaining,
+                   repoReady, reply, unseenOverwrite>>
+ InspectRecovery ==
+-  /\ phase = "recovery" /\ phase' = "idle"
+-  /\ UNCHANGED <<history, baseline, work, index, pending, remaining,
+-                  repoReady, reply, unseenOverwrite>>
++  /\ phase = "recovery" /\ repoReady
++  /\ HeadId = pending.cand /\ baseline = pending.base
++  /\ HeadId < MaxCommits /\ Receipt(pending.req) = 0
++  /\ index = Target /\ ScopedEqual(work, Target)
++  /\ history' = Append(history,
++       Commit(Target, "review", pending.req, pending.base,
++              pending.cand, pending.restore, pending.complete))
++  /\ baseline' = HeadId + 1 /\ phase' = "idle"
++  /\ pending' = NoPlan /\ remaining' = {}
++  /\ UNCHANGED <<work, index, repoReady, reply, unseenOverwrite>>
+ 
+ Advance == (\E p \in Scope : ApplyGroup(p)) \/ UpdateIndex \/ Publish \/ Respond
+ Commands ==

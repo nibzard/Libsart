@@ -1,0 +1,11 @@
+--- a/MarginReview.tla
++++ b/MarginReview.tla
+@@ -70,7 +70,7 @@
+ 
+ \* External writers cooperate only while a Margin mutation is active.
+ \* They may edit while the writer studies a diff, or after a crash.
+-ExternalAllowed == ~Cooperative \/ phase \in {"idle", "down", "recovery"}
++ExternalAllowed == TRUE
+ ExternalWrite(t) ==
+   /\ ExternalAllowed /\ work' = t
+   /\ UNCHANGED <<history, baseline, index, phase, pending,

@@ -1,0 +1,14 @@
+run started (UTC): 2026-10-09T23:34:37Z
+tools jar: https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+7beec0f04818732a62fa193731711a99aa4f11279499b2360a7d156c519ea78d  tools/tla2tools-1.8.0.jar
+openjdk version "21.0.12.1" 2026-08-18
+OpenJDK Runtime Environment (build 21.0.12.1+1-1-24.04.4-Ubuntu)
+OpenJDK 64-Bit Server VM (build 21.0.12.1+1-1-24.04.4-Ubuntu, mixed mode, sharing)
+machine: Linux 6.8.0-139-generic x86_64, 4 CPUs, 12th Gen Intel(R) Core(TM) i9-12900HK
+source and config sha256:
+c1a36527e2a1944d2b304ff3fd921b57420361dc46787c1a7a0be52c56129347  MarginReview.tla
+9afd2b0192cc7c0c1ae6919a565b51140a1b3191d9e7e9c9a6fb4d35f30bfe4a  MarginReview.cfg
+a153e997000b6e79b0073a6893f6198ebf108723703f9604aba6f7601e081e00  MarginReviewCooperative.cfg
+060c7859853c83dc625c7ecf086a36462ba417b31ec5781f0b454c957486306c  MarginReviewLive.cfg
+91b158cf2e4c1adc8da61eeeb92aa71fe274925f750c7c3fe86b001bfdeb0ed2  MarginReviewNightly.cfg
+5574e936c02eb3315c94615733a28b85f01fa9be9b5e195b504b571fcbb4efb6  MarginReviewUncooperative.cfg

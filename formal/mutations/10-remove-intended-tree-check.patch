@@ -1,0 +1,10 @@
+--- a/MarginReview.tla
++++ b/MarginReview.tla
+@@ -159,7 +159,6 @@
+   /\ phase = "commit" /\ repoReady
+   /\ HeadId = pending.cand /\ baseline = pending.base
+   /\ HeadId < MaxCommits /\ Receipt(pending.req) = 0
+-  /\ index = Target /\ ScopedEqual(work, Target)
+   /\ history' = Append(history,
+        Commit(index, "review", pending.req, pending.base,
+               pending.cand, pending.restore, pending.complete))

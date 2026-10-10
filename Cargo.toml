@@ -1,0 +1,23 @@
+[package]
+name = "margin"
+version = "0.1.0"
+edition = "2024"
+description = "Scoped draft preservation and review for Markdown writing projects"
+license = "Apache-2.0"
+repository = "https://github.com/nibzard/Libsart"
+# SPEC 13.4 makes the standard-library file lock part of the toolchain
+# decision: the shared mutation lock needs `std::fs::File::try_lock`,
+# stabilized in Rust 1.89.0, so the declared minimum follows it. The pinned
+# toolchain of `rust-toolchain.toml` stays the build compiler.
+rust-version = "1.89.0"
+
+[dependencies]
+clap = { version = "=4.6.7", default-features = false, features = ["std", "help", "usage"] }
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm_0_29"] }
+crossterm = { version = "=0.29.0", default-features = false, features = ["events"] }
+pulldown-cmark = { version = "=0.13.4", default-features = false }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
