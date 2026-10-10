@@ -1,10 +1,11 @@
-# Libsart
+# Margin
 
 Save and review Markdown edits through ordinary Git history.
 
-Libsart contains **Margin**, a command-line tool for writing projects. The
-executable is named `margin`. Capture a draft, inspect its changes, then
-keep or restore selected passages.
+![Margin terminal session showing pending changes, selective review, reviewed status, and Git history.](docs/assets/margin-terminal.png)
+
+Margin is a command-line tool for writing projects. Capture a draft,
+inspect its changes, then keep or restore selected passages.
 
 ## Quick start
 
@@ -12,8 +13,8 @@ You need Git and Rust with Cargo. The repository pins its Rust toolchain
 in `rust-toolchain.toml`.
 
 ```bash
-git clone https://github.com/nibzard/Libsart.git
-cd Libsart
+git clone https://github.com/nibzard/margin.git
+cd margin
 cargo install --path . --locked
 margin --help
 ```
@@ -84,7 +85,7 @@ Use the disposable example repository when evaluating the current behavior.
 
 ## Build and test
 
-Run these commands from the Libsart repository:
+Run these commands from the Margin repository:
 
 ```bash
 cargo build --locked

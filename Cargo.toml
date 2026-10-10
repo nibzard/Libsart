@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Scoped draft preservation and review for Markdown writing projects"
 license = "Apache-2.0"
-repository = "https://github.com/nibzard/Libsart"
+repository = "https://github.com/nibzard/margin"
 # SPEC 13.4 makes the standard-library file lock part of the toolchain
 # decision: the shared mutation lock needs `std::fs::File::try_lock`,
 # stabilized in Rust 1.89.0, so the declared minimum follows it. The pinned
