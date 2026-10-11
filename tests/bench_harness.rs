@@ -1,6 +1,5 @@
-//! Acceptance suite of task T053: the benchmark harness and the
-//! environment record of SPEC 17.3-17.8, including the T074
-//! registration of the actual dedicated runner.
+//! Acceptance suite of tasks T053, T074, and T054: the benchmark harness
+//! and the environment record of SPEC 17.3-17.8.
 //!
 //! The suite proves the acceptance criteria against the real pieces:
 //!
@@ -16,7 +15,11 @@
 //! - a full run times fresh processes, resets the mutation fixtures
 //!   before every iteration, verifies an independent stock-Git oracle
 //!   after every run, retains raw paired samples, and reports honest
-//!   statuses — a fast but incorrect command fails the benchmark.
+//!   statuses — a fast but incorrect command fails the benchmark;
+//! - the PTY sampler measures launch-to-frame, key-to-bytes, and
+//!   edit-to-notice on a real pseudo-terminal (T054, SPEC 17.4), and the
+//!   resource sampler reads the kernel's own CPU and memory accounting
+//!   of the session's process tree.
 
 #[path = "../bench/perf/mod.rs"]
 mod perf;
@@ -81,6 +84,19 @@ fn register_environment(root: &Path) -> EnvironmentRecord {
 
 /// One measurement plan over the built executable.
 fn plan(id: &str, sides: Sides, warmups: usize, blocks: usize, runs: usize) -> RunPlan {
+    plan_with(id, sides, warmups, blocks, runs, 0, 0)
+}
+
+/// A plan that also pins the P-KEY event count or the P-CPU window.
+fn plan_with(
+    id: &str,
+    sides: Sides,
+    warmups: usize,
+    blocks: usize,
+    runs: usize,
+    events_per_session: usize,
+    window_seconds: u64,
+) -> RunPlan {
     RunPlan {
         metric: metric::by_id(id).expect("the metric exists").id,
         corpus: "C1".to_string(),
@@ -89,8 +105,36 @@ fn plan(id: &str, sides: Sides, warmups: usize, blocks: usize, runs: usize) -> R
         blocks,
         runs_per_block: runs,
         order_seed: 20261011,
+        events_per_session,
+        window_seconds,
         implementation_commit: None,
         notes: Vec::new(),
+    }
+}
+
+/// One synthetic sample row, so the record arithmetic is tested without
+/// running sessions.
+fn synthetic(metric: &str, order: usize, block: usize, warmup: bool, value: f64) -> samples::Sample {
+    samples::Sample {
+        schema_version: samples::SAMPLES_SCHEMA_VERSION,
+        metric: metric.to_string(),
+        corpus: "C1".to_string(),
+        version: "single".to_string(),
+        block,
+        run_in_block: order % 100,
+        order_index: order,
+        warmup,
+        elapsed_ms: value,
+        unit: None,
+        exit_code: 0,
+        stdout_bytes: 0,
+        stderr_bytes: 0,
+        oracle: "passed".to_string(),
+        oracle_failures: Vec::new(),
+        cache_method: "warm".to_string(),
+        invalidated: false,
+        invalidation_reason: None,
+        at: "2026-10-11T00:00:00Z".to_string(),
     }
 }
 
@@ -392,16 +436,232 @@ fn an_unassigned_environment_blocks_measurement_without_writing_records() {
     );
 }
 
-#[test]
-fn pty_and_resource_metrics_stay_not_measured_under_this_harness() {
-    let root = scratch("kinds");
+/// Prepares a registered fixture set for the sampler acceptance tests.
+fn sampler_fixture(tag: &str) -> (perf::fixture::Fixture, EnvironmentRecord, PathBuf, PathBuf) {    let root = scratch(tag);
     let results = root.join("results");
+    fs::create_dir_all(&results).expect("the results directory exists");
     let environment = register_environment(&root);
     let path = root.join("environment.json");
-    let corpus = c1_fixture_dir("kinds");
+    let corpus = c1_fixture_dir(tag);
     let fixture = perf::fixture::Fixture::prepare(&corpus, &root.join("fixture"))
         .expect("the fixture prepares");
+    (fixture, environment, path, results)
+}
+
+#[test]
+fn paired_plans_are_refused_for_pty_and_resource_metrics() {
+    let (fixture, environment, path, results) = sampler_fixture("paired-refusal");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_margin"));
     for id in ["P-OPEN", "P-KEY", "P-REFRESH", "P-CPU", "P-RSS", "P-TREE-MEM"] {
+        let run = plan(
+            id,
+            Sides::Paired {
+                baseline: executable.clone(),
+                candidate: executable.clone(),
+            },
+            0,
+            1,
+            1,
+        );
+        let refusal = perf::runner::run(&run, &fixture, &environment, &path, &results)
+            .expect_err("a PTY or resource pairing is refused, not faked");
+        assert!(
+            refusal.contains("paired"),
+            "{id} names the pairing problem: {refusal}"
+        );
+        assert!(
+            !results.join(ResultRecord::file_name(id, "C1")).exists(),
+            "{id} was never written"
+        );
+    }
+}
+
+#[test]
+fn p_open_measures_launch_to_the_first_useful_frame() {
+    let (fixture, environment, path, results) = sampler_fixture("p-open");
+    let run = plan(
+        "P-OPEN",
+        Sides::Single(PathBuf::from(env!("CARGO_BIN_EXE_margin"))),
+        0,
+        1,
+        2,
+    );
+    let outcome = perf::runner::run(&run, &fixture, &environment, &path, &results)
+        .expect("the PTY sampler measures P-OPEN");
+
+    // Two sessions, one sample each: the launch-to-frame window.
+    let raw = samples::read_jsonl(&outcome.raw_path).expect("the raw stream reads back");
+    assert_eq!(raw.len(), 2);
+    for sample in &raw {
+        assert!(sample.elapsed_ms > 0.0, "each launch was timed");
+        assert_eq!(sample.unit, None, "P-OPEN is a latency in milliseconds");
+        assert_eq!(
+            sample.oracle,
+            "passed",
+            "the frame showed identity, content, state, and actions: {:?}",
+            sample.oracle_failures
+        );
+        assert_eq!(sample.exit_code, 0, "the session quit cleanly");
+    }
+    let record = &outcome.record;
+    let details = record.details.as_ref().expect("measured records carry details");
+    assert_eq!(details.metric_kind, "pty-interaction");
+    assert_eq!(details.memory_definition, None, "a latency record defines no memory");
+    assert!(
+        details
+            .sampling
+            .boundary
+            .contains("identity, content, save state, and actions"),
+        "the boundary names the useful frame: {}",
+        details.sampling.boundary
+    );
+    assert!(
+        details
+            .sampling
+            .cache_method
+            .contains("--reduced-updates"),
+        "the session shape is recorded"
+    );
+    // A two-session diagnostic run never passes, and its gate states
+    // exactly what the samples show.
+    assert!(
+        matches!(record.status, Status::Failed | Status::Inconclusive),
+        "a below-policy run never passes: {:?}",
+        record.status
+    );
+    let p95 = record.p95_ms.expect("the p95 is measured");
+    assert_eq!(
+        details.gate.budget_exceeded,
+        p95 > record.budget_p95_ms.unwrap_or(u64::MAX) as f64,
+        "the gate states exactly what the samples show"
+    );
+}
+
+#[test]
+fn p_key_times_one_sample_per_navigation_event() {
+    let (fixture, environment, path, results) = sampler_fixture("p-key");
+    // Two sessions of twenty events each, in two blocks: every event is
+    // one row, its block is its session's block, and its run index is its
+    // place inside the session.
+    let run = plan_with(
+        "P-KEY",
+        Sides::Single(PathBuf::from(env!("CARGO_BIN_EXE_margin"))),
+        0,
+        2,
+        1,
+        20,
+        0,
+    );
+    let outcome = perf::runner::run(&run, &fixture, &environment, &path, &results)
+        .expect("the PTY sampler measures P-KEY");
+
+    let raw = samples::read_jsonl(&outcome.raw_path).expect("the raw stream reads back");
+    assert_eq!(raw.len(), 40, "two sessions of twenty events");
+    let order: Vec<usize> = raw.iter().map(|sample| sample.order_index).collect();
+    let mut sorted_order = order.clone();
+    sorted_order.sort_unstable();
+    assert_eq!(order, sorted_order, "the execution order is recorded in order");
+    for (index, sample) in raw.iter().enumerate() {
+        assert_eq!(sample.block, index / 20, "the block is the session's block");
+        assert_eq!(sample.run_in_block, index % 20, "the run index is the event's place");
+        assert_eq!(sample.unit, None);
+        assert!(
+            sample.oracle == "passed" || sample.elapsed_ms > 0.0,
+            "a timeout row keeps its timeout as evidence"
+        );
+    }
+    assert!(
+        raw.iter().all(|sample| sample.oracle == "passed"),
+        "every event drew its changed frame: {:?}",
+        raw.iter()
+            .filter(|sample| !sample.oracle_failures.is_empty())
+            .map(|sample| &sample.oracle_failures[0])
+            .take(3)
+            .collect::<Vec<_>>()
+    );
+    // The read-only session left the repository untouched.
+    assert!(
+        fixture.oracle.status_porcelain().trim().is_empty(),
+        "j and k changed no file"
+    );
+
+    let record = &outcome.record;
+    let details = record.details.as_ref().expect("measured records carry details");
+    assert_eq!(details.metric_kind, "pty-interaction");
+    assert_eq!(details.sampling.events_per_session, 20);
+    assert_eq!(
+        details.statistics.as_ref().expect("statistics exist").p99_ms,
+        None,
+        "a forty-event series does not borrow a p99"
+    );
+    assert!(
+        details
+            .notes
+            .iter()
+            .any(|note| note.contains("10,000")),
+        "the event floor is named: {:?}",
+        details.notes
+    );
+    assert!(
+        matches!(record.status, Status::Failed | Status::Inconclusive),
+        "a below-policy run never passes: {:?}",
+        record.status
+    );
+}
+
+#[test]
+fn p_refresh_times_the_external_edit_to_the_arrival_notice() {
+    let (fixture, environment, path, results) = sampler_fixture("p-refresh");
+    let run = plan(
+        "P-REFRESH",
+        Sides::Single(PathBuf::from(env!("CARGO_BIN_EXE_margin"))),
+        0,
+        1,
+        1,
+    );
+    let outcome = perf::runner::run(&run, &fixture, &environment, &path, &results)
+        .expect("the PTY sampler measures P-REFRESH");
+
+    let raw = samples::read_jsonl(&outcome.raw_path).expect("the raw stream reads back");
+    assert_eq!(raw.len(), 1);
+    let sample = &raw[0];
+    assert!(sample.elapsed_ms > 0.0, "the discovery window was timed");
+    assert_eq!(sample.unit, None);
+    assert_eq!(
+        sample.oracle,
+        "passed",
+        "the notice arrived and the oracle held: {:?}",
+        sample.oracle_failures
+    );
+    // The pinned state survived the edit: HEAD never moved, and the
+    // working tree holds exactly the appended paragraph.
+    assert_eq!(fixture.oracle.head(), fixture.facts.candidate);
+    assert_eq!(
+        fixture.oracle.status_porcelain().trim(),
+        format!("M {}", fixture.facts.selected_path),
+        "exactly the selected document is dirty"
+    );
+    let record = &outcome.record;
+    let details = record.details.as_ref().expect("measured records carry details");
+    assert_eq!(details.metric_kind, "pty-interaction");
+    assert!(
+        details.sampling.boundary.contains("arrival notice"),
+        "the boundary names the notice: {}",
+        details.sampling.boundary
+    );
+    assert!(
+        matches!(record.status, Status::Failed | Status::Inconclusive),
+        "a below-policy run never passes: {:?}",
+        record.status
+    );
+}
+
+#[test]
+fn the_memory_resources_report_their_quantities_in_mib() {
+    let (fixture, environment, path, results) = sampler_fixture("memory");
+    for (id, ceiling, marker) in
+        [("P-RSS", 64.0, "VmHWM"), ("P-TREE-MEM", 128.0, "concurrent sum")]
+    {
         let run = plan(
             id,
             Sides::Single(PathBuf::from(env!("CARGO_BIN_EXE_margin"))),
@@ -409,17 +669,209 @@ fn pty_and_resource_metrics_stay_not_measured_under_this_harness() {
             1,
             1,
         );
-        let refusal = perf::runner::run(&run, &fixture, &environment, &path, &results)
-            .expect_err("the harness refuses what it cannot time");
-        assert!(
-            refusal.contains("not_measured"),
-            "{id} must stay not_measured: {refusal}"
+        let outcome = perf::runner::run(&run, &fixture, &environment, &path, &results)
+            .expect("the resource sampler measures the metric");
+
+        let raw = samples::read_jsonl(&outcome.raw_path).expect("the raw stream reads back");
+        assert_eq!(raw.len(), 1, "{id} ran one session");
+        let sample = &raw[0];
+        assert_eq!(sample.unit.as_deref(), Some("MiB"), "{id} names its unit");
+        assert!(sample.elapsed_ms > 0.0, "{id} measured a positive quantity");
+        assert_eq!(
+            sample.oracle,
+            "passed",
+            "{id} verified: {:?}",
+            sample.oracle_failures
         );
+        assert_eq!(sample.exit_code, 0, "the session quit cleanly");
+
+        let record = &outcome.record;
+        let details = record.details.as_ref().expect("measured records carry details");
+        assert_eq!(details.metric_kind, "resource");
+        // A resource quantity is not a latency: the base fields stay
+        // empty and the numbers live in the statistics block, whose
+        // method sentence names the unit.
+        assert_eq!(record.median_ms, None, "{id} carries no latency");
+        assert_eq!(record.p95_ms, None, "{id} carries no latency");
+        let statistics = details.statistics.as_ref().expect("the numbers exist");
+        assert!(statistics.method.contains("MiB"), "{id} names its unit");
+        assert!(statistics.max_ms > 0.0);
+        // The gate is the maximum counted sample against the ceiling,
+        // never a percentile.
+        assert_eq!(
+            details.gate.budget_exceeded,
+            statistics.max_ms > ceiling,
+            "{id} gates on the maximum"
+        );
+        let definition = details.memory_definition.as_ref().expect("{id} defines its memory");
+        assert!(definition.contains(marker), "{id} says what it summed: {definition}");
         assert!(
-            !results.join(ResultRecord::file_name(id, "C1")).exists(),
-            "{id} was never written"
+            matches!(record.status, Status::Failed | Status::Inconclusive),
+            "a below-policy run never passes: {:?}",
+            record.status
         );
     }
+}
+
+#[test]
+fn p_cpu_reports_the_idle_share_of_one_core() {
+    let (fixture, environment, path, results) = sampler_fixture("p-cpu");
+    // A four-second window is diagnostic scale: it can never stand in
+    // for the five-minute definition.
+    let run = plan_with(
+        "P-CPU",
+        Sides::Single(PathBuf::from(env!("CARGO_BIN_EXE_margin"))),
+        0,
+        1,
+        1,
+        0,
+        4,
+    );
+    let outcome = perf::runner::run(&run, &fixture, &environment, &path, &results)
+        .expect("the resource sampler measures P-CPU");
+
+    let raw = samples::read_jsonl(&outcome.raw_path).expect("the raw stream reads back");
+    assert_eq!(raw.len(), 1);
+    let sample = &raw[0];
+    assert_eq!(
+        sample.unit.as_deref(),
+        Some("percent-of-one-core"),
+        "P-CPU names its unit"
+    );
+    assert!(sample.elapsed_ms >= 0.0, "a share can round to zero at this scale");
+    let record = &outcome.record;
+    let details = record.details.as_ref().expect("measured records carry details");
+    assert_eq!(details.metric_kind, "resource");
+    assert_eq!(record.median_ms, None, "P-CPU carries no latency");
+    let definition = details.memory_definition.as_ref().expect("P-CPU defines its accounting");
+    assert!(
+        definition.contains("CLK_TCK"),
+        "the accounting names its ticks: {definition}"
+    );
+    assert_eq!(details.sampling.window_seconds, 4);
+    assert!(
+        details
+            .notes
+            .iter()
+            .any(|note| note.contains("five-minute")),
+        "the diagnostic window is named: {:?}",
+        details.notes
+    );
+    assert!(
+        matches!(record.status, Status::Failed | Status::Inconclusive),
+        "a diagnostic window never passes: {:?}",
+        record.status
+    );
+}
+
+#[test]
+fn a_resource_ceiling_gates_on_the_maximum_counted_sample() {
+    let (fixture, environment, path, results) = sampler_fixture("ceiling");
+    // One warmup and four blocks of three runs satisfy the resource
+    // policy, so only the gate decides.
+    let mut rows = vec![synthetic("P-RSS", 0, 0, true, 9.9)];
+    let mut order = 1usize;
+    for block in 0..4 {
+        for _ in 0..3 {
+            let mut row = synthetic("P-RSS", order, block, false, 30.0 + block as f64);
+            row.unit = Some("MiB".to_string());
+            rows.push(row);
+            order += 1;
+        }
+    }
+    let within = plan(
+        "P-RSS",
+        Sides::Single(PathBuf::from(env!("CARGO_BIN_EXE_margin"))),
+        1,
+        4,
+        3,
+    );
+    let raw_path = results.join("synthetic-within.jsonl");
+    samples::write_jsonl(&raw_path, &rows).expect("the stream writes");
+    let outcome =
+        perf::runner::finish_record(&within, &fixture, &environment, &path, &rows, &raw_path);
+    assert_eq!(outcome.record.status, Status::Passed, "every sample sat inside");
+    assert_eq!(outcome.record.median_ms, None, "a resource record carries no latency");
+    let details = outcome.record.details.as_ref().expect("the details exist");
+    assert!(!details.gate.budget_exceeded);
+    assert_eq!(details.statistics.as_ref().expect("statistics").max_ms, 33.0);
+
+    // One wild run over the ceiling fails the benchmark even though the
+    // p95 of the series sits far below it: a percentile would hide what a
+    // ceiling exists to catch.
+    if let Some(last) = rows.last_mut() {
+        last.elapsed_ms = 70.0;
+    }
+    let raw_path = results.join("synthetic-over.jsonl");
+    samples::write_jsonl(&raw_path, &rows).expect("the stream writes");
+    let outcome =
+        perf::runner::finish_record(&within, &fixture, &environment, &path, &rows, &raw_path);
+    assert_eq!(outcome.record.status, Status::Failed, "the maximum crossed 64 MiB");
+    let details = outcome.record.details.as_ref().expect("the details exist");
+    assert!(details.gate.budget_exceeded);
+    assert!(
+        details
+            .notes
+            .iter()
+            .any(|note| note.contains("maximum counted sample")),
+        "the note names the maximum: {:?}",
+        details.notes
+    );
+}
+
+#[test]
+fn the_p_key_p99_gate_fires_from_the_large_event_series() {
+    let (fixture, environment, path, results) = sampler_fixture("p99");
+    // The policy shape: five warmup sessions, then twenty blocks of five
+    // sessions of one hundred events — ten thousand counted events.
+    let mut rows = Vec::new();
+    let mut order = 0usize;
+    for _ in 0..5 {
+        for _ in 0..100 {
+            rows.push(synthetic("P-KEY", order, 0, true, 10.0));
+            order += 1;
+        }
+    }
+    let mut counted = 0usize;
+    for block in 0..20 {
+        for _ in 0..5 {
+            for _ in 0..100 {
+                // The slowest 150 events sit at 500 ms: the p95 stays
+                // inside its 50 ms budget while the p99 crosses its
+                // 100 ms budget.
+                let value = if counted >= 9_850 { 500.0 } else { 10.0 };
+                rows.push(synthetic("P-KEY", order, block, false, value));
+                order += 1;
+                counted += 1;
+            }
+        }
+    }
+    let run = plan(
+        "P-KEY",
+        Sides::Single(PathBuf::from(env!("CARGO_BIN_EXE_margin"))),
+        5,
+        20,
+        5,
+    );
+    let raw_path = results.join("synthetic-p99.jsonl");
+    samples::write_jsonl(&raw_path, &rows).expect("the stream writes");
+    let outcome = perf::runner::finish_record(&run, &fixture, &environment, &path, &rows, &raw_path);
+    let record = &outcome.record;
+    let details = record.details.as_ref().expect("the details exist");
+    let statistics = details.statistics.as_ref().expect("the statistics exist");
+    assert_eq!(statistics.sample_count, 10_000);
+    assert_eq!(statistics.p95_ms, 10.0, "the p95 stays inside its budget");
+    assert_eq!(statistics.p99_ms, Some(500.0), "the p99 exists at policy scale");
+    assert_eq!(record.status, Status::Failed, "the p99 crossed its 100 ms budget");
+    assert!(details.gate.budget_exceeded);
+    assert!(
+        details
+            .notes
+            .iter()
+            .any(|note| note.contains("the p99 exceeded")),
+        "the note names the tail: {:?}",
+        details.notes
+    );
 }
 
 // ---------------------------------------------------------------------------
