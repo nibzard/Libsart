@@ -705,6 +705,20 @@ mod tests {
         assert!(text.contains("tmux attach-session -t margin"));
         assert!(text.contains("quitting margin leaves the agent running"));
 
+        let mut ended =
+            Summary::created_session("margin", Layout::SideBySide, &agent, &margin, &prefix);
+        ended.session_ended();
+        let ended_text = ended.text();
+        assert!(ended_text.contains("the session has ended; no desk is left running"));
+        assert!(
+            !ended_text.contains("detached; the session keeps running"),
+            "an ended session is not reported as a detach"
+        );
+        assert!(
+            !ended_text.contains("tmux attach-session"),
+            "an ended session offers no reattachment"
+        );
+
         let narrow = Summary::created_session("margin-2", Layout::Focused, &agent, &margin, &None);
         assert!(narrow.text().contains("window \"margin\""));
         assert!(
