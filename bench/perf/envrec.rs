@@ -371,9 +371,25 @@ fn probe_kernel_os() -> (Option<String>, Option<String>) {
     let kernel = read_optional("/proc/sys/kernel/osrelease")
         .or_else(|| command_stdout(&["uname", "-r"]));
     let os = read_optional("/etc/os-release")
-        .and_then(|body| proc_field(&body, "PRETTY_NAME").map(|value| value.trim_matches('"').to_string()))
+        .and_then(|body| release_field(&body, "PRETTY_NAME"))
+        .filter(|name| !name.is_empty())
         .or_else(|| command_stdout(&["uname", "-s"]));
     (kernel, os)
+}
+
+/// One `KEY=value` field out of an os-release-style file, with the
+/// quoting stripped. The `/proc` field parser above cannot read this
+/// format: os-release separates with `=`, never `:`, so a colon parser
+/// records only the `uname` fallback on distributions like Ubuntu.
+fn release_field(body: &str, key: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        let (name, value) = line.split_once('=')?;
+        if name.trim() == key {
+            Some(value.trim().trim_matches('"').to_string())
+        } else {
+            None
+        }
+    })
 }
 
 /// Tool versions.
@@ -552,10 +568,13 @@ pub fn probe_record(
         os.as_deref().unwrap_or("unknown-os").to_ascii_lowercase(),
         hardware.architecture
     );
+    // The declared class names the platform, and the kernel system name
+    // is the fact that says `Linux`: a distribution's pretty name may
+    // name only the distribution (Ubuntu's does), so the family check
+    // reads `uname -s`, not the recorded OS field.
     let matches = Some(
-        os.as_deref()
-            .map(|name| name.to_ascii_lowercase().contains("linux"))
-            .unwrap_or(false)
+        command_stdout(&["uname", "-s"])
+            .is_some_and(|name| name.to_ascii_lowercase().contains("linux"))
             && hardware.architecture == "x86_64",
     );
     let machine_fingerprint = format!(
@@ -697,6 +716,31 @@ mod tests {
         assert_eq!(back, record);
         assert!(back.is_registered());
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn os_release_fields_parse_equals_not_colons() {
+        let body = "NAME=\"Ubuntu\"\nPRETTY_NAME=\"Ubuntu 24.04.3 LTS\"\nID=ubuntu\n";
+        assert_eq!(
+            release_field(body, "PRETTY_NAME").as_deref(),
+            Some("Ubuntu 24.04.3 LTS")
+        );
+        assert_eq!(release_field(body, "ID").as_deref(), Some("ubuntu"));
+        assert_eq!(release_field(body, "VERSION"), None);
+        assert_eq!(
+            proc_field(body, "PRETTY_NAME"),
+            None,
+            "the colon parser cannot read os-release; using it loses the OS name"
+        );
+        if cfg!(target_os = "linux") {
+            let release = read_optional("/etc/os-release").expect("os-release exists on Linux");
+            let pretty = release_field(&release, "PRETTY_NAME");
+            assert_eq!(
+                probe_kernel_os().1,
+                pretty,
+                "the recorded OS name is the distribution's pretty name"
+            );
+        }
     }
 
     #[test]

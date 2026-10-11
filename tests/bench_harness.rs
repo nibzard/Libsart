@@ -1,12 +1,14 @@
 //! Acceptance suite of task T053: the benchmark harness and the
-//! environment record of SPEC 17.3-17.8.
+//! environment record of SPEC 17.3-17.8, including the T074
+//! registration of the actual dedicated runner.
 //!
 //! The suite proves the acceptance criteria against the real pieces:
 //!
 //! - a registered runner record carries this machine's actual hardware,
 //!   software, build, and tool facts, cross-checked independently;
-//! - the shipped environment record stays `unassigned` and invents no
-//!   hardware, and measurement refuses to run against it;
+//! - the shipped environment record registers the actual dedicated
+//!   runner (T074) with every section probed, and measurement accepts
+//!   it, while an `unassigned` record still refuses measurement;
 //! - the initial result records are `not_measured` with their budgets
 //!   and null numbers;
 //! - the timing boundary spans process creation through exit and full
@@ -97,18 +99,87 @@ fn plan(id: &str, sides: Sides, warmups: usize, blocks: usize, runs: usize) -> R
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_shipped_environment_record_is_unassigned_and_invents_nothing() {
+fn the_shipped_environment_record_registers_the_dedicated_runner() {
     let path = project_root().join("bench/environment.json");
     let record = EnvironmentRecord::load(&path).expect("the shipped record parses");
-    assert_eq!(record.status, "unassigned", "no runner registered yet");
+    // T074: the operator registered the actual dedicated runner, so the
+    // shipped record is live evidence, and measurement accepts it.
+    assert_eq!(record.status, "registered", "the dedicated runner is registered");
     assert_eq!(record.schema_version, 1);
-    assert_eq!(record.runner_id, None, "no invented runner");
-    assert_eq!(record.hardware, None, "no invented hardware");
-    assert_eq!(record.software, None, "no invented software");
-    assert_eq!(record.build, None, "no invented build");
-    assert_eq!(record.tools, None, "no invented tools");
-    assert!(!record.is_registered());
-    let refusal = require_registered(&record).expect_err("measurement refuses");
+    assert!(record.is_registered());
+    require_registered(&record).expect("measurement accepts the registered runner");
+    assert!(
+        record.runner_id.as_deref().is_some_and(|id| !id.is_empty()),
+        "the runner has a stable identifier"
+    );
+    assert_eq!(
+        record.registered_at.as_deref().map(|at| at.ends_with('Z')),
+        Some(true),
+        "the registration time is RFC 3339 UTC"
+    );
+    assert_eq!(
+        record.matches_declared_class,
+        Some(true),
+        "the registered machine is the declared developer-laptop-class linux x86-64 runner"
+    );
+    assert!(
+        record
+            .observed_class
+            .as_deref()
+            .is_some_and(|class| !class.is_empty()),
+        "the observed class names what actually registered"
+    );
+
+    // Every section SPEC 17.6 requires is present; a failed probe leaves
+    // a null, and no section may be null in the shipped record.
+    let hardware = record.hardware.as_ref().expect("hardware is probed");
+    assert!(hardware.cpu_cores.expect("cores exist") > 0);
+    assert!(hardware.ram_total_bytes.expect("ram exists") > 0);
+    assert!(!hardware.cpu_model.as_deref().unwrap_or_default().is_empty());
+    let storage = hardware.storage.as_ref().expect("storage is probed");
+    assert!(
+        !storage.device.is_empty() && !storage.filesystem.is_empty(),
+        "the storage and its filesystem are recorded"
+    );
+    let software = record.software.as_ref().expect("software is probed");
+    for fact in [&software.kernel, &software.os, &software.git_version, &software.rustc_version] {
+        assert!(
+            fact.as_deref().is_some_and(|fact| !fact.is_empty()),
+            "a core software fact is missing"
+        );
+    }
+    let build = record.build.as_ref().expect("build is probed");
+    assert!(
+        build
+            .dependency_lock_sha256
+            .as_deref()
+            .is_some_and(|hash| hash.len() == 64),
+        "the dependency lock hash is recorded"
+    );
+    let tools = record.tools.as_ref().expect("tools are probed");
+    assert!(!tools.harness_revision.is_empty());
+    assert!(
+        record
+            .power
+            .as_ref()
+            .and_then(|power| power.conditions.as_deref())
+            .is_some_and(|text| !text.is_empty()),
+        "the operator's interference statement is recorded"
+    );
+    assert!(
+        record.terminal.is_some(),
+        "the terminal facts are recorded"
+    );
+    assert!(
+        !record.notes.is_empty(),
+        "the record states how its fields were obtained"
+    );
+
+    // An unassigned record still refuses: the registration gate is the
+    // record's state, not this suite's goodwill.
+    let mut unregistered = record.clone();
+    unregistered.status = "unassigned".to_string();
+    let refusal = require_registered(&unregistered).expect_err("measurement refuses");
     assert!(
         refusal.contains("unassigned"),
         "the refusal explains the state: {refusal}"
