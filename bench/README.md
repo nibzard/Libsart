@@ -13,7 +13,7 @@ bench/corpus/main.rs       the corpusgen example entry point
 bench/corpus/gen/          the corpus generator library
 bench/perf/main.rs         the benchrun example entry point
 bench/perf/                the harness library
-bench/environment.json     the runner record (SPEC 17.6), unassigned until registration
+bench/environment.json     the runner record (SPEC 17.6), registered to the dedicated runner
 bench/results/             one not_measured record per metric and corpus (SPEC 17.8)
 bench/results/raw/         raw sample streams of measured runs, untracked
 bench/holdout/             the manually curated holdout set (SPEC 17.2)
@@ -175,8 +175,9 @@ check establishes fixture validity, not product correctness.
 The workflow:
 
 ```sh
-# 1. Register the runner (SPEC 17.6). The shipped record is unassigned;
-#    every probe reads this machine, nothing is transcribed.
+# 1. Register the runner (SPEC 17.6). The committed record holds the
+#    actual dedicated runner, probed on the machine that measures; a
+#    re-registration replaces it, and nothing is transcribed by hand.
 cargo run --example benchrun -- register --id the-laptop \
     --conditions "on AC power, governor performance, no competing builds"
 
