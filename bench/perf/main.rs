@@ -11,6 +11,8 @@
 //!     --executable target/release/margin
 //! cargo run --example benchrun -- run --metric P-DIFF --corpus c2 \
 //!     --baseline target/release/margin-base --candidate target/release/margin
+//! cargo run --example benchrun -- run --metric P-KEY --corpus c1 \
+//!     --executable target/release/margin
 //! cargo run --example benchrun -- invalidate --samples <samples.jsonl> \
 //!     --block 3 --reason "compiler build storm" --record <P-*.json>
 //! ```
@@ -81,9 +83,20 @@ fn usage() {
          \t--candidate PATH    Paired candidate executable\n\
          \t--environment FILE  Environment record (default {DEFAULT_ENVIRONMENT})\n\
          \t--results DIR       Results directory (default {DEFAULT_RESULTS})\n\
-         \t--warmups N         Warmup runs per version (default 5, SPEC 17.7.3)\n\
-         \t--blocks N          Independent paired blocks (default 20)\n\
-         \t--runs-per-block N  Fresh-process runs per block (default 5)\n\
+         \t--warmups N         Warmup runs per version (default 5, SPEC 17.7.3;\n\
+         \t                    0 for P-CPU, 1 for P-RSS and P-TREE-MEM)\n\
+         \t--blocks N          Independent paired blocks (default 20; 2 for\n\
+         \t                    P-CPU, 4 for P-RSS and P-TREE-MEM)\n\
+         \t--runs-per-block N  Fresh-process runs per block (default 5; 1 for\n\
+         \t                    P-CPU, 3 for P-RSS and P-TREE-MEM)\n\
+         \t--events-per-session N  Counted navigation events per P-KEY\n\
+         \t                    session (default 100; SPEC 17.4's policy of\n\
+         \t                    20 blocks x 5 sessions x 100 events reaches\n\
+         \t                    the 10,000-event floor)\n\
+         \t--window-seconds N  Length of one P-CPU idle window (default 300,\n\
+         \t                    the five-minute definition of SPEC 17.4; a\n\
+         \t                    shorter window is diagnostic and reads\n\
+         \t                    inconclusive)\n\
          \t--seed N            Order-randomization seed, recorded (default 1)\n\
          \t--commit OID        Implementation commit of the executable\n\
          \t--note TEXT         Recorded verbatim in the result record\n\
@@ -122,8 +135,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
         let takes_value = [
             "--metric", "--corpus", "--corpus-dir", "--output", "--scale", "--executable",
             "--baseline", "--candidate", "--environment", "--results", "--warmups", "--blocks",
-            "--runs-per-block", "--seed", "--commit", "--note", "--id", "--probe-path",
-            "--conditions", "--samples", "--block", "--reason", "--record",
+            "--runs-per-block", "--events-per-session", "--window-seconds", "--seed",
+            "--commit", "--note", "--id", "--probe-path", "--conditions", "--samples",
+            "--block", "--reason", "--record",
         ]
         .contains(&argument.as_str());
         if takes_value {
@@ -381,32 +395,72 @@ fn measure(options: &Options) -> Result<(), String> {
         .iter()
         .find(|label| **label == corpus)
         .ok_or_else(|| format!("unknown corpus {corpus}; expected one of {corpus_list}"))?;
+    // The sampling defaults follow the metric kind (SPEC 17.4, 17.7.3):
+    // the CLI and PTY latency metrics take the 5/20/5 policy; P-KEY adds
+    // its per-session event count; P-CPU takes two idle windows; the
+    // memory metrics take one warmup and 4 blocks of 3 runs.
+    let (warmups, blocks, runs_per_block) = match definition.id {
+        "P-CPU" => (0, 2, 1),
+        "P-RSS" | "P-TREE-MEM" => (1, 4, 3),
+        _ => (5, 20, 5),
+    };
+    let events_per_session = match definition.id {
+        "P-KEY" => options.number("--events-per-session", 100)?,
+        _ => 0,
+    };
+    let window_seconds = match definition.id {
+        "P-CPU" => options.number("--window-seconds", 300)? as u64,
+        _ => 0,
+    };
     let plan = RunPlan {
         metric: definition.id,
         corpus: corpus.clone(),
         sides,
-        warmups: options.number("--warmups", 5)?,
-        blocks: options.number("--blocks", 20)?,
-        runs_per_block: options.number("--runs-per-block", 5)?,
+        warmups: options.number("--warmups", warmups)?,
+        blocks: options.number("--blocks", blocks)?,
+        runs_per_block: options.number("--runs-per-block", runs_per_block)?,
         order_seed: options.number("--seed", 1)? as u64,
+        events_per_session,
+        window_seconds,
         implementation_commit: implementation_commit(options)?,
         notes: options.notes(),
     };
 
     let outcome = perf::runner::run(&plan, &fixture, &environment, &environment_path, &results)?;
+    // A resource record keeps its base latency fields empty on purpose;
+    // its summary quotes the maximum counted sample in its own unit.
+    let summary = match outcome.record.details.as_ref().and_then(|details| {
+        details
+            .statistics
+            .as_ref()
+            .filter(|_| definition.kind == metric::Kind::Resource)
+    }) {
+        Some(statistics) => format!(
+            "max {:.1} {} against the ceiling",
+            statistics.max_ms,
+            match definition.id {
+                "P-CPU" => "percent-of-one-core",
+                _ => "MiB",
+            }
+        ),
+        None => format!(
+            "median {:.1} ms, p95 {:.1} ms, budget {}",
+            outcome.record.median_ms.unwrap_or(0.0),
+            outcome.record.p95_ms.unwrap_or(0.0),
+            outcome
+                .record
+                .budget_p95_ms
+                .map(|ms| format!("{ms} ms"))
+                .unwrap_or_else(|| "n/a".to_string()),
+        ),
+    };
     println!(
-        "benchrun: {} on {} — {} ({} counted samples, median {:.1} ms, p95 {:.1} ms, budget {})",
+        "benchrun: {} on {} — {} ({} counted samples, {})",
         plan.metric,
         corpus,
         outcome.record.status.as_str(),
         outcome.record.sample_count,
-        outcome.record.median_ms.unwrap_or(0.0),
-        outcome.record.p95_ms.unwrap_or(0.0),
-        outcome
-            .record
-            .budget_p95_ms
-            .map(|ms| format!("{ms} ms"))
-            .unwrap_or_else(|| "n/a".to_string()),
+        summary,
     );
     println!(
         "benchrun: oracle {}, raw samples {}",
