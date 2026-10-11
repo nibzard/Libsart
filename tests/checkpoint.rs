@@ -18,6 +18,10 @@
 //!   at the same commit — refuses `BRANCH_CHANGED` before anything is
 //!   staged, a detached `HEAD` and an unadopted workspace keep their own
 //!   refusals, and one explicit init adopts the new branch
+//! - assume-unchanged and skip-worktree cannot hide unsaved content: the
+//!   capture refuses with one specific blocker before any mutation — no
+//!   successful no-op while `HEAD` keeps the old bytes — and the cleared
+//!   flags let the next capture save the exact working bytes
 //! - a hook that rejects the commit leaves the staged changes with the
 //!   candidate anchor and exact effects, and the next checkpoint stops on
 //!   that staged state; a hook that rewrites the reserved trailers produces
@@ -29,7 +33,10 @@
 //!   the commit still names the created commit
 //! - a writer who changes a file after it was staged sees a truthful
 //!   warning about newer uncaptured content, never a claim that those
-//!   bytes are saved
+//!   bytes are saved; the successful capture also reports its final
+//!   working state against the state it read — `changed` under a hook
+//!   that edits scoped bytes, `unknown` when the inspection fails, and
+//!   `unchanged` without a hook
 //! - the shared mutation lock of SPEC 9.1 step 2 serializes the capture:
 //!   one held lock refuses `BUSY` without intended effects — through the
 //!   operation layer and through the installed executable — and every
@@ -42,6 +49,16 @@
 //!   is staged on refusal
 //! - an unborn branch and an uninitialized repository refuse without
 //!   writing, and both object formats capture drafts
+//! - the guarded recovery capture of staged content (SPEC 9.7, task T036)
+//!   saves exactly the inspected state — every staged change in scope, the
+//!   scoped index equal to the scoped working content, and all three
+//!   expected fingerprints still matching — as one unreviewed draft: a
+//!   moved head, index, or working fingerprint refuses `STALE_STATE`,
+//!   unrelated staged content keeps its `STAGED_CHANGES` refusal while the
+//!   ordinary checkpoint refuses the same state as always, staged bytes
+//!   that differ from the working tree refuse `DIRTY_SCOPE`, a dry run
+//!   validates without writing, and an index that moves between the
+//!   validation and the commit refuses through the precondition recheck
 
 mod support;
 
@@ -54,8 +71,8 @@ use std::time::Duration;
 
 use margin::app::{
     BaselineStatus, CheckpointRequest, CommitEffect, Effects, InitRequest, InspectRequest,
-    ObservedEffect, OperationOutcome, Operations, RepositoryEffect, resolve_scope, select_baseline,
-    validate_marker,
+    ObservedEffect, OperationOutcome, Operations, RecoveryRequest, RepositoryEffect, resolve_scope,
+    select_baseline, validate_marker,
 };
 use margin::domain::{CommitKind, ScopeInput};
 use margin::git::{Git, Limits};
@@ -98,6 +115,29 @@ fn checkpoint_of(scope: &ScopeInput, message: Option<&str>) -> CheckpointRequest
         scope: Some(scope.clone()),
         message: message.map(str::to_string),
         include_staged: false,
+        expect_head: None,
+        expect_index: None,
+        expect_working: None,
+        dry_run: false,
+    }
+}
+
+/// One guarded recovery-capture request for `scope` over the expected state
+/// `doctor` reports: `head`, `index_tree`, and `working` fingerprint
+/// (SPEC 9.7).
+fn recovery_of(
+    scope: &ScopeInput,
+    head: &str,
+    index_tree: &str,
+    working: &str,
+) -> CheckpointRequest {
+    CheckpointRequest {
+        scope: Some(scope.clone()),
+        message: None,
+        include_staged: true,
+        expect_head: Some(head.to_string()),
+        expect_index: Some(index_tree.to_string()),
+        expect_working: Some(working.to_string()),
         dry_run: false,
     }
 }
@@ -677,6 +717,143 @@ fn a_branch_switch_after_adoption_refuses_the_checkpoint() {
 }
 
 #[test]
+fn index_flags_refuse_the_checkpoint_before_mutation() {
+    // The reproduction of T061: an edit behind assume-unchanged or
+    // skip-worktree is invisible to Git's change reports, so a checkpoint
+    // used to answer the successful no-op while HEAD kept the old bytes.
+    // The shared guard must refuse with one specific blocker before any
+    // mutation instead (SPEC 3.1, 9.1 step 4, INV-08).
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.commit_all("seed");
+    let start = initialize(&repo);
+    repo.write_file("notes/a.md", b"# One edited\n");
+    let before = oracle::snapshot(&repo);
+
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let scope = scope_input(&["notes"], &[], &[".md"]);
+
+    for flag in ["assume-unchanged", "skip-worktree"] {
+        repo.git_ok(["update-index", &format!("--{flag}"), "--", "notes/a.md"]);
+        assert_eq!(
+            text(&repo.git_ok(["status", "--porcelain"])),
+            "",
+            "stock Git reports no change behind --{flag}"
+        );
+
+        let result = operations.create_checkpoint(&checkpoint_of(&scope, None));
+        assert_refusal(&result, "UNSUPPORTED_REPOSITORY", "a flagged checkpoint");
+        let error = result.error.as_ref().unwrap();
+        assert!(
+            error.message.contains(flag) && error.message.contains("notes/a.md"),
+            "the diagnosis names the flag and the path behind --{flag}: {}",
+            error.message
+        );
+        assert!(
+            result.data.is_none(),
+            "no no-op success is reported behind --{flag}"
+        );
+        // Nothing moved: the candidate keeps the old bytes, the index
+        // stays clean, the edit stays on disk, and the flag survives.
+        assert_eq!(oracle::head_oid(&repo).as_deref(), Some(start.as_str()));
+        assert_eq!(
+            repo.git_ok(["show", "HEAD:notes/a.md"]),
+            b"# One\n",
+            "HEAD keeps the old bytes behind --{flag}"
+        );
+        assert_eq!(
+            text(&repo.git_ok(["diff-index", "--cached", "--name-only", "HEAD"])),
+            "",
+            "the refusal staged nothing behind --{flag}"
+        );
+        assert_eq!(
+            repo.read_file("notes/a.md"),
+            b"# One edited\n",
+            "the unsaved edit stays on disk behind --{flag}"
+        );
+        let expected_tag = if flag == "assume-unchanged" { "h" } else { "S" };
+        assert_eq!(
+            text(&repo.git_ok(["ls-files", "-v", "--", "notes/a.md"])),
+            format!("{expected_tag} notes/a.md"),
+            "the user's flag survives the refusal"
+        );
+        before.assert_unchanged(&oracle::snapshot(&repo), "a refused flagged checkpoint");
+
+        // A dry run passes through the same shared guard and writes
+        // nothing (SPEC 6.4).
+        let mut dry = checkpoint_of(&scope, None);
+        dry.dry_run = true;
+        let dry_run = operations.create_checkpoint(&dry);
+        assert_refusal(&dry_run, "UNSUPPORTED_REPOSITORY", "a flagged dry run");
+
+        repo.git_ok(["update-index", &format!("--no-{flag}"), "--", "notes/a.md"]);
+    }
+
+    // With the flags cleared, the same capture saves the exact working
+    // bytes: the independent Git oracle confirms the committed content.
+    let retry = operations.create_checkpoint(&checkpoint_of(&scope, None));
+    assert!(
+        retry.ok(),
+        "the capture follows the cleared flags: {:?}",
+        retry.error
+    );
+    let data = retry.data.as_ref().unwrap();
+    let commit = data.commit.as_deref().unwrap();
+    assert!(data.changed, "the previously hidden edit is a real change");
+    assert_eq!(oracle::head_oid(&repo).as_deref(), Some(commit));
+    assert_eq!(
+        repo.git_ok(["show", &format!("{commit}:notes/a.md")]),
+        b"# One edited\n",
+        "the committed content is exactly the working bytes"
+    );
+}
+
+#[test]
+fn the_cli_checkpoint_refuses_hidden_content_with_one_envelope() {
+    // The executable-level reproduction of T061: the JSON contract never
+    // reports a successful no-op while scoped edits remain hidden.
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.commit_all("seed");
+    initialize(&repo);
+    repo.write_file("notes/a.md", b"# One edited\n");
+    repo.git_ok(["update-index", "--assume-unchanged", "--", "notes/a.md"]);
+    let before = oracle::snapshot(&repo);
+
+    let output = margin(repo.env(), repo.path(), &["checkpoint", "--json"]);
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "an unmet operational precondition"
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("one valid envelope");
+    assert_eq!(envelope["ok"], false);
+    assert_eq!(envelope["error"]["code"], "UNSUPPORTED_REPOSITORY");
+    let message = envelope["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("assume-unchanged") && message.contains("notes/a.md"),
+        "the diagnosis names the flag and the path: {message}"
+    );
+    for (field, expected) in [
+        ("working_tree", "unchanged"),
+        ("index", "unchanged"),
+        ("commit", "none"),
+        ("configuration", "unchanged"),
+        ("repository", "unchanged"),
+    ] {
+        assert_eq!(envelope["effects"][field], expected, "effects {field}");
+    }
+    before.assert_unchanged(&oracle::snapshot(&repo), "a refused CLI checkpoint");
+    assert_eq!(
+        repo.git_ok(["show", "HEAD:notes/a.md"]),
+        b"# One\n",
+        "HEAD keeps the old bytes"
+    );
+}
+
+#[test]
 fn detached_head_and_unadopted_workspaces_keep_their_refusals() {
     // A detached HEAD keeps the repository policy's own refusal; the
     // adopted-branch comparison never replaces it (SPEC 3.1, 9.1 step 4).
@@ -710,6 +887,9 @@ fn detached_head_and_unadopted_workspaces_keep_their_refusals() {
         scope: None,
         message: None,
         include_staged: false,
+        expect_head: None,
+        expect_index: None,
+        expect_working: None,
         dry_run: false,
     });
     assert_refusal(
@@ -873,6 +1053,167 @@ fn a_writer_change_after_staging_is_reported_not_saved() {
 }
 
 #[test]
+fn a_successful_hook_that_edits_working_files_reports_changed_effects() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.commit_all("import");
+    initialize(&repo);
+    repo.write_file("notes/a.md", b"# One revised\n");
+    // The original working bytes, read before any hook can touch them.
+    let original = repo.read_file("notes/a.md");
+    assert_eq!(original, b"# One revised\n");
+    // The pre-commit hook runs after staging: it overwrites the scoped file
+    // without staging the edit and creates one more scoped path.
+    install_hook(
+        &repo,
+        "pre-commit",
+        "#!/bin/sh\nprintf '# Hooked\\n' > notes/a.md\nprintf '# Late\\n' > notes/late.md\nexit 0\n",
+    );
+
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let result = operations.create_checkpoint(&checkpoint_of(
+        &scope_input(&["notes"], &[], &[".md"]),
+        None,
+    ));
+
+    // The verified commit stands with its warning, and the effects report
+    // the working files the hook changed against the state the capture
+    // read: the response loses neither the commit nor the change (SPEC
+    // 7.1, 9.2, 9.6).
+    assert!(
+        result.ok(),
+        "the captured commit stands: {:?}",
+        result.error
+    );
+    assert_eq!(result.warnings.len(), 1, "one newer-content warning");
+    let warning = &result.warnings[0];
+    assert_eq!(warning.code, "DIRTY_SCOPE");
+    assert!(
+        warning.message.contains("notes/a.md") && warning.message.contains("notes/late.md"),
+        "the warning names both unsaved paths: {}",
+        warning.message
+    );
+    assert_eq!(result.effects.working_tree, ObservedEffect::Changed);
+    assert_eq!(result.effects.index, ObservedEffect::Changed);
+    assert_eq!(result.effects.commit, CommitEffect::Created);
+    let data = result.data.as_ref().unwrap();
+    let commit = data.commit.as_deref().unwrap();
+    assert_eq!(result.effects.commit_oid.as_deref(), Some(commit));
+    assert_eq!(oracle::head_oid(&repo).as_deref(), Some(commit));
+    assert!(validate_marker(&git, commit).is_ok(), "the commit verifies");
+
+    // The committed bytes are the original ones the capture staged; the
+    // final working bytes are the hook's, read independently of the
+    // response.
+    assert_eq!(
+        oracle::blob(
+            &repo,
+            &text(&repo.git_ok(["rev-parse", &format!("{commit}:notes/a.md")]))
+        ),
+        original,
+        "the commit saved the staged pre-hook bytes"
+    );
+    assert_eq!(repo.read_file("notes/a.md"), b"# Hooked\n");
+    assert_eq!(repo.read_file("notes/late.md"), b"# Late\n");
+}
+
+#[test]
+fn an_uninspectable_final_working_state_reports_unknown_effects() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.commit_all("import");
+    initialize(&repo);
+    repo.write_file("notes/a.md", b"# One revised\n");
+    // The post-commit hook runs after the commit exists: it makes one
+    // scoped file unreadable, so the inspection of the final working state
+    // fails without touching the verified commit.
+    install_hook(
+        &repo,
+        "post-commit",
+        "#!/bin/sh\nchmod 000 notes/a.md\nexit 0\n",
+    );
+
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let result = operations.create_checkpoint(&checkpoint_of(
+        &scope_input(&["notes"], &[], &[".md"]),
+        None,
+    ));
+    // Restore readability for the assertions and the cleanup.
+    fs::set_permissions(
+        repo.path().join("notes/a.md"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+
+    // The verified commit stands; the working-tree effect is lost with the
+    // inspection and explained by its warning, never narrowed to
+    // `unchanged` (SPEC 7.1, 9.6).
+    assert!(
+        result.ok(),
+        "the captured commit stands: {:?}",
+        result.error
+    );
+    assert_eq!(result.warnings.len(), 1, "one inspection warning");
+    let warning = &result.warnings[0];
+    assert_eq!(warning.code, "GIT_FAILED");
+    assert!(
+        warning.message.contains("could not be inspected"),
+        "the warning explains the inspection failure: {}",
+        warning.message
+    );
+    assert_eq!(result.effects.working_tree, ObservedEffect::Unknown);
+    assert_eq!(result.effects.index, ObservedEffect::Changed);
+    assert_eq!(result.effects.commit, CommitEffect::Created);
+    let data = result.data.as_ref().unwrap();
+    let commit = data.commit.as_deref().unwrap();
+    assert_eq!(result.effects.commit_oid.as_deref(), Some(commit));
+    assert_eq!(oracle::head_oid(&repo).as_deref(), Some(commit));
+    assert!(validate_marker(&git, commit).is_ok(), "the commit verifies");
+    assert_eq!(repo.read_file("notes/a.md"), b"# One revised\n");
+}
+
+#[test]
+fn an_ordinary_capture_reports_unchanged_working_files() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.write_file("notes/kept.md", b"# Kept\n");
+    repo.commit_all("import");
+    initialize(&repo);
+    repo.write_file("notes/a.md", b"# One revised\n");
+
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let result = operations.create_checkpoint(&checkpoint_of(
+        &scope_input(&["notes"], &[], &[".md"]),
+        None,
+    ));
+
+    // Without a hook, the capture moves no working byte: the effect stays
+    // `unchanged` next to the created commit and the changed index (SPEC
+    // 7.1, 9.2).
+    assert!(result.ok(), "the capture succeeds: {:?}", result.error);
+    assert!(
+        result.warnings.is_empty(),
+        "no warning: {:?}",
+        result.warnings
+    );
+    assert_eq!(result.effects.working_tree, ObservedEffect::Unchanged);
+    assert_eq!(result.effects.index, ObservedEffect::Changed);
+    assert_eq!(result.effects.commit, CommitEffect::Created);
+    assert!(
+        result
+            .data
+            .as_ref()
+            .and_then(|data| data.commit.clone())
+            .is_some()
+    );
+    assert_eq!(repo.read_file("notes/a.md"), b"# One revised\n");
+    assert_eq!(repo.read_file("notes/kept.md"), b"# Kept\n");
+}
+
+#[test]
 fn unborn_and_uninitialized_workspaces_refuse_without_writing() {
     // An unborn branch supplies no candidate, and only a start marker may
     // be a root commit (SPEC 8.4 rule 3).
@@ -896,22 +1237,45 @@ fn unborn_and_uninitialized_workspaces_refuse_without_writing() {
         scope: None,
         message: None,
         include_staged: false,
+        expect_head: None,
+        expect_index: None,
+        expect_working: None,
         dry_run: false,
     });
     assert_refusal(&result, "NOT_INITIALIZED", "an unconfigured checkpoint");
 
-    // The guarded recovery capture of SPEC 9.7 arrives with task T036.
+    // The guarded recovery capture of SPEC 9.7 is real (T036): the recovery
+    // mode requires its three expected fingerprints together, and an
+    // expected state without the recovery mode is equally invalid, so both
+    // refuse before any inspection with nothing written.
     initialize(&repo);
     let recovery = operations.create_checkpoint(&CheckpointRequest {
         scope: None,
         message: None,
         include_staged: true,
+        expect_head: None,
+        expect_index: None,
+        expect_working: None,
         dry_run: false,
     });
     assert_refusal(
         &recovery,
-        "OPERATION_UNAVAILABLE",
-        "the staged-content recovery capture",
+        "INVALID_ARGUMENT",
+        "the recovery capture without its expected state",
+    );
+    let recovery = operations.create_checkpoint(&CheckpointRequest {
+        scope: None,
+        message: None,
+        include_staged: false,
+        expect_head: Some("0000000000000000000000000000000000000000".to_string()),
+        expect_index: None,
+        expect_working: None,
+        dry_run: false,
+    });
+    assert_refusal(
+        &recovery,
+        "INVALID_ARGUMENT",
+        "an expected state without the recovery mode",
     );
 }
 
@@ -1628,4 +1992,473 @@ fn a_path_kind_that_changes_before_staging_refuses_without_writing() {
         "nothing was staged"
     );
     assert_eq!(oracle::head_oid(&repo).as_deref(), Some(start.as_str()));
+}
+
+// ---------------------------------------------------------------------------
+// The guarded recovery capture (SPEC 9.7, task T036)
+// ---------------------------------------------------------------------------
+
+/// The recovery state of one workspace, exactly as `doctor` reports it:
+/// the head, the index tree, and the scoped working fingerprint the
+/// suggested `checkpoint --include-staged` argv carries.
+fn recovery_state_of(repo: &TestRepo, scope: &ScopeInput) -> (String, String, String) {
+    let git = adapter_for(repo);
+    let operations = Operations::new(&git);
+    let outcome = operations.inspect_recovery(&RecoveryRequest {
+        scope: Some(scope.clone()),
+    });
+    assert!(
+        outcome.ok(),
+        "the recovery inspection must succeed: {:?}",
+        outcome.error
+    );
+    let data = outcome.data.expect("the recovery report");
+    (
+        data.head.expect("a born branch holds a head"),
+        data.index_tree.expect("an unconflicted index holds a tree"),
+        data.scoped_working_digest
+            .expect("a hashable scope holds a fingerprint")
+            .id(),
+    )
+}
+
+/// One guarded recovery capture over the state `doctor` reports for the
+/// `notes` scope of `repo`.
+fn recover_staged(
+    repo: &TestRepo,
+) -> margin::app::OperationOutcome<margin::app::CheckpointOutcome> {
+    let scope = scope_input(&["notes"], &[], &[".md"]);
+    let (head, index_tree, working) = recovery_state_of(repo, &scope);
+    let git = adapter_for(repo);
+    Operations::new(&git).create_checkpoint(&recovery_of(&scope, &head, &index_tree, &working))
+}
+
+#[test]
+fn the_guarded_recovery_capture_saves_inspected_staged_content() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.write_file("note.txt", b"out of scope\n");
+    repo.commit_all("import");
+    let start = initialize(&repo);
+
+    // The retained state of one interrupted operation: one edited passage
+    // and one new document stay staged against the candidate — exactly
+    // what a failed apply leaves — and the working tree holds the same
+    // bytes.
+    repo.write_file("notes/a.md", b"# One revised\n");
+    repo.write_file("notes/b.md", b"# Two\n");
+    repo.git_ok(["add", "--", "notes/a.md", "notes/b.md"]);
+
+    let scope = scope_input(&["notes"], &[], &[".md"]);
+    let (head, index_tree, working) = recovery_state_of(&repo, &scope);
+    let before = oracle::snapshot(&repo);
+
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let result = operations.create_checkpoint(&recovery_of(&scope, &head, &index_tree, &working));
+    assert!(
+        result.ok(),
+        "the recovery capture commits: {:?}",
+        result.error
+    );
+    let data = result.data.as_ref().unwrap();
+    let commit = data.commit.as_deref().expect("the draft commit");
+    assert!(data.changed);
+    assert!(!data.dry_run);
+    assert_eq!(data.candidate, commit);
+    assert_eq!(
+        data.paths,
+        vec![OsString::from("notes/a.md"), OsString::from("notes/b.md")],
+        "the captured paths are the staged delta"
+    );
+    assert_eq!(data.expected_tree.as_deref(), Some(index_tree.as_str()));
+    assert_eq!(result.effects.commit, CommitEffect::Created);
+    assert_eq!(result.effects.working_tree, ObservedEffect::Unchanged);
+
+    // The commit is the inspected state exactly, verified against stock
+    // Git: the tree is the reported index tree, the staged delta is
+    // consumed, the index equals the committed tree, and no working byte
+    // moved (SPEC 9.7).
+    assert_eq!(oracle::head_oid(&repo).as_deref(), Some(commit));
+    assert_eq!(oracle::commit_tree(&repo, commit), index_tree);
+    assert_eq!(
+        oracle::blob(
+            &repo,
+            &text(&repo.git_ok(["rev-parse", &format!("{commit}:notes/a.md")]))
+        ),
+        b"# One revised\n"
+    );
+    assert_eq!(
+        oracle::blob(
+            &repo,
+            &text(&repo.git_ok(["rev-parse", &format!("{commit}:notes/b.md")]))
+        ),
+        b"# Two\n"
+    );
+    assert_eq!(
+        text(&repo.git_ok(["diff-index", "--cached", "--name-only", "HEAD"])),
+        "",
+        "the staged delta is consumed"
+    );
+    oracle::assert_index_matches_tree(&repo, commit);
+    assert_eq!(repo.read_file("notes/a.md"), b"# One revised\n");
+    assert_eq!(repo.read_file("notes/b.md"), b"# Two\n");
+    oracle::assert_out_of_scope_tree_unchanged(&repo, &head, commit, &["notes"], "the recovery");
+    before.assert_out_of_scope_unchanged(&oracle::snapshot(&repo), &["notes"], "the recovery");
+
+    // The marker is one unreviewed draft: the candidate it records is the
+    // pinned head, and the baseline a review needs still anchors at the
+    // start, so the writer opens a fresh review over the new candidate
+    // (SPEC 9.7).
+    let marker = validate_marker(&git, commit)
+        .unwrap_or_else(|error| panic!("the recovery draft must validate: {error}"));
+    assert_eq!(marker.kind, CommitKind::Draft);
+    assert_eq!(marker.candidate, head);
+    let resolved = resolve_scope(&git, &scope).unwrap();
+    let anchor = select_baseline(&git, commit, &resolved.digest)
+        .unwrap_or_else(|error| panic!("the baseline must select: {error}"));
+    assert_eq!(anchor.commit, start);
+    assert_eq!(anchor.kind, CommitKind::Start);
+    let status = operations.inspect_workspace(&InspectRequest {
+        scope: None,
+        path_filter: Vec::new(),
+    });
+    assert!(status.ok());
+    let observed = status.data.as_ref().unwrap();
+    assert_eq!(observed.preservation.as_str(), "captured");
+    assert_eq!(observed.review.as_str(), "pending");
+
+    // The identical retry refuses the moved state: the fingerprints pin one
+    // capture, and `HEAD` now holds the draft it created, so a repeated
+    // request is one stale-state refusal that writes nothing (SPEC 9.7).
+    let retry = operations.create_checkpoint(&recovery_of(&scope, &head, &index_tree, &working));
+    assert_refusal(&retry, "STALE_STATE", "the repeated recovery capture");
+    let after = oracle::snapshot(&repo);
+    assert_eq!(after.head.as_deref(), Some(commit));
+    assert_eq!(after.index_tree.as_deref(), Some(index_tree.as_str()));
+}
+
+#[test]
+fn the_recovery_capture_refuses_moved_expected_fingerprints() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.commit_all("import");
+    initialize(&repo);
+    repo.write_file("notes/a.md", b"# One revised\n");
+    repo.git_ok(["add", "--", "notes/a.md"]);
+
+    let scope = scope_input(&["notes"], &[], &[".md"]);
+    let (head, index_tree, working) = recovery_state_of(&repo, &scope);
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+
+    // A head the workspace no longer holds refuses before anything is
+    // committed, with both object IDs named (SPEC 9.7).
+    let moved_head = operations.create_checkpoint(&recovery_of(
+        &scope,
+        &text(&repo.git_ok(["rev-parse", "HEAD^{tree}"])),
+        &index_tree,
+        &working,
+    ));
+    assert_refusal(&moved_head, "STALE_STATE", "an expected head that moved");
+    let error = moved_head.error.as_ref().unwrap();
+    assert!(
+        error.message.contains("HEAD"),
+        "the refusal names the dimension: {}",
+        error.message
+    );
+
+    // An index tree the index no longer describes refuses the same way.
+    let moved_index = operations.create_checkpoint(&recovery_of(
+        &scope,
+        &head,
+        &text(&repo.git_ok(["rev-parse", "HEAD^{tree}"])),
+        &working,
+    ));
+    assert_refusal(&moved_index, "STALE_STATE", "an expected index that moved");
+
+    // A working fingerprint the working tree no longer holds refuses the
+    // same way, with both values named.
+    let moved_working = operations.create_checkpoint(&recovery_of(
+        &scope,
+        &head,
+        &index_tree,
+        "sha1:0000000000000000000000000000000000000000",
+    ));
+    assert_refusal(
+        &moved_working,
+        "STALE_STATE",
+        "an expected working fingerprint that moved",
+    );
+    assert!(
+        moved_working
+            .error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains(&working),
+        "the refusal names the observed fingerprint: {}",
+        moved_working.error.as_ref().unwrap().message
+    );
+
+    // Every refusal left the retained state exactly as it stood.
+    assert_eq!(oracle::head_oid(&repo).as_deref(), Some(head.as_str()));
+    assert_eq!(
+        text(&repo.git_ok(["diff-index", "--cached", "--name-only", "HEAD"])),
+        "notes/a.md",
+        "the staged edit stands"
+    );
+}
+
+#[test]
+fn the_recovery_capture_refuses_unrelated_staged_content() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.write_file("note.txt", b"out of scope\n");
+    repo.commit_all("import");
+    let start = initialize(&repo);
+
+    // One scoped edit and one out-of-scope edit, both staged: the capture
+    // can adopt only the writing it can pin completely (SPEC 9.7).
+    repo.write_file("notes/a.md", b"# One revised\n");
+    repo.write_file("note.txt", b"out of scope, staged\n");
+    repo.git_ok(["add", "--", "notes/a.md", "note.txt"]);
+    let before = oracle::snapshot(&repo);
+
+    let result = recover_staged(&repo);
+    assert_refusal(
+        &result,
+        "STAGED_CHANGES",
+        "the recovery capture over out-of-scope staged content",
+    );
+    let error = result.error.as_ref().unwrap();
+    assert!(
+        error.message.contains("note.txt"),
+        "the refusal names the out-of-scope path: {}",
+        error.message
+    );
+    before.assert_unchanged(&oracle::snapshot(&repo), "the refused recovery");
+
+    // The ordinary checkpoint refuses the same state as it always did:
+    // staged content blocks every normal mutation (SPEC 9.1 step 4).
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let normal = operations.create_checkpoint(&checkpoint_of(
+        &scope_input(&["notes"], &[], &[".md"]),
+        None,
+    ));
+    assert_refusal(
+        &normal,
+        "STAGED_CHANGES",
+        "the ordinary checkpoint over staged content",
+    );
+    assert_eq!(oracle::head_oid(&repo).as_deref(), Some(start.as_str()));
+}
+
+#[test]
+fn the_recovery_capture_refuses_staged_bytes_that_differ_from_working_content() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.commit_all("import");
+    initialize(&repo);
+
+    // The scoped index holds bytes the working tree no longer holds: the
+    // capture cannot save exactly one inspected state, so it refuses and
+    // the newer content belongs to the next ordinary checkpoint
+    // (SPEC 9.7).
+    repo.write_file("notes/a.md", b"# One revised\n");
+    repo.git_ok(["add", "--", "notes/a.md"]);
+    repo.write_file("notes/a.md", b"# One revised\nand more\n");
+    let before = oracle::snapshot(&repo);
+
+    let result = recover_staged(&repo);
+    assert_refusal(
+        &result,
+        "DIRTY_SCOPE",
+        "the recovery capture over staged and working bytes that differ",
+    );
+    let error = result.error.as_ref().unwrap();
+    assert!(
+        error.message.contains("notes/a.md"),
+        "the refusal names the differing path: {}",
+        error.message
+    );
+    before.assert_unchanged(&oracle::snapshot(&repo), "the refused recovery");
+    assert_eq!(
+        repo.read_file("notes/a.md"),
+        b"# One revised\nand more\n",
+        "the newer working bytes stay unstaged"
+    );
+
+    // An unstaged untracked document differs the same way: the capture
+    // adopts staged content only, never a working file it cannot pin.
+    repo.write_file("notes/c.md", b"# Untracked\n");
+    let result = recover_staged(&repo);
+    assert_refusal(
+        &result,
+        "DIRTY_SCOPE",
+        "the recovery capture over an unstaged untracked document",
+    );
+    let error = result.error.as_ref().unwrap();
+    assert!(
+        error.message.contains("notes/c.md"),
+        "the refusal names the untracked path: {}",
+        error.message
+    );
+}
+
+#[test]
+fn the_recovery_capture_dry_run_writes_nothing() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.commit_all("import");
+    let start = initialize(&repo);
+    repo.write_file("notes/a.md", b"# One revised\n");
+    repo.git_ok(["add", "--", "notes/a.md"]);
+
+    let scope = scope_input(&["notes"], &[], &[".md"]);
+    let (head, index_tree, working) = recovery_state_of(&repo, &scope);
+    let before = oracle::snapshot(&repo);
+
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let request = CheckpointRequest {
+        scope: Some(scope.clone()),
+        message: None,
+        include_staged: true,
+        expect_head: Some(head.clone()),
+        expect_index: Some(index_tree.clone()),
+        expect_working: Some(working.clone()),
+        dry_run: true,
+    };
+    let result = operations.create_checkpoint(&request);
+    assert!(
+        result.ok(),
+        "the recovery dry run validates: {:?}",
+        result.error
+    );
+    let data = result.data.as_ref().unwrap();
+    assert!(data.dry_run);
+    assert!(data.changed);
+    assert_eq!(data.commit, None);
+    assert_eq!(data.candidate, head);
+    assert_eq!(data.paths, vec![OsString::from("notes/a.md")]);
+    assert_eq!(data.expected_tree.as_deref(), Some(index_tree.as_str()));
+    assert_eq!(result.effects, Effects::unchanged());
+    before.assert_unchanged(&oracle::snapshot(&repo), "the recovery dry run");
+
+    // The real capture over the same inspected state still commits.
+    let committed =
+        operations.create_checkpoint(&recovery_of(&scope, &head, &index_tree, &working));
+    assert!(
+        committed.ok(),
+        "the real recovery capture commits: {:?}",
+        committed.error
+    );
+    let commit = committed.data.as_ref().unwrap().commit.clone().unwrap();
+    assert_eq!(oracle::commit_tree(&repo, &commit), index_tree);
+    assert_ne!(commit, start);
+}
+
+#[test]
+fn a_head_that_moves_before_the_recovery_commit_refuses_without_writing() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.commit_all("import");
+    let start = initialize(&repo);
+
+    // The retained staged state of one interrupted operation.
+    repo.write_file("notes/a.md", b"# One revised\n");
+    repo.git_ok(["add", "--", "notes/a.md"]);
+
+    let scope = scope_input(&["notes"], &[], &[".md"]);
+    let (head, index_tree, working) = recovery_state_of(&repo, &scope);
+
+    // The concurrent writer lands one empty commit while the capture runs:
+    // the expected head still matched when the capture validated it, so
+    // the precondition recheck alone sees the moved `HEAD` (SPEC 9.1
+    // step 6, 9.7).
+    let git = seam_adapter(
+        &repo,
+        SeamPass::ProofTail,
+        "git commit --quiet --allow-empty --message concurrent-writer",
+    );
+    let operations = Operations::new(&git);
+    let result = operations.create_checkpoint(&recovery_of(&scope, &head, &index_tree, &working));
+
+    assert!(
+        !result.ok(),
+        "a moved HEAD must refuse the recovery capture"
+    );
+    let error = result.error.as_ref().unwrap();
+    assert_eq!(error.code, "STALE_STATE");
+    assert!(
+        error.message.contains("nothing was committed"),
+        "the refusal names its own pass: {}",
+        error.message
+    );
+    assert_eq!(result.effects, Effects::unchanged());
+    let concurrent = oracle::head_oid(&repo).expect("the concurrent commit stands");
+    assert_ne!(concurrent, start);
+    assert!(
+        error.message.contains(&concurrent),
+        "the refusal names the observed HEAD: {}",
+        error.message
+    );
+    // The concurrent commit itself consumed the staging — its tree is the
+    // inspected index tree — while Margin wrote nothing over it.
+    assert_eq!(oracle::commit_tree(&repo, &concurrent), index_tree);
+    assert_eq!(
+        repo.read_file("notes/a.md"),
+        b"# One revised\n",
+        "no working byte moved"
+    );
+}
+
+#[test]
+fn a_concurrent_writer_cannot_smuggle_out_of_scope_staging() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.write_file("note.txt", b"out of scope\n");
+    repo.commit_all("import");
+    let start = initialize(&repo);
+
+    // The retained staged state, plus one out-of-scope edit the concurrent
+    // writer stages while the capture inspects the index.
+    repo.write_file("notes/a.md", b"# One revised\n");
+    repo.git_ok(["add", "--", "notes/a.md"]);
+    repo.write_file("note.txt", b"out of scope, edited\n");
+
+    let scope = scope_input(&["notes"], &[], &[".md"]);
+    let (head, index_tree, working) = recovery_state_of(&repo, &scope);
+    let git = seam_adapter(&repo, SeamPass::ProofTail, "git add -- note.txt");
+    let operations = Operations::new(&git);
+    let result = operations.create_checkpoint(&recovery_of(&scope, &head, &index_tree, &working));
+
+    // The capture adopts only staged content inside the writing scope, so
+    // the smuggled entry refuses with nothing written and both staged
+    // entries stand exactly as their writers left them (SPEC 9.7).
+    assert!(
+        !result.ok(),
+        "out-of-scope staging must refuse the recovery capture"
+    );
+    let error = result.error.as_ref().unwrap();
+    assert_eq!(error.code, "STAGED_CHANGES");
+    assert!(
+        error.message.contains("note.txt"),
+        "the refusal names the smuggled path: {}",
+        error.message
+    );
+    assert_eq!(result.effects, Effects::unchanged());
+    assert_eq!(oracle::head_oid(&repo).as_deref(), Some(start.as_str()));
+    assert_eq!(
+        text(&repo.git_ok(["diff-index", "--cached", "--name-only", "HEAD"])),
+        "note.txt\nnotes/a.md",
+        "the retained staging stands, the writer's entry included"
+    );
+    assert_eq!(
+        repo.read_file("notes/a.md"),
+        b"# One revised\n",
+        "no working byte moved"
+    );
 }

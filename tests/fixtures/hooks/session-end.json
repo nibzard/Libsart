@@ -1,0 +1,8 @@
+{
+  "session_id": "0ba1407f-64c7-4a25-9d85-c2192a3dc001",
+  "transcript_path": "/home/writer/.claude/projects/-home-writer-margin/0ba1407f-64c7-4a25-9d85-c2192a3dc001.jsonl",
+  "cwd": "@@WORKSPACE@@",
+  "permission_mode": "default",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+}

@@ -790,7 +790,10 @@ fn a_broken_document_refuses_typed_before_the_application() {
     assert_eq!(envelope["effects"]["commit"], "none");
 
     // A well-formed keep-all plan reaches the application and commits it
-    // (SPEC 9.4, T031), while the resumption slice stays pending (T035).
+    // (SPEC 9.4, T031), and the resumption of that same request reports
+    // the receipt the history already holds: the receipt lookup of SPEC 8.7
+    // runs before any stale check, so the completed decision never
+    // commits twice (SPEC 9.7, T035).
     let plan = plan_file(&repo, "apply.json", &valid);
     let output = margin(
         repo.env(),
@@ -807,10 +810,23 @@ fn a_broken_document_refuses_typed_before_the_application() {
     );
     assert_eq!(envelope["effects"]["commit"], "created");
 
-    let (_, code, _) = refusal_of(
+    let output = margin(
         repo.env(),
         repo.path(),
         &["review", "--input", &plan, "--resume", "--json"],
     );
-    assert_eq!(code, "OPERATION_UNAVAILABLE");
+    assert_eq!(exit_of(&output), 0, "the resumption reports the receipt");
+    let envelope = envelope_of(&output, "resume");
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    assert_eq!(envelope["effects"]["commit"], "existing_receipt");
+    assert_eq!(
+        envelope["data"]["existing_receipt"],
+        text(&repo.git_ok(["rev-parse", "HEAD"])),
+        "the resumption names the receipt commit"
+    );
+    assert_eq!(
+        envelope["data"]["commit"],
+        Value::Null,
+        "no second review commit was made: {envelope}"
+    );
 }

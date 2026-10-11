@@ -1,0 +1,12 @@
+{
+  "session_id": "0ba1407f-64c7-4a25-9d85-c2192a3dc001",
+  "prompt_id": "57493ff0-9702-4296-a1d8-fbe3db15c002",
+  "transcript_path": "/home/writer/.claude/projects/-home-writer-margin/0ba1407f-64c7-4a25-9d85-c2192a3dc001.jsonl",
+  "cwd": "@@WORKSPACE@@",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "The introduction is tighter now.",
+  "background_tasks": [],
+  "session_crons": []
+}

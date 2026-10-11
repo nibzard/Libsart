@@ -16,9 +16,15 @@
 #![allow(dead_code)]
 
 pub mod env;
+pub mod model;
 pub mod mutation;
 pub mod oracle;
 pub mod repo;
+
+/// The pseudo-terminal harness of the terminal-lifecycle tests (SPEC
+/// 11.5): Unix only, because a pseudo-terminal is a Unix device.
+#[cfg(unix)]
+pub mod pty;
 
 /// The C0 Markdown correctness corpus (SPEC 16.7). The corpus test and the
 /// later restoration slice (T025) share these fixtures, so they live beside

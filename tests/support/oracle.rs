@@ -7,8 +7,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 
 use super::repo::TestRepo;
 use super::text;
@@ -89,15 +91,80 @@ pub fn commit_tree(repo: &TestRepo, commit: &str) -> String {
     rev_parse(repo, &format!("{commit}^{{tree}}"))
 }
 
-/// Returns the index tree ID from `git write-tree`, or `None` when the index
-/// cannot be written as a tree.
+/// Returns the path of the repository's real index file, as Git itself
+/// resolves it.
+fn index_file(repo: &TestRepo) -> PathBuf {
+    let path = PathBuf::from(text(&repo.git_ok(["rev-parse", "--git-path", "index"])));
+    if path.is_absolute() {
+        path
+    } else {
+        repo.path().join(path)
+    }
+}
+
+/// Returns the raw bytes of the repository's real index file, or an empty
+/// vector while no index file exists. Compared before and after one
+/// command, these bytes prove the command changed no index byte — the
+/// cached-tree extension included — which the tree ID alone cannot show
+/// (SPEC 16.3, task T062).
+pub fn index_bytes(repo: &TestRepo) -> Vec<u8> {
+    match fs::read(index_file(repo)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!(
+            "cannot read the index of {}: {error}",
+            repo.path().display()
+        ),
+    }
+}
+
+/// Returns the index tree ID from `git write-tree` run against one
+/// disposable copy of the real index, or `None` when the index cannot be
+/// written as a tree. The real index keeps its exact bytes, cache included,
+/// so no oracle prepares the state a later observation compares against
+/// (task T062).
 pub fn index_tree(repo: &TestRepo) -> Option<String> {
-    let output = repo.git(["write-tree"]);
+    let real = index_file(repo);
+    let disposable = tempfile::NamedTempFile::new().expect("a disposable index can be reserved");
+    match fs::metadata(&real) {
+        Ok(_) => {
+            fs::copy(&real, disposable.path()).expect("the real index can be copied");
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // One absent index is the empty index Git itself reads.
+            let seeded = run_with_index(repo, disposable.path(), &["read-tree", "--empty"]);
+            assert!(
+                seeded.status.success(),
+                "stock git cannot seed an empty disposable index: {}",
+                String::from_utf8_lossy(&seeded.stderr)
+            );
+        }
+        Err(error) => panic!(
+            "cannot inspect the index of {}: {error}",
+            repo.path().display()
+        ),
+    }
+    let output = run_with_index(repo, disposable.path(), &["write-tree"]);
     if output.status.success() {
         Some(text(&output.stdout))
     } else {
         None
     }
+}
+
+/// Runs stock Git in `repo` with `GIT_INDEX_FILE` pointed at `disposable`
+/// and returns the raw process output. Only the disposable index changes.
+fn run_with_index(repo: &TestRepo, disposable: &Path, args: &[&str]) -> Output {
+    let mut command = Command::new("git");
+    command
+        .current_dir(repo.path())
+        .args(args)
+        .stdin(Stdio::null());
+    for (key, value) in repo.env().vars() {
+        command.env(key, value);
+    }
+    command.env("GIT_INDEX_FILE", disposable);
+    command.output().expect("stock git can run")
 }
 
 /// Returns the recursive entries of a tree-ish from `git ls-tree -r`.

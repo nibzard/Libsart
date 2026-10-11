@@ -42,13 +42,13 @@ use crate::app::{
     OperationError, OperationOutcome, Operations, ReceiptPresence, RecoveryInspection,
     RecoveryRequest, RestoreOutcome, RestoreRequest, ReviewDecision, ReviewOutcome, ReviewRequest,
     ScopeSummary, ShowOutcome, ShowRequest, ShowResult, StatusCounts, Warning, WorkspaceInspection,
-    operation_pending,
 };
 use crate::domain::{
     COMMIT_TRAILER_VERSION, ENGINE_VERSION, LocalSettings, MAX_PLAN_BYTES, ScopeDescriptor,
     ScopeInput,
 };
 use crate::git::{Git, Limits};
+use crate::integrations;
 
 // ---------------------------------------------------------------------------
 // Contract constants
@@ -132,6 +132,7 @@ pub const EXIT_CLASSES: &[(u8, &str, &[&str])] = &[
         &[
             "GIT_FAILED",
             "HOOK_FAILED",
+            "TMUX_FAILED",
             "PARTIAL_MUTATION",
             "OUTCOME_UNKNOWN",
             "IO_FAILED",
@@ -313,8 +314,9 @@ impl From<&Effects> for EnvelopeEffects {
 
 /// Bounds one diagnostic for an envelope: the first meaningful line, no
 /// terminal control characters, and at most [`MAX_MESSAGE_CHARS`]
-/// characters (SPEC 6.1, 7.6).
-fn bounded_message(raw: &str) -> String {
+/// characters (SPEC 6.1, 7.6). The hook adapter shares this one rule, so
+/// its protocol strings get the same treatment (SPEC 12.2, 14.2).
+pub(crate) fn bounded_message(raw: &str) -> String {
     let line = raw
         .lines()
         .map(str::trim)
@@ -544,7 +546,31 @@ fn command() -> Command {
                     Arg::new("include-staged")
                         .long("include-staged")
                         .action(ArgAction::SetTrue)
+                        .requires("expect-head")
+                        .requires("expect-index")
+                        .requires("expect-working")
                         .help("Guarded recovery mode that captures inspected staged content"),
+                )
+                .arg(
+                    Arg::new("expect-head")
+                        .long("expect-head")
+                        .value_name("OID")
+                        .requires("include-staged")
+                        .help("Expected HEAD commit of the recovery capture"),
+                )
+                .arg(
+                    Arg::new("expect-index")
+                        .long("expect-index")
+                        .value_name("TREE")
+                        .requires("include-staged")
+                        .help("Expected index tree of the recovery capture"),
+                )
+                .arg(
+                    Arg::new("expect-working")
+                        .long("expect-working")
+                        .value_name("FINGERPRINT")
+                        .requires("include-staged")
+                        .help("Expected scoped working fingerprint of the recovery capture"),
                 )
                 .arg(
                     Arg::new("dry-run")
@@ -613,6 +639,15 @@ fn command() -> Command {
                         .value_name("VIEW")
                         .value_parser(["read", "changes", "history"])
                         .help("Initial view"),
+                )
+                .arg(
+                    Arg::new("reduced-updates")
+                        .long("reduced-updates")
+                        .action(ArgAction::SetTrue)
+                        .help(
+                            "Redraw only when the frame changed; for terminals and assistive \
+                               setups sensitive to redraws",
+                        ),
                 ),
         )
         .subcommand(
@@ -623,7 +658,10 @@ fn command() -> Command {
                         .long("path")
                         .value_name("PATH")
                         .required(true)
-                        .help("The document to edit"),
+                        .help(
+                            "The repository-relative document to edit; its literal path is \
+                               appended to the configured editor argv",
+                        ),
                 ),
         )
         .subcommand(
@@ -636,7 +674,10 @@ fn command() -> Command {
                         .required(true)
                         .trailing_var_arg(true)
                         .allow_hyphen_values(true)
-                        .help("Agent executable and its arguments, after --"),
+                        .help(
+                            "Agent executable and its arguments, after --; tmux starts the \
+                               argv directly, with no shell between",
+                        ),
                 ),
         )
         .subcommand(
@@ -1293,6 +1334,9 @@ fn dispatch(matches: &ArgMatches) -> Finished {
                 scope: None,
                 message: sub.get_one::<String>("message").cloned(),
                 include_staged: sub.get_flag("include-staged"),
+                expect_head: sub.get_one::<String>("expect-head").cloned(),
+                expect_index: sub.get_one::<String>("expect-index").cloned(),
+                expect_working: sub.get_one::<String>("expect-working").cloned(),
                 dry_run: sub.get_flag("dry-run"),
             });
             outcome_finished("checkpoint", &outcome, project_checkpoint, invocation.json)
@@ -1312,8 +1356,17 @@ fn dispatch(matches: &ArgMatches) -> Finished {
                 dry_run: sub.get_flag("dry-run"),
             };
             if sub.get_flag("resume") {
+                // The retained-plan recovery of SPEC 9.7: the same decision
+                // contract the application reports, over the proved
+                // retained state instead of a new application.
                 let outcome = operations.resume_review(&request);
-                outcome_finished("review", &outcome, project_review, invocation.json)
+                outcome_finished_text(
+                    "review",
+                    &outcome,
+                    project_decision,
+                    decision_text,
+                    invocation.json,
+                )
             } else if sub.get_flag("dry-run") {
                 // The dry run of SPEC 6.4: the validated plan with its
                 // proved intended result, written nowhere.
@@ -1380,54 +1433,175 @@ fn dispatch(matches: &ArgMatches) -> Finished {
             if let Some(finished) = reject_json("tui", invocation.json) {
                 return finished;
             }
-            error_finished(
-                Some("tui"),
-                &operation_pending("the interactive review surface"),
-                invocation.json,
-            )
+            let path = sub.get_one::<String>("path").cloned();
+            if let Some(path) = &path {
+                if let Err(error) = crate::domain::parse_document_path(path) {
+                    return error_finished(
+                        Some("tui"),
+                        &OperationError::new(error.public_code(), error.to_string()),
+                        invocation.json,
+                    );
+                }
+            }
+            // The interactive surface owns its terminal, so it cannot run
+            // through the buffered output contract every other command
+            // uses. Redirected streams get one typed refusal instead
+            // (SPEC 5.1, 11.5).
+            if !crate::tui::run::has_terminal() {
+                return error_finished(
+                    Some("tui"),
+                    &OperationError::new(
+                        "OPERATION_UNAVAILABLE",
+                        "the interactive surface needs a terminal for input and drawing; run \
+                         margin tui without redirection",
+                    ),
+                    invocation.json,
+                );
+            }
+            let view = sub
+                .get_one::<String>("view")
+                .as_deref()
+                .and_then(|raw| crate::tui::View::parse(raw))
+                .unwrap_or_default();
+            // The global `--color` setting reaches the surface as its
+            // color-off mode (SPEC 11.4): `never` draws a plain
+            // monochrome surface whose words and symbols carry every
+            // state. The reduced-update flag draws only changed frames.
+            let color = matches
+                .get_one::<String>("color")
+                .map(String::as_str)
+                .and_then(crate::tui::ColorMode::parse)
+                .unwrap_or_default();
+            let options = crate::tui::TuiOptions {
+                path,
+                view,
+                color,
+                reduced_updates: sub.get_flag("reduced-updates"),
+            };
+            match crate::tui::launch(&invocation.cwd, &operations, &options) {
+                Ok(()) => Finished {
+                    exit: 0,
+                    stdout: None,
+                    stdout_bytes: None,
+                    stderr: None,
+                },
+                Err(error) => error_finished(
+                    Some("tui"),
+                    &OperationError::new("IO_FAILED", error.message),
+                    invocation.json,
+                ),
+            }
         }
         "edit" => {
             if let Some(finished) = reject_json("edit", invocation.json) {
                 return finished;
             }
-            error_finished(
-                Some("edit"),
-                &operation_pending("the editor handoff"),
-                invocation.json,
-            )
+            let path = sub
+                .get_one::<String>("path")
+                .expect("--path is required")
+                .clone();
+            edit_finished(&operations, &path)
         }
         "desk" => {
             if let Some(finished) = reject_json("desk", invocation.json) {
                 return finished;
             }
-            error_finished(
-                Some("desk"),
-                &operation_pending("the tmux writing desk"),
-                invocation.json,
-            )
+            // The desk needs this terminal twice: tmux attaches on it
+            // outside a session, and the composed windows answer to the
+            // client inside one (SPEC 12.6). The refusal stays typed, as
+            // for the surface and the editor handoff.
+            if !crate::tui::run::has_terminal() {
+                return error_finished(
+                    Some("desk"),
+                    &OperationError::new(
+                        "OPERATION_UNAVAILABLE",
+                        "the writing desk needs a terminal to attach tmux; run margin desk \
+                         without redirection",
+                    ),
+                    invocation.json,
+                );
+            }
+            let agent: Vec<String> = sub
+                .get_many::<String>("agent")
+                .map(|values| values.cloned().collect())
+                .unwrap_or_default();
+            // The desk owns no repository state: it composes panes and
+            // reports them, so the interactive text contract carries the
+            // report (SPEC 6.2, 12.6).
+            match integrations::tmux::compose_desk(&invocation.cwd, &agent) {
+                Ok(report) => Finished {
+                    exit: 0,
+                    stdout: Some(report),
+                    stdout_bytes: None,
+                    stderr: None,
+                },
+                Err(error) => error_finished(Some("desk"), &error, invocation.json),
+            }
         }
-        "hook" => match sub.subcommand_name() {
-            Some("install") => error_finished(
-                Some("hook install"),
-                &operation_pending("hook installation"),
+        "hook" => match sub.subcommand() {
+            // The one setup action of SPEC 12.4: plan against the bytes on
+            // disk, and write only after the target proves its fingerprint.
+            // A dry run answers with the same envelope and writes nothing.
+            Some(("install", matches)) => outcome_finished_text(
+                "hook install",
+                &integrations::claude::install(&operations, matches.get_flag("dry-run")),
+                project_hook_setup,
+                hook_setup_text,
                 invocation.json,
             ),
-            Some("remove") => error_finished(
-                Some("hook remove"),
-                &operation_pending("hook removal"),
+            Some(("remove", matches)) => outcome_finished_text(
+                "hook remove",
+                &integrations::claude::remove(&operations, matches.get_flag("dry-run")),
+                project_hook_setup,
+                hook_setup_text,
                 invocation.json,
             ),
             _ => {
                 // The Claude adapter answers in the upstream hook protocol,
-                // not the Margin envelope (SPEC 6.2), so its refusal is one
-                // bounded stderr line.
-                let error = operation_pending("the claude hook adapter");
-                Finished {
-                    exit: exit_class(error.code),
-                    stdout: None,
-                    stdout_bytes: None,
-                    stderr: Some(text_error(error.code, &error.message)),
+                // not the Margin envelope (SPEC 6.2), so `--json` is a typed
+                // refusal: no envelope may ever enter the protocol channel.
+                if invocation.json {
+                    let error = OperationError::new(
+                        "INVALID_ARGUMENT",
+                        "the hook adapter answers in the upstream hook protocol, not the Margin \
+                         envelope; omit --json",
+                    );
+                    return Finished {
+                        exit: exit_class(error.code),
+                        stdout: None,
+                        stdout_bytes: None,
+                        stderr: Some(text_error(error.code, &error.message)),
+                    };
                 }
+                // A terminal standard input carries no event. Refusing
+                // keeps a manual run from waiting for bytes that never
+                // arrive; the event is missing, and a missing event never
+                // implies capture or approval (SPEC 12.3).
+                if io::stdin().is_terminal() {
+                    return hook_finished(integrations::claude::refused(
+                        "no hook payload was provided on standard input; pipe one upstream event \
+                         instead",
+                    ));
+                }
+                let mut bytes = Vec::new();
+                // One bounded read: the adapter sees at most the payload
+                // bound plus one byte, so an oversized payload is a typed
+                // refusal, never an unbounded read (SPEC 12.2).
+                if io::stdin()
+                    .take(integrations::claude::MAX_PAYLOAD_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .is_err()
+                {
+                    return hook_finished(integrations::claude::refused(
+                        "the hook payload could not be read from standard input; the event never \
+                         arrived",
+                    ));
+                }
+                hook_finished(integrations::claude::run(
+                    &operations,
+                    &invocation.cwd,
+                    &bytes,
+                ))
             }
         },
         other => unreachable!("the parser accepts only known commands: {other}"),
@@ -1583,6 +1757,151 @@ fn reject_json(command: &str, json: bool) -> Option<Finished> {
     Some(error_finished(Some(command), &error, true))
 }
 
+/// Runs `margin edit` (SPEC 5.6, 6.2, 12.5): one explicit handoff of one
+/// document to the configured editor argv, with the literal path appended
+/// and no shell between the two. The command line owns no terminal mode,
+/// so the editor meets the terminal exactly as this process found it. Its
+/// exit is one refresh boundary — the workspace inspects again and the
+/// text view reports the state — and never an approval: a capture runs
+/// only while the configured policy enables it, and only after one
+/// completed editing pass, through the same shared checkpoint every other
+/// save runs.
+fn edit_finished(operations: &Operations<'_>, path: &str) -> Finished {
+    // The one shared document-path validator of the domain (SPEC 4.1,
+    // 6.2), the same one `margin tui` answers: repository-relative, no
+    // `..`, no trailing separator.
+    let path = match crate::domain::parse_document_path(path) {
+        Ok(path) => path,
+        Err(error) => {
+            return error_finished(
+                Some("edit"),
+                &OperationError::new(error.public_code(), error.to_string()),
+                false,
+            );
+        }
+    };
+    if !crate::tui::run::has_terminal() {
+        return error_finished(
+            Some("edit"),
+            &OperationError::new(
+                "OPERATION_UNAVAILABLE",
+                "the editor handoff needs a terminal for the editor; run margin edit without \
+                 redirection",
+            ),
+            false,
+        );
+    }
+    let settings = match operations.read_settings() {
+        outcome if outcome.ok() => {
+            outcome
+                .data
+                .expect("a successful outcome carries data")
+                .settings
+        }
+        outcome => {
+            return error_finished(
+                Some("edit"),
+                &outcome.error.expect("a failed outcome carries its error"),
+                false,
+            );
+        }
+    };
+    let Some(argv) = settings.editor_argv else {
+        return error_finished(
+            Some("edit"),
+            &OperationError::new(
+                "OPERATION_UNAVAILABLE",
+                "no editor is configured; set margin init --editor-argv-json [\"nvim\",\"--\"]",
+            )
+            .recovery(&["margin", "init", "--editor-argv-json", "[\"nvim\",\"--\"]"]),
+            false,
+        );
+    };
+    let root = match operations.git().toplevel() {
+        Ok(root) => root,
+        Err(error) => return error_finished(Some("edit"), &OperationError::from(error), false),
+    };
+    // The literal path of the document, resolved inside the work tree the
+    // adapter adopted; a document that does not exist yet keeps its joined
+    // path, because creating it is the editor's business (SPEC 12.5).
+    let joined = root.join(path);
+    let document = fs::canonicalize(&joined).unwrap_or(joined);
+    let status = match crate::tui::run::run_editor(&argv, &document) {
+        Ok(status) => status,
+        Err(why) => {
+            return error_finished(Some("edit"), &OperationError::new("IO_FAILED", why), false);
+        }
+    };
+    let exited = if status.success() {
+        "editor returned".to_string()
+    } else {
+        format!("editor exited with {status}")
+    };
+    let mut report = String::new();
+    if settings.capture_after_edit && status.success() {
+        // The configured policy makes one completed editing pass a capture
+        // boundary (SPEC 12.5); an editor that exited nonzero is the
+        // abandoned pass every terminal tool reads it as.
+        let outcome = operations.create_checkpoint(&CheckpointRequest {
+            scope: None,
+            message: None,
+            include_staged: false,
+            expect_head: None,
+            expect_index: None,
+            expect_working: None,
+            dry_run: false,
+        });
+        if !outcome.ok() {
+            return error_finished(
+                Some("edit"),
+                &outcome.error.expect("a failed outcome carries its error"),
+                false,
+            );
+        }
+        let data = outcome.data.expect("a successful outcome carries data");
+        let captured = match &data.commit {
+            Some(commit) => format!(
+                "draft saved as {}; nothing was approved",
+                crate::tui::render::short(commit)
+            ),
+            None => "no changes waited to be captured; nothing was approved".to_string(),
+        };
+        let _ = writeln!(report, "{exited}; {captured}");
+    } else {
+        let _ = writeln!(
+            report,
+            "{exited}; {}",
+            if status.success() {
+                "no checkpoint was made"
+            } else {
+                "nothing was applied"
+            }
+        );
+    }
+    // The refresh boundary itself: the workspace inspects again, and the
+    // reported state is the same shape `margin status` prints (SPEC 5.6).
+    let outcome = operations.inspect_workspace(&InspectRequest {
+        scope: None,
+        path_filter: Vec::new(),
+    });
+    if outcome.ok() {
+        let data = outcome.data.expect("a successful outcome carries data");
+        let _ = writeln!(report, "{}", status_text(&data).trim_end());
+        Finished {
+            exit: 0,
+            stdout: Some(report),
+            stdout_bytes: None,
+            stderr: None,
+        }
+    } else {
+        error_finished(
+            Some("edit"),
+            &outcome.error.expect("a failed outcome carries its error"),
+            false,
+        )
+    }
+}
+
 /// Produces the version data (SPEC 6.1): plain and bounded in text mode,
 /// one envelope with Git capability information in JSON mode.
 fn version_finished(invocation: &Invocation) -> Finished {
@@ -1697,6 +2016,18 @@ fn text_error(code: &str, message: &str) -> String {
     format!("margin: {code}: {message}\n")
 }
 
+/// Maps one upstream hook outcome to the process result (SPEC 12.2). The
+/// upstream protocol owns both channels, so the outcome never passes
+/// through the envelope.
+fn hook_finished(outcome: integrations::claude::HookOutcome) -> Finished {
+    Finished {
+        exit: outcome.exit,
+        stdout: None,
+        stdout_bytes: outcome.stdout,
+        stderr: outcome.stderr,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Operation projections (SPEC 7.1 `data`)
 // ---------------------------------------------------------------------------
@@ -1762,6 +2093,76 @@ fn status_text(data: &WorkspaceInspection) -> String {
         data.operation.as_str(),
         data.branch.as_deref().unwrap_or("none"),
     )
+}
+
+/// Projects one hook configuration action (SPEC 12.4): the exact planned
+/// configuration patch, the supported event contract, and the capabilities
+/// of the entries the action installs or deletes.
+fn project_hook_setup(data: &integrations::claude::SetupOutcome) -> Value {
+    json!({
+        "action": data.action.as_str(),
+        "dry_run": data.dry_run,
+        "target": data.path.display().to_string(),
+        "target_existed": data.target_existed,
+        "fingerprint": data.fingerprint,
+        "no_op": data.no_op,
+        "changes": data
+            .changes
+            .iter()
+            .map(|change| {
+                json!({
+                    "event": change.event,
+                    "change": if change.removed { "remove" } else { "add" },
+                })
+            })
+            .collect::<Vec<Value>>(),
+        "planned_config": data.planned_config,
+        "capabilities": {
+            "command": integrations::claude::HOOK_COMMAND,
+            "events": integrations::claude::SUPPORTED_EVENTS,
+            "capture": "one ordinary draft checkpoint, only while auto-checkpoint is stored; \
+                        otherwise the boundary stays silent",
+            "blocking_events": ["UserPromptSubmit"],
+            "never_blocks": ["Stop", "StopFailure", "SessionStart", "SessionEnd"],
+            "approval": "none: every capture is one unreviewed draft",
+        },
+    })
+}
+
+/// The one-line text view of one hook configuration action (SPEC 12.4):
+/// what the action changed in the target file, or the explicit no-op of a
+/// repeated action.
+fn hook_setup_text(data: &integrations::claude::SetupOutcome) -> String {
+    let action = data.action.as_str();
+    let target = integrations::claude::SETTINGS_RELATIVE_PATH;
+    let planned = data.changes.len();
+    let line = match (data.action, data.dry_run, planned) {
+        (integrations::claude::SetupAction::Install, true, 0) => {
+            format!("margin: dry run {action}; every entry is already installed")
+        }
+        (integrations::claude::SetupAction::Install, true, _) => {
+            format!("margin: dry run {action}; {planned} entries would be added to {target}")
+        }
+        (integrations::claude::SetupAction::Install, false, 0) => {
+            format!("margin: {action} no-op; every entry is already installed")
+        }
+        (integrations::claude::SetupAction::Install, false, _) => {
+            format!("margin: installed {planned} entries in {target}")
+        }
+        (integrations::claude::SetupAction::Remove, true, 0) => {
+            format!("margin: dry run {action}; no margin entries are installed")
+        }
+        (integrations::claude::SetupAction::Remove, true, _) => {
+            format!("margin: dry run {action}; {planned} entries would be deleted from {target}")
+        }
+        (integrations::claude::SetupAction::Remove, false, 0) => {
+            format!("margin: {action} no-op; no margin entries are installed")
+        }
+        (integrations::claude::SetupAction::Remove, false, _) => {
+            format!("margin: removed {planned} entries from {target}")
+        }
+    };
+    format!("{line}\n")
 }
 
 /// Projects the effective local settings without environment secrets
@@ -2422,13 +2823,14 @@ fn raw_destination_problem(
     )
 }
 
-/// Display-escapes one document for the text view (SPEC 6.3, 14.2): every
+/// Display-escapes one document for a text surface (SPEC 6.3, 14.2): every
 /// terminal control character — the C0 controls except the newline and tab
 /// a view needs, DEL, the C1 controls, and the bidirectional format
 /// markers — becomes one visible escape, so document bytes cannot become
-/// terminal instructions or reverse the presented reading order. Only the
-/// explicit raw export bypasses this escaping.
-fn display_escape(text: &str) -> String {
+/// terminal instructions or reverse the presented reading order. The
+/// command line text view and the terminal reading column share this one
+/// pass; only the explicit raw export bypasses it.
+pub(crate) fn display_escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for character in text.chars() {
         let unsafe_control = (character.is_control() && character != '\n' && character != '\t')
@@ -2526,6 +2928,7 @@ mod tests {
         assert_eq!(exit_class("BASELINE_UNAVAILABLE"), 4);
         assert_eq!(exit_class("OPERATION_UNAVAILABLE"), 4);
         assert_eq!(exit_class("GIT_FAILED"), 5);
+        assert_eq!(exit_class("TMUX_FAILED"), 5);
         assert_eq!(exit_class("OUTCOME_UNKNOWN"), 5);
         assert_eq!(exit_class("CONTRACT_VIOLATION"), 5);
         assert_eq!(exit_class("INTERRUPTED"), 130);

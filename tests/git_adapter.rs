@@ -7,6 +7,8 @@
 //! - literal pathspecs, both object formats, bounded time and output
 //! - typed failures for nonzero exits, hangs, floods, and malformed output
 //! - read-only calls that avoid optional index writes and lazy fetches
+//! - `write-tree` rewrites the index it addresses even in query mode, so
+//!   read-only callers compute their tree from one disposable copy
 //! - refused inherited environment redirection and explicit overrides
 
 mod support;
@@ -578,6 +580,51 @@ fn inherited_redirection_is_refused_and_overrides_are_explicit() {
     assert_eq!(
         before, after,
         "a disposable index must never alias the real one"
+    );
+}
+
+/// `write-tree` rewrites the index it addresses to store the computed tree
+/// cache, and query mode's optional locks off does not prevent it (task
+/// T062): a read-only caller must point `GIT_INDEX_FILE` at one disposable
+/// copy first, the pattern the recovery inspection and the guarded capture
+/// use. The rewrite is idempotent, which is why one oracle that ran
+/// `write-tree` first could never see a later change.
+#[test]
+fn write_tree_rewrites_the_index_it_addresses_even_in_query_mode() {
+    let repo = TestRepo::init();
+    repo.write_file("doc.md", b"body\n");
+    repo.commit_all("first pass");
+    repo.write_file("doc.md", b"revised\n");
+    repo.git_ok(["add", "--", "doc.md"]);
+
+    let index_path = repo.path().join(".git/index");
+    let staged = fs::read(&index_path).expect("the real index can be read");
+    let adapter = adapter_for(&repo);
+    let tree = adapter
+        .run_ok(Mode::Query, ["write-tree"])
+        .expect("the tree computes in query mode");
+    assert_eq!(
+        support::text(&tree),
+        support::oracle::index_tree(&repo).expect("the tree of the staged index"),
+        "query mode computes the same tree"
+    );
+    assert_ne!(
+        fs::read(&index_path).expect("the real index can be read again"),
+        staged,
+        "query mode does not stop the cached-tree write"
+    );
+
+    // The rewrite prepared the cache, so the same call writes the same
+    // bytes again: one snapshot taken after a `write-tree` cannot observe
+    // a later one.
+    let prepared = fs::read(&index_path).expect("the real index can be read");
+    adapter
+        .run_ok(Mode::Query, ["write-tree"])
+        .expect("the tree computes again");
+    assert_eq!(
+        fs::read(&index_path).expect("the real index can be read again"),
+        prepared,
+        "the cached-tree write is idempotent"
     );
 }
 

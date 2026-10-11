@@ -213,7 +213,7 @@ use crate::domain::{
     ScopeInput, SettingsUpdate, SettingsValueError, TrailerParseError, TrailerProblem,
 };
 use crate::git::{
-    AttributeAssignment, CommitObject, Git, GitError, IndexEntry, ObjectFormat,
+    AttributeAssignment, CommitObject, Git, GitError, IndexEntry, IndexFlag, ObjectFormat,
     os_string_from_bytes,
 };
 use crate::markdown;
@@ -1172,6 +1172,28 @@ pub enum PolicyBlocker {
         /// At most [`MAX_LISTED_PATHS`] of those paths.
         paths: Vec<OsString>,
     },
+    /// Scoped index entries are marked assume-unchanged, so Git reports no
+    /// working change for them (SPEC 3.1). Working content can differ from
+    /// the candidate while every Git change report stays clean, and Git's
+    /// own staging honors the flag too, so no normal mutation proceeds
+    /// behind it.
+    AssumeUnchangedEntries {
+        /// How many scoped paths carry the flag.
+        count: usize,
+        /// At most [`MAX_LISTED_PATHS`] of those paths.
+        paths: Vec<OsString>,
+    },
+    /// Scoped index entries are marked skip-worktree — the sparse-checkout
+    /// mechanism — so Git reports no working change for them and promises
+    /// not to touch their working files (SPEC 3.1). Unsaved content can
+    /// hide behind the flag, and a Margin write would fight that promise,
+    /// so no normal mutation proceeds behind it.
+    SkipWorktreeEntries {
+        /// How many scoped paths carry the flag.
+        count: usize,
+        /// At most [`MAX_LISTED_PATHS`] of those paths.
+        paths: Vec<OsString>,
+    },
     /// `core.autocrlf` converts line endings on check-in; the
     /// `identity-v1` profile requires `false` (SPEC 8.8).
     AutoCrlfConversion {
@@ -1302,6 +1324,20 @@ impl fmt::Display for PolicyBlocker {
             PolicyBlocker::StagedChanges { count, paths } => write!(
                 formatter,
                 "the index has {count} staged change(s) against HEAD: {}",
+                listed(*count, paths)
+            ),
+            PolicyBlocker::AssumeUnchangedEntries { count, paths } => write!(
+                formatter,
+                "assume-unchanged is set for {count} scoped path(s): {}; Git then reports no \
+                 working change there, so run git update-index --no-assume-unchanged on each \
+                 path before a Margin write",
+                listed(*count, paths)
+            ),
+            PolicyBlocker::SkipWorktreeEntries { count, paths } => write!(
+                formatter,
+                "skip-worktree is set for {count} scoped path(s): {}; Git then reports no \
+                 working change there, so run git update-index --no-skip-worktree on each path \
+                 before a Margin write",
                 listed(*count, paths)
             ),
             PolicyBlocker::AutoCrlfConversion { value } => write!(
@@ -1570,6 +1606,46 @@ pub fn storage_policy_blockers(
     Ok(blockers)
 }
 
+/// Inspects the scoped index entries Git hides from its own change
+/// detection (SPEC 3.1, 9.1 step 4): `assume-unchanged` and
+/// `skip-worktree`. A flagged path shows no working change in `git status`
+/// or the diff calls, so unsaved content can differ from the candidate
+/// behind an apparently clean repository, and Git's staging honors the
+/// flag as well, so an attempted capture could silently store the old
+/// bytes. Every scoped flag is one specific blocker before any mutation
+/// (INV-08); the inspection only reads the flags and preserves them
+/// exactly as the user set them.
+pub fn hidden_index_blockers(
+    git: &Git,
+    scope: &ResolvedScope,
+) -> Result<Vec<PolicyBlocker>, PolicyError> {
+    let mut assume_unchanged: Vec<OsString> = Vec::new();
+    let mut skip_worktree: Vec<OsString> = Vec::new();
+    for (path, flag) in git.hidden_index_paths()? {
+        if !scope.paths.contains_key(&path) {
+            continue;
+        }
+        match flag {
+            IndexFlag::AssumeUnchanged => assume_unchanged.push(path),
+            IndexFlag::SkipWorktree => skip_worktree.push(path),
+        }
+    }
+    let mut blockers = Vec::new();
+    if !assume_unchanged.is_empty() {
+        blockers.push(PolicyBlocker::AssumeUnchangedEntries {
+            count: assume_unchanged.len(),
+            paths: list_paths(&assume_unchanged),
+        });
+    }
+    if !skip_worktree.is_empty() {
+        blockers.push(PolicyBlocker::SkipWorktreeEntries {
+            count: skip_worktree.len(),
+            paths: list_paths(&skip_worktree),
+        });
+    }
+    Ok(blockers)
+}
+
 /// The one shared mutation guard (SPEC 9.1 step 4 and 13.6). Every
 /// interface calls this before a normal mutation writes.
 ///
@@ -1591,6 +1667,10 @@ pub fn enforce_mutation_policy(
     if let Some(scope) = scope
         && worktree_usable
     {
+        // Index flags before storage transformations: a flag that hides a
+        // path from Git's own reporting is an index-state refusal, in the
+        // guard order of the report (SPEC 3.1, 9.1 step 4).
+        blockers.extend(hidden_index_blockers(git, scope)?);
         blockers.extend(storage_policy_blockers(git, scope)?);
     }
     Ok(MutationPolicyReport { blockers })
@@ -6011,8 +6091,93 @@ pub struct CheckpointRequest {
     /// The guarded recovery mode that captures inspected staged content
     /// (SPEC 9.7 `--include-staged`).
     pub include_staged: bool,
+    /// The expected `HEAD` commit of the guarded recovery capture (SPEC 9.7
+    /// `--expect-head`); the capture refuses while `HEAD` holds another
+    /// value. Required together with `include_staged`.
+    pub expect_head: Option<String>,
+    /// The expected index tree of the guarded recovery capture (SPEC 9.7
+    /// `--expect-index`): the staged state one recovery inspection reported.
+    pub expect_index: Option<String>,
+    /// The expected scoped working fingerprint of the guarded recovery
+    /// capture (SPEC 9.7 `--expect-working`), the `format:oid` value one
+    /// recovery inspection reports.
+    pub expect_working: Option<String>,
     /// Whether to report the intended effects without committing (SPEC 6.4).
     pub dry_run: bool,
+}
+
+/// The expected state of one guarded recovery capture (SPEC 9.7): the
+/// three fingerprints `checkpoint --include-staged` rechecks at capture
+/// time, validated once so the capture itself compares plain strings.
+struct StagedCaptureExpectations {
+    /// The commit `HEAD` must still hold.
+    head: String,
+    /// The tree the real index must still describe.
+    index_tree: String,
+    /// The `format:oid` fingerprint of the scoped working content.
+    working: String,
+}
+
+/// One proved capture ready for the shared marker writer (SPEC 8.4, 9.2,
+/// 9.7): the ordinary checkpoint and the guarded recovery capture hand
+/// this one bundle to [`Operations::commit_proved_capture`], so both
+/// commit, observe failures, and report effects through the same path.
+struct ProvedCapture {
+    /// The scope input of the request, for the post-failure observation.
+    scope: Option<ScopeInput>,
+    /// The prepared marker map the commit verifies itself against.
+    metadata: CommitMetadata,
+    /// The effective message text.
+    text: String,
+    /// The candidate the capture prepared against.
+    candidate: String,
+    /// The exact paths the capture saves, in path order.
+    paths: Vec<OsString>,
+    /// The intended full tree of the draft.
+    tree: String,
+    /// The scoped working-entry baseline the capture read before its
+    /// first real mutation.
+    working_before: BTreeMap<OsString, Option<WorkingEntry>>,
+}
+
+/// Validates the expected state of one checkpoint request (SPEC 9.7): the
+/// guarded recovery capture carries exactly the three fingerprints a
+/// recovery inspection reports — head, index tree, and scoped working
+/// fingerprint — and an expected state belongs to no ordinary capture.
+///
+/// `Ok(None)` is one ordinary checkpoint; `Ok(Some)` is one guarded
+/// recovery capture; `Err` is invalid input that refuses before any
+/// inspection, with unchanged effects.
+fn recovery_expectations(
+    request: &CheckpointRequest,
+) -> Result<Option<StagedCaptureExpectations>, OperationError> {
+    match (
+        request.include_staged,
+        request.expect_head.as_deref(),
+        request.expect_index.as_deref(),
+        request.expect_working.as_deref(),
+    ) {
+        (false, None, None, None) => Ok(None),
+        (true, Some(head), Some(index_tree), Some(working)) => {
+            Ok(Some(StagedCaptureExpectations {
+                head: head.to_string(),
+                index_tree: index_tree.to_string(),
+                working: working.to_string(),
+            }))
+        }
+        (true, ..) => Err(OperationError::new(
+            "INVALID_ARGUMENT",
+            "the guarded recovery capture needs --expect-head, --expect-index, and \
+             --expect-working together",
+        )
+        .recovery(&["margin", "doctor", "--json"])),
+        (false, ..) => Err(OperationError::new(
+            "INVALID_ARGUMENT",
+            "an expected head, index, or working state belongs to the --include-staged \
+             recovery capture only",
+        )
+        .recovery(&["margin", "doctor", "--json"])),
+    }
 }
 
 /// The request of one review operation (SPEC 6.2, 7.3).
@@ -6957,6 +7122,182 @@ pub type RestoreResult = OperationOutcome<RestoreOutcome>;
 /// The typed result of one recovery inspection.
 pub type RecoveryResult = OperationOutcome<RecoveryInspection>;
 
+// ---------------------------------------------------------------------------
+// The test-only model-action trace (SPEC 15.7)
+// ---------------------------------------------------------------------------
+
+/// The environment variable that turns on the test-only model-action trace:
+/// `MARGIN_MODEL_TRACE=<file>` appends one JSON object per model action an
+/// operation actually takes, with the commit, tree, and request identities
+/// that action carried (SPEC 15.7).
+///
+/// The trace is refinement evidence, never an input. No operation reads it
+/// back, a write that fails is dropped silently, and one record is one
+/// flushed append, so a killed process leaves exactly the actions it
+/// completed. `formal/refinement.md` defines the record set, and
+/// `tests/refinement_trace.rs` validates whole sequences against the
+/// allowed transitions of `formal/MarginReview.tla` with an independent
+/// checker that shares no code with this layer.
+pub const MODEL_TRACE_VARIABLE: &str = "MARGIN_MODEL_TRACE";
+
+/// One open model-action trace file (SPEC 15.7).
+pub struct ModelTrace {
+    /// The file every record appends to.
+    target: PathBuf,
+}
+
+impl ModelTrace {
+    /// Returns the trace the environment selects, or `None` when the
+    /// variable is absent. This is the executable path; an in-process test
+    /// injects its target through [`Operations::with_model_trace`], because
+    /// the shared test process cannot swap the environment per case.
+    pub fn from_env() -> Option<ModelTrace> {
+        std::env::var_os(MODEL_TRACE_VARIABLE).map(|target| ModelTrace {
+            target: PathBuf::from(target),
+        })
+    }
+
+    /// Returns the trace that appends every record to `target`.
+    pub fn to_file(target: impl Into<PathBuf>) -> ModelTrace {
+        ModelTrace {
+            target: target.into(),
+        }
+    }
+
+    /// Appends one record. Tracing never fails an operation, so an
+    /// unwritable target drops the record instead of changing a result.
+    fn record(&self, fields: serde_json::Value) {
+        let mut line = fields.to_string();
+        line.push('\n');
+        let _ = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.target)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
+    }
+
+    /// `Init`: one verified starting marker established the modeled initial
+    /// state (SPEC 15.7).
+    fn initial(&self, head: &str, tree: &str) {
+        self.record(serde_json::json!({
+            "action": "Init",
+            "head": head,
+            "tree": tree,
+        }));
+    }
+
+    /// `Checkpoint(staged)`: one verified draft commit over `parent`.
+    fn checkpoint(&self, include_staged: bool, head: &str, parent: &str, tree: &str) {
+        self.record(serde_json::json!({
+            "action": "Checkpoint",
+            "include_staged": include_staged,
+            "head": head,
+            "parent": parent,
+            "tree": tree,
+        }));
+    }
+
+    /// `Submit` that accepted one complete plan and pinned its comparison:
+    /// the candidate `head`, the baseline, and the groups the application
+    /// will restore, in application order.
+    fn submit_accepted(
+        &self,
+        mode: &str,
+        request: &str,
+        head: &str,
+        baseline: &str,
+        restore: &[String],
+    ) {
+        self.record(serde_json::json!({
+            "action": "Submit",
+            "mode": mode,
+            "outcome": "accepted",
+            "request": request,
+            "head": head,
+            "baseline": baseline,
+            "restore": restore,
+        }));
+    }
+
+    /// `Submit` that answered one already completed request with its
+    /// verified receipt.
+    fn submit_receipt(&self, request: &str, receipt: &str) {
+        self.record(serde_json::json!({
+            "action": "Submit",
+            "outcome": "receipt",
+            "request": request,
+            "receipt": receipt,
+        }));
+    }
+
+    /// `Submit` that refused one reused request identity whose plan differs.
+    fn submit_conflict(&self, request: &str) {
+        self.record(serde_json::json!({
+            "action": "Submit",
+            "outcome": "conflict",
+            "request": request,
+        }));
+    }
+
+    /// `ApplyGroup(p)`: one complete reverse unit applied to the working
+    /// tree while the candidate stayed pinned at `head`.
+    fn apply_group(&self, request: &str, group: &str, head: &str) {
+        self.record(serde_json::json!({
+            "action": "ApplyGroup",
+            "request": request,
+            "group": group,
+            "head": head,
+        }));
+    }
+
+    /// `UpdateIndex`: the applied index verified as the intended tree.
+    fn update_index(&self, request: &str, head: &str, tree: &str) {
+        self.record(serde_json::json!({
+            "action": "UpdateIndex",
+            "request": request,
+            "head": head,
+            "tree": tree,
+        }));
+    }
+
+    /// `Publish`: one verified review commit over `parent`.
+    fn publish(&self, request: &str, head: &str, parent: &str, tree: &str) {
+        self.record(serde_json::json!({
+            "action": "Publish",
+            "request": request,
+            "head": head,
+            "parent": parent,
+            "tree": tree,
+        }));
+    }
+
+    /// `Respond`: one response that names its verified receipt.
+    fn respond(&self, request: &str, receipt: &str) {
+        self.record(serde_json::json!({
+            "action": "Respond",
+            "request": request,
+            "receipt": receipt,
+        }));
+    }
+
+    /// `Fail`: one accepted submission that failed inside its protocol and
+    /// left recoverable state behind.
+    fn fail(&self, request: &str) {
+        self.record(serde_json::json!({
+            "action": "Fail",
+            "request": request,
+        }));
+    }
+
+    /// `InspectRecovery`: one completed read-only recovery inspection.
+    fn inspected_recovery(&self, head: Option<&str>) {
+        self.record(serde_json::json!({
+            "action": "InspectRecovery",
+            "head": head,
+        }));
+    }
+}
+
 /// The shared operation layer (SPEC 13.2, 13.6).
 ///
 /// The CLI serializes these results, the TUI renders them, and a hook
@@ -6967,6 +7308,8 @@ pub type RecoveryResult = OperationOutcome<RecoveryInspection>;
 pub struct Operations<'a> {
     /// The one Git process adapter every operation shares.
     git: &'a Git,
+    /// The test-only model-action trace of SPEC 15.7, when one is attached.
+    trace: Option<ModelTrace>,
 }
 
 // ---------------------------------------------------------------------------
@@ -7002,7 +7345,20 @@ impl Drop for MutationGuard {
 impl<'a> Operations<'a> {
     /// Builds the operation layer over `git`.
     pub fn new(git: &'a Git) -> Operations<'a> {
-        Operations { git }
+        Operations {
+            git,
+            trace: ModelTrace::from_env(),
+        }
+    }
+
+    /// Builds the operation layer over `git` with one explicit model-action
+    /// trace (SPEC 15.7), so an in-process test drives the same records the
+    /// environment variable gives the executable.
+    pub fn with_model_trace(git: &'a Git, trace: ModelTrace) -> Operations<'a> {
+        Operations {
+            git,
+            trace: Some(trace),
+        }
     }
 
     /// The Git adapter this layer uses; interfaces never spawn Git itself.
@@ -7079,6 +7435,45 @@ impl<'a> Operations<'a> {
             return Err(OperationError::new(
                 report.blockers[0].public_code(),
                 blockers_message(&report.blockers),
+            ));
+        }
+        let branch_ref = self.git.head_symbolic_ref().map_err(OperationError::from)?;
+        if let Some(blocker) = adopted_branch_mismatch(settings, branch_ref.as_deref()) {
+            return Err(adopted_branch_refusal(&blocker));
+        }
+        Ok(branch_ref)
+    }
+
+    /// The shared mutation inspection with the one index exception of the
+    /// explicit recovery paths (SPEC 9.1 step 4, 9.7): every guard of
+    /// [`Operations::enforce_mutation_guards`] except the staged delta,
+    /// which is the subject both recovery operations run over — an
+    /// exact-plan resume commits the retained result that stays staged
+    /// against its candidate, and a guarded staged capture adopts the
+    /// inspected staged state itself.
+    ///
+    /// The exception admits the blocker, never the staging: each caller
+    /// proves the whole index against its own pinned state, so unrelated
+    /// or partial staged content still refuses there. Conflict entries,
+    /// in-progress Git operations, storage transformations, a detached
+    /// `HEAD`, and a branch other than the adopted one all refuse here as
+    /// they do for every other write.
+    fn enforce_mutation_guards_except_staged(
+        &self,
+        resolved: &ResolvedScope,
+        settings: &LocalSettings,
+    ) -> Result<Option<String>, OperationError> {
+        let report =
+            enforce_mutation_policy(self.git, Some(resolved)).map_err(OperationError::from)?;
+        let blockers: Vec<PolicyBlocker> = report
+            .blockers
+            .into_iter()
+            .filter(|blocker| !matches!(blocker, PolicyBlocker::StagedChanges { .. }))
+            .collect();
+        if !blockers.is_empty() {
+            return Err(OperationError::new(
+                blockers[0].public_code(),
+                blockers_message(&blockers),
             ));
         }
         let branch_ref = self.git.head_symbolic_ref().map_err(OperationError::from)?;
@@ -7679,6 +8074,9 @@ impl<'a> Operations<'a> {
             }
         };
         effects.observe_commit(CommitEffect::Created, Some(marker.commit.clone()));
+        if let Some(trace) = self.trace.as_ref() {
+            trace.initial(&marker.commit, &marker.result_tree);
+        }
 
         // Persist the settings only after the verified commit (SPEC 8.2); a
         // failure reports the partial success and shows the commit.
@@ -7880,15 +8278,19 @@ impl<'a> Operations<'a> {
     /// the staged changes stay behind with the candidate anchor, so the
     /// next automatic checkpoint stops on that staged state (SPEC 9.2,
     /// 9.1 step 7, 9.6).
+    ///
+    /// One request with `--include-staged` and its three expected
+    /// fingerprints leaves this algorithm for the private
+    /// `capture_staged_recovery`, the guarded recovery capture of SPEC 9.7
+    /// and the one narrow exception to the clean-index rule above.
     pub fn create_checkpoint(&self, request: &CheckpointRequest) -> CheckpointResult {
-        // The guarded recovery capture of SPEC 9.7 arrives with task T036;
-        // the normal algorithm never consumes pre-existing staged
-        // selections.
-        if request.include_staged {
-            return CheckpointResult::failure(
-                operation_pending("staged-content recovery capture"),
-                Effects::unchanged(),
-            );
+        // The guarded recovery capture of SPEC 9.7 is the one narrow path
+        // that adopts inspected staged content; the normal algorithm below
+        // never consumes a pre-existing staged selection.
+        match recovery_expectations(request) {
+            Ok(None) => {}
+            Ok(Some(expectations)) => return self.capture_staged_recovery(request, &expectations),
+            Err(error) => return CheckpointResult::failure(error, Effects::unchanged()),
         }
         let mut effects = Effects::unchanged();
         let failure = |error: OperationError, effects: &Effects| {
@@ -8059,35 +8461,80 @@ impl<'a> Operations<'a> {
         }
         effects.observe_index(ObservedEffect::Changed);
 
-        // Commit through the shared marker writer: the real index tree, the
-        // parent, the result tree, and every reserved trailer are verified
-        // against the prepared map (SPEC 8.4).
+        // Commit through the shared marker writer, then report the observed
+        // working state after the commit: both the ordinary checkpoint and
+        // the guarded recovery capture below share this one path, so both
+        // report effects and failures through the same observation policy
+        // (SPEC 8.4, 9.2).
+        let capture = ProvedCapture {
+            scope: request.scope.clone(),
+            metadata,
+            text: text.to_string(),
+            candidate: candidate.clone(),
+            paths,
+            tree,
+            working_before: working_before.clone(),
+        };
+        let (marker, data) = match self.commit_proved_capture(&mut effects, capture) {
+            Ok(finished) => finished,
+            Err(failed) => {
+                let (error, observed) = *failed;
+                return CheckpointResult::observed_failure(error, observed, effects);
+            }
+        };
+        if let Some(trace) = self.trace.as_ref() {
+            trace.checkpoint(false, &marker.commit, &candidate, &marker.result_tree);
+        }
+        let warnings = self.observe_capture_success(
+            &mut effects,
+            request.scope.as_ref(),
+            &marker.commit,
+            &working_before,
+        );
+        if warnings.is_empty() {
+            CheckpointResult::success(data, effects)
+        } else {
+            CheckpointResult::success_with_warnings(data, warnings, effects)
+        }
+    }
+
+    /// Commits one proved capture through the shared marker writer (SPEC
+    /// 8.4, 9.2, 9.6): the real index tree, the parent, the result tree,
+    /// and every reserved trailer are verified against the prepared map.
+    ///
+    /// A failure inspects what it left and keeps the commit the failure
+    /// itself names: a commit whose observed state does not match the
+    /// prepared map still exists — it stays ordinary history and confers
+    /// no approval. A killed commit process loses the outcome, which is
+    /// never narrowed back to `none`. Every other failure, such as a hook
+    /// rejection or an output limit reached after the commit, reports the
+    /// candidate anchor, the inspected commit when one exists, and the
+    /// exact observed effects.
+    ///
+    /// `capture.working_before` is the scoped working-entry baseline the
+    /// capture read before its first real mutation, the comparison
+    /// [`Operations::observe_capture_failure`] reports against.
+    fn commit_proved_capture(
+        &self,
+        effects: &mut Effects,
+        capture: ProvedCapture,
+    ) -> Result<(ValidMarker, CheckpointOutcome), Box<(OperationError, CheckpointOutcome)>> {
         let observed = |commit: Option<String>| CheckpointOutcome {
             commit,
             changed: true,
-            candidate: candidate.clone(),
-            paths: paths.clone(),
+            candidate: capture.candidate.clone(),
+            paths: capture.paths.clone(),
             dry_run: false,
-            expected_tree: Some(tree.clone()),
+            expected_tree: Some(capture.tree.clone()),
         };
-        let marker = match commit_marker(self.git, &metadata, text) {
+        let marker = match commit_marker(self.git, &capture.metadata, &capture.text) {
             Ok(marker) => marker,
             Err(error) => {
-                // Inspect what the failed capture left, then keep the commit
-                // the failure itself names: a commit whose observed state
-                // does not match the prepared map still exists: it stays
-                // ordinary history and confers no approval (SPEC 9.6). A
-                // killed commit process loses the outcome, which is never
-                // narrowed back to `none` (SPEC 7.1). Every other failure,
-                // such as a hook rejection or an output limit reached after
-                // the commit, reports the candidate anchor, the inspected
-                // commit when one exists, and the exact observed effects
-                // (SPEC 9.2).
                 let inspected = self.observe_capture_failure(
-                    &mut effects,
-                    Some(&candidate),
-                    &working_before,
-                    request.scope.as_ref(),
+                    effects,
+                    Some(&capture.candidate),
+                    &capture.working_before,
+                    capture.scope.as_ref(),
                 );
                 match &error {
                     MarkerCommitError::Verification { commit, .. } => {
@@ -8103,11 +8550,7 @@ impl<'a> Operations<'a> {
                     MarkerCommitError::Git(GitError::Timeout { .. }) => None,
                     _ => inspected,
                 };
-                return CheckpointResult::observed_failure(
-                    OperationError::from(error),
-                    observed(commit),
-                    effects,
-                );
+                return Err(Box::new((OperationError::from(error), observed(commit))));
             }
         };
         effects.observe_commit(CommitEffect::Created, Some(marker.commit.clone()));
@@ -8115,54 +8558,486 @@ impl<'a> Operations<'a> {
             commit: Some(marker.commit.clone()),
             changed: true,
             candidate: marker.commit.clone(),
-            paths,
+            paths: capture.paths,
             dry_run: false,
             expected_tree: Some(marker.result_tree.clone()),
         };
+        Ok((marker, data))
+    }
 
-        // The observed working state after the commit: a writer may have
-        // changed a file after it was staged — or created a scoped path that
-        // did not exist when the scope resolved — so the response reports
-        // the newer uncaptured content instead of calling those bytes saved
-        // (SPEC 9.2).
+    /// The post-success observation of one verified draft commit (SPEC 7.1,
+    /// 9.2, 9.6): the final scoped working state is read from the repository
+    /// and compared with `before`, the baseline the capture read before its
+    /// first real mutation — the same comparison
+    /// [`Operations::observe_capture_failure`] reports against — so a hook
+    /// that changed scoped working bytes after the staging reports `changed`
+    /// working files next to its `DIRTY_SCOPE` warning, and an inspection
+    /// that itself fails reports `unknown`, never a claim of unchanged state.
+    ///
+    /// The warnings of one verified draft commit: a writer — or a hook — may
+    /// have changed a scoped file after the capture read it, or created a
+    /// scoped path that did not exist when the scope resolved, so the
+    /// response reports the newer uncaptured content instead of calling
+    /// those bytes saved. An inspection that fails explains why it could
+    /// not.
+    fn observe_capture_success(
+        &self,
+        effects: &mut Effects,
+        scope: Option<&ScopeInput>,
+        commit: &str,
+        before: &BTreeMap<OsString, Option<WorkingEntry>>,
+    ) -> Vec<Warning> {
         let mut warnings = Vec::new();
         let rescoped = self
-            .context_scope_input(request.scope.as_ref())
+            .context_scope_input(scope)
             .map_err(|error| format!("{}: {}", error.code, error.message))
             .and_then(|input| resolve_scope(self.git, &input).map_err(|error| error.to_string()));
-        match rescoped {
-            Ok(scope) => match scoped_working_changes(self.git, &scope, &marker.commit) {
-                Ok(newer) if !newer.is_empty() => warnings.push(Warning {
-                    code: "DIRTY_SCOPE",
-                    message: format!(
-                        "the draft commit {} saved the staged content, but {} scoped path(s) hold newer uncaptured content: {}",
-                        marker.commit,
-                        newer.len(),
-                        listed_paths(&newer.keys().cloned().collect::<Vec<OsString>>()),
-                    ),
-                }),
-                Ok(_) => {}
-                Err(error) => warnings.push(Warning {
+        let scope = match rescoped {
+            Ok(scope) => scope,
+            Err(detail) => {
+                // The verified commit stands; its final working scope cannot
+                // be inspected, so the working effect is lost with it.
+                effects.observe_working_tree(ObservedEffect::Unknown);
+                warnings.push(Warning {
                     code: "GIT_FAILED",
                     message: format!(
-                        "the draft commit {} verified, but the working state after it could not be inspected: {error}",
-                        marker.commit,
+                        "the draft commit {commit} verified, but the working scope after it \
+                         could not be inspected: {detail}",
                     ),
-                }),
-            },
-            Err(detail) => warnings.push(Warning {
+                });
+                return warnings;
+            }
+        };
+        match scoped_working_changes(self.git, &scope, commit) {
+            Ok(newer) if !newer.is_empty() => warnings.push(Warning {
+                code: "DIRTY_SCOPE",
+                message: format!(
+                    "the draft commit {commit} saved the staged content, but {} scoped \
+                     path(s) hold newer uncaptured content: {}",
+                    newer.len(),
+                    listed_paths(&newer.keys().cloned().collect::<Vec<OsString>>()),
+                ),
+            }),
+            Ok(_) => {}
+            Err(error) => warnings.push(Warning {
                 code: "GIT_FAILED",
                 message: format!(
-                    "the draft commit {} verified, but the working scope after it could not be inspected: {detail}",
-                    marker.commit,
+                    "the draft commit {commit} verified, but the working state after it \
+                     could not be inspected: {error}",
                 ),
             }),
         }
+        // The scoped working content against the baseline the capture read:
+        // the fresh resolution observes a hook-created scoped path too, and
+        // an entry that differs from that baseline is a real working-file
+        // change, never a saved one. Absence and a missing key are the same
+        // working state — a committed deletion leaves the fresh scope
+        // without its path while the baseline holds that path as absent —
+        // so [`present_working_entries`] compares the present entries only.
+        let inspected = scoped_working_state(self.git, &scope);
+        effects.observe_working_tree(match inspected {
+            Ok(after) if present_working_entries(&after) == present_working_entries(before) => {
+                ObservedEffect::Unchanged
+            }
+            Ok(_) => ObservedEffect::Changed,
+            Err(_) => ObservedEffect::Unknown,
+        });
+        warnings
+    }
+
+    /// The guarded recovery capture of staged content (SPEC 9.7): one
+    /// `checkpoint --include-staged --expect-head C --expect-index T
+    /// --expect-working W` request.
+    ///
+    /// An interrupted application can leave its proved result staged
+    /// against the candidate, and the writer who lost the plan captures
+    /// that state as one unreviewed draft instead of guessing prior
+    /// selections. The capture is guarded from every side:
+    ///
+    /// - every guard of the shared mutation inspection except the staged
+    ///   delta itself, which is the subject here: conflict entries,
+    ///   in-progress Git operations, storage transformations, a detached
+    ///   `HEAD`, and a foreign branch refuse as they do for every write,
+    ///   and the whole capture holds the shared mutation lock
+    /// - every staged change must lie in scope, and the scoped index must
+    ///   equal the inspected scoped working content, so the draft saves
+    ///   exactly the bytes a recovery inspection saw
+    /// - all three expected fingerprints must still match — `HEAD` still
+    ///   C, the real index tree still T, the scoped working fingerprint
+    ///   still W — so a state that moved since `doctor` reported it
+    ///   refuses `STALE_STATE` with nothing written
+    ///
+    /// Nothing is staged, unstaged, or restaged: the shared marker writer
+    /// commits the index exactly as it stands, verifies the result tree,
+    /// and appends one ordinary draft commit that confers no approval —
+    /// the baseline a review needs stays whatever the walk selects, and
+    /// the writer opens a fresh review over the new candidate. A dry run
+    /// validates the same way and reports the intended tree without
+    /// writing; the index tree is observed through one disposable copy of
+    /// the index, so even the validation leaves the real index bytes
+    /// alone (SPEC 6.4).
+    fn capture_staged_recovery(
+        &self,
+        request: &CheckpointRequest,
+        expectations: &StagedCaptureExpectations,
+    ) -> CheckpointResult {
+        let mut effects = Effects::unchanged();
+        let failure = |error: OperationError, effects: &Effects| {
+            CheckpointResult::failure(error, effects.clone())
+        };
+        let stale = |detail: String| {
+            OperationError::new("STALE_STATE", detail).recovery(&["margin", "doctor", "--json"])
+        };
+
+        // SPEC 9.1 step 1: the workspace probe, the input, and the one
+        // scope resolver. A recovery capture holds no request receipt to
+        // look up (SPEC 8.7): the three expected fingerprints are the state
+        // it pins, so its retry is one stale-state refusal, not a second
+        // commit.
+        if let Err(error) = require_work_tree(self.git) {
+            return failure(error, &effects);
+        }
+        let settings = match self.effective_settings() {
+            Ok(settings) => settings,
+            Err(error) => return failure(error, &effects),
+        };
+        let input = match scope_input_of(request.scope.as_ref(), &settings) {
+            Some(input) => input,
+            None => return failure(not_initialized(), &effects),
+        };
+        let resolved = match resolve_scope(self.git, &input) {
+            Ok(resolved) => resolved,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        if !resolved.blockers.is_empty() {
+            return failure(scope_blockers_refusal(&resolved.blockers), &effects);
+        }
+        // SPEC 9.1 step 2: the shared mutation lock serializes this capture
+        // with every other Margin write of the repository. A dry run writes
+        // nothing, so it reserves nothing (SPEC 6.4).
+        let _lock = if request.dry_run {
+            None
+        } else {
+            match self.acquire_mutation_lock() {
+                Ok(lock) => Some(lock),
+                Err(error) => return failure(error, &effects),
+            }
+        };
+        // SPEC 9.1 step 4 with the one index exception of SPEC 9.7: every
+        // shared guard except the staged delta, which is the subject of
+        // the capture, then the adopted branch and the author identity.
+        let branch_ref = match self.enforce_mutation_guards_except_staged(&resolved, &settings) {
+            Ok(branch_ref) => branch_ref,
+            Err(error) => return failure(error, &effects),
+        };
+        if let Err(error) = self.git.author_ident() {
+            if matches!(error, GitError::Exit { .. }) {
+                return failure(missing_identity(), &effects);
+            }
+            return failure(OperationError::from(error), &effects);
+        }
+        // The candidate the expected head pins; a draft has exactly one
+        // parent, so only a born branch supplies it (SPEC 8.4 rule 3).
+        let candidate = match self.git.head_commit() {
+            Ok(Some(candidate)) => candidate,
+            Ok(None) => {
+                return failure(
+                    OperationError::new(
+                        "BASELINE_UNAVAILABLE",
+                        "the branch is unborn, so no candidate exists to recover against",
+                    )
+                    .recovery(&["margin", "init", "--json"]),
+                    &effects,
+                );
+            }
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        if candidate != expectations.head {
+            return failure(
+                stale(format!(
+                    "the recovery capture requires HEAD at the expected commit {}, but HEAD \
+                     holds {candidate}",
+                    expectations.head,
+                )),
+                &effects,
+            );
+        }
+
+        // The real index and its tree (SPEC 9.7): the guards refused the
+        // conflict stages, and the tree is observed through one disposable
+        // copy so the validation itself writes nothing.
+        let index = match self.git.ls_files_stage() {
+            Ok(index) => index,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        let index_tree = match self.observed_index_tree() {
+            Ok(tree) => tree,
+            Err(error) => return failure(error, &effects),
+        };
+        if index_tree != expectations.index_tree {
+            return failure(
+                stale(format!(
+                    "the recovery capture requires the index tree {}, but the index holds \
+                     {index_tree}",
+                    expectations.index_tree,
+                )),
+                &effects,
+            );
+        }
+
+        // Every staged change in scope (SPEC 9.7): the capture adopts the
+        // writing it can pin completely, so staged content outside the
+        // scope keeps the ordinary Git inspection guidance of that
+        // section, never a silent partial adoption.
+        let staged: Vec<OsString> = match self.git.staged_against(&candidate) {
+            Ok(staged) => staged,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        let outside: Vec<OsString> = staged
+            .iter()
+            .filter(|path| !resolved.paths.contains_key(*path))
+            .cloned()
+            .collect();
+        if !outside.is_empty() {
+            return failure(
+                OperationError::new(
+                    "STAGED_CHANGES",
+                    format!(
+                        "the recovery capture adopts only staged content inside the writing \
+                         scope; {} staged path(s) lie outside it: {}",
+                        outside.len(),
+                        listed_paths(&outside),
+                    ),
+                )
+                .recovery(&["git", "diff", "--cached", "--name-status"]),
+                &effects,
+            );
+        }
+
+        // The scoped working fingerprint (SPEC 9.7): the inspected content
+        // the capture must still find.
+        let working = match scoped_working_state(self.git, &resolved) {
+            Ok(working) => working,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        let working_fingerprint = match working_content_digest(self.git, &resolved) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => {
+                return failure(
+                    OperationError::new(error.public_code(), error.to_string()),
+                    &effects,
+                );
+            }
+        };
+        if working_fingerprint.id() != expectations.working {
+            return failure(
+                stale(format!(
+                    "the recovery capture requires the scoped working fingerprint {}, but the \
+                     working tree holds {}",
+                    expectations.working,
+                    working_fingerprint.id(),
+                )),
+                &effects,
+            );
+        }
+
+        // The scoped index against the inspected scoped working content
+        // (SPEC 9.7): the draft must save exactly the bytes the inspection
+        // saw, so every scoped path's stage-zero entry — mode and raw
+        // bytes — equals its working entry. A path the writer edited after
+        // staging it, an unstaged edit, or an unstaged deletion each keep
+        // the capture refused: that newer content belongs to the next
+        // ordinary checkpoint, never to a guess about it.
+        let scoped_index: BTreeMap<OsString, (String, String)> = index
+            .iter()
+            .filter(|entry| entry.stage == 0 && resolved.paths.contains_key(&entry.path))
+            .map(|entry| (entry.path.clone(), (entry.mode.clone(), entry.oid.clone())))
+            .collect();
+        let differing: Vec<OsString> = working
+            .iter()
+            .filter(|(path, entry)| match (entry, scoped_index.get(*path)) {
+                (Some(working_entry), Some((mode, oid))) => {
+                    *mode != working_entry.mode.as_str() || *oid != working_entry.oid
+                }
+                (None, None) => false,
+                _ => true,
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        if !differing.is_empty() {
+            return failure(
+                OperationError::new(
+                    "DIRTY_SCOPE",
+                    format!(
+                        "the scoped index does not match the scoped working content, so the \
+                         recovery capture cannot save exactly one inspected state: {} path(s) \
+                         hold staged and working entries that differ ({})",
+                        differing.len(),
+                        listed_paths(&differing),
+                    ),
+                )
+                .recovery(&["margin", "doctor", "--json"]),
+                &effects,
+            );
+        }
+
+        // Unchanged content is the explicit no-op, never a failure: with
+        // every fingerprint matching and the scoped index equal to the
+        // scoped working content, an empty staged delta means the candidate
+        // already holds that exact state (SPEC 9.2).
+        if staged.is_empty() {
+            return CheckpointResult::success(
+                CheckpointOutcome {
+                    commit: None,
+                    changed: false,
+                    candidate,
+                    paths: Vec::new(),
+                    dry_run: request.dry_run,
+                    expected_tree: None,
+                },
+                effects,
+            );
+        }
+
+        // The prepared marker map (SPEC 8.3): the index tree exactly as it
+        // stands is the intended result, and no staging intervenes. An
+        // invalid explicit message refuses before anything is committed,
+        // so a bad message can never change this state (SPEC 7.3).
+        let metadata = CommitMetadata {
+            kind: CommitKind::Draft,
+            scope_digest: resolved.digest.id(),
+            scope_spec: String::from_utf8(resolved.descriptor.canonical_bytes())
+                .expect("the canonical descriptor is UTF-8 JSON"),
+            candidate: candidate.clone(),
+            result_tree: index_tree.clone(),
+            baseline: None,
+            request: None,
+            plan: None,
+            source: None,
+        };
+        let text = request.message.as_deref().unwrap_or("");
+        if let Err(problem) = metadata.commit_message(text) {
+            return failure(
+                OperationError::new(problem.public_code(), problem.to_string()),
+                &effects,
+            );
+        }
+
+        // A dry run reports the intended capture and writes nothing
+        // (SPEC 6.4).
+        if request.dry_run {
+            return CheckpointResult::success(
+                CheckpointOutcome {
+                    commit: None,
+                    changed: true,
+                    candidate,
+                    paths: staged,
+                    dry_run: true,
+                    expected_tree: Some(index_tree),
+                },
+                effects,
+            );
+        }
+
+        // The precondition recheck immediately before the one real
+        // mutation (SPEC 9.1 step 6, 9.7).
+        if let Err(error) = self.recheck_staged_capture_preconditions(
+            &input,
+            &resolved,
+            &settings,
+            &branch_ref,
+            &candidate,
+            &index_tree,
+        ) {
+            return failure(error, &effects);
+        }
+
+        // Commit the index exactly as it stands: the staged state becomes
+        // one unreviewed draft, and the post-commit inspection reports any
+        // newer uncaptured content a concurrent writer or hook created.
+        let capture = ProvedCapture {
+            scope: request.scope.clone(),
+            metadata,
+            text: text.to_string(),
+            candidate: candidate.clone(),
+            paths: staged,
+            tree: index_tree,
+            working_before: working.clone(),
+        };
+        let (marker, data) = match self.commit_proved_capture(&mut effects, capture) {
+            Ok(finished) => finished,
+            Err(failed) => {
+                let (error, observed) = *failed;
+                return CheckpointResult::observed_failure(error, observed, effects);
+            }
+        };
+        if let Some(trace) = self.trace.as_ref() {
+            trace.checkpoint(true, &marker.commit, &candidate, &marker.result_tree);
+        }
+        effects.observe_index(ObservedEffect::Changed);
+        let warnings = self.observe_capture_success(
+            &mut effects,
+            request.scope.as_ref(),
+            &marker.commit,
+            &working,
+        );
         if warnings.is_empty() {
             CheckpointResult::success(data, effects)
         } else {
             CheckpointResult::success_with_warnings(data, warnings, effects)
         }
+    }
+
+    /// The precondition recheck of one guarded recovery capture immediately
+    /// before its one real mutation (SPEC 9.1 step 6, 9.7): the scope with
+    /// its path-safety rules and its fresh path set, the shared guards with
+    /// their index exception, the branch, `HEAD`, and the real index tree
+    /// are read again and compared with the state the capture validated
+    /// against.
+    ///
+    /// The scoped working content is deliberately absent from this recheck:
+    /// the commit reads the index alone, so newer working bytes cannot
+    /// corrupt the captured state, and the post-commit inspection reports
+    /// them as newer uncaptured content instead (SPEC 9.2). The shared
+    /// marker writer verifies the real index tree once more inside the
+    /// commit itself.
+    fn recheck_staged_capture_preconditions(
+        &self,
+        input: &ScopeInput,
+        resolved: &ResolvedScope,
+        settings: &LocalSettings,
+        branch_at_guard: &Option<String>,
+        candidate: &str,
+        index_tree: &str,
+    ) -> Result<(), OperationError> {
+        // Path safety and the scope's path set (SPEC 14.3).
+        let fresh = resolve_scope(self.git, input).map_err(OperationError::from)?;
+        if !fresh.blockers.is_empty() {
+            return Err(scope_blockers_refusal(&fresh.blockers));
+        }
+        if fresh.paths != resolved.paths {
+            return Err(scope_paths_moved("scope", &fresh.paths, &resolved.paths));
+        }
+        let branch = self.enforce_mutation_guards_except_staged(&fresh, settings)?;
+        if branch != *branch_at_guard {
+            return Err(branch_moved_refusal(branch_at_guard, &branch));
+        }
+        let fresh_head = self.git.head_commit().map_err(OperationError::from)?;
+        if fresh_head.as_deref() != Some(candidate) {
+            return Err(stale_state_refusal(format!(
+                "HEAD changed from {candidate} to {} while the recovery capture was prepared; \
+                 nothing was committed",
+                fresh_head.as_deref().unwrap_or("an unborn branch"),
+            )));
+        }
+        let fresh_tree = self.observed_index_tree()?;
+        if fresh_tree != index_tree {
+            return Err(stale_state_refusal(format!(
+                "the index tree changed from {index_tree} to {fresh_tree} while the recovery \
+                 capture was prepared; nothing was committed",
+            )));
+        }
+        Ok(())
     }
 
     /// The precondition recheck of one checkpoint immediately before the
@@ -8332,6 +9207,42 @@ impl<'a> Operations<'a> {
             Ok(true) => ObservedEffect::Changed,
             Err(_) => ObservedEffect::Unknown,
         }
+    }
+
+    /// The tree the real index describes, observed without touching one
+    /// real index byte (SPEC 6.4, 9.7): the index file is copied to one
+    /// disposable path and `write-tree` runs against the copy, so the
+    /// recovery inspection, the guarded recovery capture, and its dry run
+    /// read the same tree while the real index keeps its bytes, cache
+    /// included. A missing index file is the empty index Git itself reads,
+    /// so the disposable copy is seeded empty in that case, never created
+    /// by one write against the real one.
+    ///
+    /// The copy never outlives the call, and no ref, working file, or
+    /// stored blob changes: only the disposable copy and the tree object
+    /// `write-tree` stores, which is the temporary Git object SPEC 6.4
+    /// allows a read-only computation to create.
+    fn observed_index_tree(&self) -> Result<String, OperationError> {
+        let source = self.git.git_path("index").map_err(PolicyError::from)?;
+        let temp = reserve_temp_index().map_err(PolicyError::Io)?;
+        let tree = (|| {
+            let mut probe = self.git.clone();
+            probe.set_env_override("GIT_INDEX_FILE", &temp);
+            match fs::metadata(&source) {
+                Ok(_) => fs::copy(&source, &temp)
+                    .map(|_| ())
+                    .map_err(PolicyError::Io)?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    probe.read_tree_empty().map_err(PolicyError::from)?
+                }
+                Err(error) => return Err(PolicyError::Io(error)),
+            }
+            probe.write_tree().map_err(PolicyError::from)
+        })();
+        // The disposable index never outlives the observation, on success
+        // or failure.
+        let _ = fs::remove_file(&temp);
+        tree.map_err(OperationError::from)
     }
 
     /// Inspects what a failed capture actually left behind (SPEC 9.1 step 7,
@@ -9077,11 +9988,17 @@ impl<'a> Operations<'a> {
         match self.lookup_request_receipt(CommitKind::Review, &plan.request_id, &fingerprint.id()) {
             Ok(ReceiptLookup::Found(receipt)) => {
                 effects.observe_commit(CommitEffect::ExistingReceipt, Some(receipt.commit.clone()));
+                if let Some(trace) = self.trace.as_ref() {
+                    trace.submit_receipt(&plan.request_id, &receipt.commit);
+                }
                 return self.existing_receipt_decision(&receipt, &plan, false, effects);
             }
             Ok(ReceiptLookup::Conflict {
                 commit, recorded, ..
             }) => {
+                if let Some(trace) = self.trace.as_ref() {
+                    trace.submit_conflict(&plan.request_id);
+                }
                 return failure(
                     request_id_conflict(&plan.request_id, &commit, &recorded),
                     &effects,
@@ -9214,6 +10131,24 @@ impl<'a> Operations<'a> {
             return failure(error, &effects);
         }
 
+        // The plan is accepted and pinned: the modeled protocol begins here
+        // (SPEC 15.7 `Submit`), with the identities the conformance check
+        // validates — the candidate, the baseline, and the groups the
+        // application restores, in the one order the proof applies them.
+        if let Some(trace) = self.trace.as_ref() {
+            let restore: Vec<String> = selected_reverse_units(&manifest, &decided)
+                .into_iter()
+                .map(|(_, change_id, _)| change_id.id())
+                .collect();
+            trace.submit_accepted(
+                "apply",
+                &plan.request_id,
+                &manifest.candidate_oid,
+                &manifest.baseline_oid,
+                &restore,
+            );
+        }
+
         // The decision data every return path below reports, from the
         // prepared context alone: the preview tree, the decided groups, and
         // the scoped result the decision approves.
@@ -9250,9 +10185,16 @@ impl<'a> Operations<'a> {
         // A failure at that boundary leaves real state behind, so the state
         // is inspected and reported instead of being called a rollback.
         if !plan.restore.is_empty() {
-            if let Err(error) =
-                self.apply_selected_review(&resolved, &manifest, &decided, &intended)
-            {
+            if let Err(error) = self.apply_selected_review(
+                &resolved,
+                &manifest,
+                &decided,
+                &intended,
+                &plan.request_id,
+            ) {
+                if let Some(trace) = self.trace.as_ref() {
+                    trace.fail(&plan.request_id);
+                }
                 let inspected = self.observe_capture_failure(
                     &mut effects,
                     Some(&manifest.candidate_oid),
@@ -9288,6 +10230,9 @@ impl<'a> Operations<'a> {
                 // ordinary history and confers no approval, while a killed
                 // commit process loses the outcome, which is never
                 // narrowed back to `none` (SPEC 9.6, 7.1).
+                if let Some(trace) = self.trace.as_ref() {
+                    trace.fail(&plan.request_id);
+                }
                 let inspected = self.observe_capture_failure(
                     &mut effects,
                     Some(&manifest.candidate_oid),
@@ -9316,6 +10261,14 @@ impl<'a> Operations<'a> {
             }
         };
         effects.observe_commit(CommitEffect::Created, Some(marker.commit.clone()));
+        if let Some(trace) = self.trace.as_ref() {
+            trace.publish(
+                &plan.request_id,
+                &marker.commit,
+                &manifest.candidate_oid,
+                &marker.result_tree,
+            );
+        }
 
         // The observed state after the verified commit (SPEC 9.1 step 7,
         // 9.2): a hook or a concurrent writer may have changed scoped
@@ -9329,6 +10282,9 @@ impl<'a> Operations<'a> {
             &intended.tree,
             &mut effects,
         );
+        if let Some(trace) = self.trace.as_ref() {
+            trace.respond(&plan.request_id, &marker.commit);
+        }
         let data = observed(
             Some(marker.commit.clone()),
             &restored,
@@ -9369,6 +10325,7 @@ impl<'a> Operations<'a> {
         manifest: &GroupedManifest,
         decided: &BTreeSet<&str>,
         intended: &IntendedReview,
+        request: &str,
     ) -> Result<(), OperationError> {
         let expected_delta: BTreeSet<OsString> =
             intended.paths.iter().map(OsString::from).collect();
@@ -9401,6 +10358,9 @@ impl<'a> Operations<'a> {
                         change_id.id()
                     ),
                 ));
+            }
+            if let Some(trace) = self.trace.as_ref() {
+                trace.apply_group(request, &change_id.id(), &manifest.candidate_oid);
             }
         }
 
@@ -9460,6 +10420,9 @@ impl<'a> Operations<'a> {
                     listed_paths(&moved),
                 ),
             ));
+        }
+        if let Some(trace) = self.trace.as_ref() {
+            trace.update_index(request, &manifest.candidate_oid, &intended.tree);
         }
         Ok(())
     }
@@ -9561,19 +10524,576 @@ impl<'a> Operations<'a> {
 
     /// Resumes one retained review plan (SPEC 13.2 `resume_review`, 9.7).
     ///
-    /// The guards run first and refuse without writing, and a document the
-    /// strict parser refuses never reads as a missing feature. The resume
-    /// algorithm arrives with task T035; until then a clean workspace with
-    /// a well-formed plan fails with `OPERATION_UNAVAILABLE` and unchanged
-    /// effects.
-    pub fn resume_review(&self, request: &ReviewRequest) -> ReviewResult {
-        if let Err(error) = self.mutation_context(request.scope.as_ref()) {
-            return ReviewResult::failure(error, Effects::unchanged());
+    /// The retained-plan recovery path of SPEC 9.7: the writer still holds
+    /// the plan, and the repository may still hold the result one
+    /// interrupted application proved — the index at the intended tree T,
+    /// the scoped working bytes at the reviewed result R, and the
+    /// candidate C still at `HEAD`. The resume recomputes T from the plan
+    /// alone, through the same disposable-index proof the dry run and the
+    /// application share, and compares that proved result against the
+    /// repository. It commits only when every dimension matches: `HEAD`
+    /// still C, the real index exactly T, the scoped working content
+    /// exactly R, no staged delta outside the restored passages, the
+    /// adopted branch, the scope, and the plan's decisions over the
+    /// recomputed manifest. An unmatched partial state refuses before the
+    /// commit; the resume never reapplies a patch and never approves state
+    /// it did not prove.
+    ///
+    /// This is newly validated explicit approval, not automatic crash
+    /// recovery. The shared sequence of SPEC 9.1 still runs: the workspace
+    /// probe and the strict parse, the mutation lock — the resume commits —
+    /// and the receipt lookup of SPEC 8.7 before any present-day stale
+    /// check, so a resume of a request that already completed returns its
+    /// verified receipt instead of a refusal or a second commit, while a
+    /// reused request ID under another fingerprint conflicts. The mutation
+    /// guards carry the one index exception of SPEC 9.7: the retained
+    /// result stays staged against C, so the staged-changes blocker alone
+    /// does not refuse here, every other blocker still does, and the
+    /// retained-state inspection proves the whole index tree against the
+    /// recomputed T instead of trusting the blocker's own path list.
+    ///
+    /// A keep-all plan holds the candidate's own tree as T, so its exact
+    /// retained state is the clean workspace, and resuming it is one
+    /// explicitly validated empty review commit (SPEC 9.4). A dry run
+    /// reports the same verification without the commit (SPEC 6.4).
+    pub fn resume_review(&self, request: &ReviewRequest) -> ReviewDecisionResult {
+        let mut effects = Effects::unchanged();
+        let failure = |error: OperationError, effects: &Effects| {
+            ReviewDecisionResult::failure(error, effects.clone())
+        };
+
+        // SPEC 9.1 steps 1 and 3: the workspace probe and the strict parse
+        // and canonicalization of the input, before any present-day
+        // eligibility inspection.
+        if let Err(error) = require_work_tree(self.git) {
+            return failure(error, &effects);
         }
-        if let Err(problem) = ReviewPlan::parse(&request.plan) {
-            return ReviewResult::failure(problem.into(), Effects::unchanged());
+        let plan = match ReviewPlan::parse(&request.plan) {
+            Ok(plan) => plan,
+            Err(problem) => return failure(problem.into(), &effects),
+        };
+        let fingerprint = match Identities::new(self.git)
+            .and_then(|identities| identities.plan(&plan.identity()))
+        {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+
+        // SPEC 9.1 step 2: the shared mutation lock serializes the commit
+        // the resume may create with every other Margin write of the
+        // repository. A dry run reserves neither the branch nor the
+        // working files (SPEC 6.4), so it takes no lock.
+        let _lock = if request.dry_run {
+            None
+        } else {
+            match self.acquire_mutation_lock() {
+                Ok(lock) => Some(lock),
+                Err(error) => return failure(error, &effects),
+            }
+        };
+
+        // SPEC 8.7, 9.7: the receipt lookup precedes every stale-state
+        // check below, so a resume of a request that already completed
+        // returns its verified receipt instead of a refusal or a second
+        // commit. A dry run reports the matched receipt the way the
+        // validation does: as data, with the effects of an operation that
+        // wrote nothing (SPEC 6.4).
+        match self.lookup_request_receipt(CommitKind::Review, &plan.request_id, &fingerprint.id()) {
+            Ok(ReceiptLookup::Found(receipt)) => {
+                if !request.dry_run {
+                    effects.observe_commit(
+                        CommitEffect::ExistingReceipt,
+                        Some(receipt.commit.clone()),
+                    );
+                    if let Some(trace) = self.trace.as_ref() {
+                        trace.submit_receipt(&plan.request_id, &receipt.commit);
+                    }
+                }
+                return self.existing_receipt_decision(&receipt, &plan, request.dry_run, effects);
+            }
+            Ok(ReceiptLookup::Conflict {
+                commit, recorded, ..
+            }) => {
+                if !request.dry_run {
+                    if let Some(trace) = self.trace.as_ref() {
+                        trace.submit_conflict(&plan.request_id);
+                    }
+                }
+                return failure(
+                    request_id_conflict(&plan.request_id, &commit, &recorded),
+                    &effects,
+                );
+            }
+            Ok(ReceiptLookup::Absent) => {}
+            Err(error) => return failure(error, &effects),
         }
-        ReviewResult::failure(operation_pending("review resumption"), Effects::unchanged())
+
+        // SPEC 9.7 requires the current `HEAD` to still equal the candidate
+        // C the plan pins, so that dimension refuses first, with both object
+        // IDs named, before the pinned comparison recomputes anything.
+        let fresh_head = match self.git.head_commit() {
+            Ok(head) => head,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        if fresh_head.as_deref() != Some(plan.candidate_oid.as_str()) {
+            return failure(
+                OperationError::new(
+                    "STALE_REVIEW",
+                    format!(
+                        "the resume requires HEAD at the candidate {} of the retained plan, but \
+                         HEAD holds {}",
+                        plan.candidate_oid,
+                        fresh_head.as_deref().unwrap_or("an unborn branch"),
+                    ),
+                )
+                .recovery(&["margin", "doctor", "--json"]),
+                &effects,
+            );
+        }
+
+        // The pinned comparison and the plan's coverage of it (SPEC 7.3,
+        // 9.3): recomputed from the history the plan pins, so the intended
+        // tree below is the plan's own proved result, never an observation
+        // of whatever the workspace holds.
+        let pinned = match self.validated_plan(request.scope.as_ref(), &plan) {
+            Ok(pinned) => pinned,
+            Err(error) => return failure(error, &effects),
+        };
+        let PinnedReview {
+            resolved,
+            branch_ref,
+            manifest,
+            candidate_scope_digest,
+        } = pinned;
+
+        // SPEC 9.1 step 4 with the one index exception of SPEC 9.7: the
+        // repository and storage policy in guard order, then the adopted
+        // branch, then the author identity Margin never writes itself.
+        let settings = match self.effective_settings() {
+            Ok(settings) => settings,
+            Err(error) => return failure(error, &effects),
+        };
+        let input = match scope_input_of(request.scope.as_ref(), &settings) {
+            Some(input) => input,
+            None => return failure(not_initialized(), &effects),
+        };
+        let branch_at_guard = match self.enforce_resume_guards(&resolved, &settings) {
+            Ok(branch_ref) => branch_ref,
+            Err(error) => return failure(error, &effects),
+        };
+        if let Err(error) = self.git.author_ident() {
+            if matches!(error, GitError::Exit { .. }) {
+                return failure(missing_identity(), &effects);
+            }
+            return failure(OperationError::from(error), &effects);
+        }
+
+        // The recomputed intended tree T (SPEC 9.3, 9.7): one disposable
+        // index seeded from C reverse-applies the plan's selected complete
+        // units. The real index and the working files are never touched,
+        // so the resume never reapplies a patch.
+        let decided: BTreeSet<&str> = plan.restore.iter().map(String::as_str).collect();
+        let intended = match intended_review_tree(self.git, &manifest, &decided) {
+            Ok(intended) => intended,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        let result_scope_digest = match scoped_content_digest(self.git, &intended.tree, &resolved) {
+            Ok(digest) => digest,
+            Err(error) => {
+                return failure(
+                    OperationError::new(error.public_code(), error.to_string()),
+                    &effects,
+                );
+            }
+        };
+        let restored: Vec<String> = manifest
+            .groups()
+            .filter(|group| decided.contains(group.change_id.id().as_str()))
+            .map(|group| group.change_id.id())
+            .collect();
+        let kept = manifest.groups().count() - restored.len();
+
+        // The retained-state inspection of SPEC 9.7: every dimension the
+        // resume commits against, proved against the recomputed result.
+        if let Err(error) =
+            self.verify_retained_review_state(&resolved, &manifest.candidate_oid, &intended)
+        {
+            return failure(error, &effects);
+        }
+
+        // The prepared marker map (SPEC 8.3), exactly the map the
+        // interrupted application would have committed: C as the candidate
+        // and parent, B as the baseline, T as the result tree, and the
+        // request and plan fingerprint as the receipt. An invalid effective
+        // message refuses before anything is committed (SPEC 7.3).
+        let metadata = CommitMetadata {
+            kind: CommitKind::Review,
+            scope_digest: resolved.digest.id(),
+            scope_spec: String::from_utf8(resolved.descriptor.canonical_bytes())
+                .expect("the canonical descriptor is UTF-8 JSON"),
+            candidate: manifest.candidate_oid.clone(),
+            result_tree: intended.tree.clone(),
+            baseline: Some(manifest.baseline_oid.clone()),
+            request: Some(plan.request_id.clone()),
+            plan: Some(fingerprint.id()),
+            source: None,
+        };
+        if let Err(problem) = metadata.commit_message(&plan.message) {
+            return failure(
+                OperationError::new(problem.public_code(), problem.to_string()),
+                &effects,
+            );
+        }
+
+        // The decision data every return path below reports, from the
+        // prepared context alone: the recomputed tree, the decided groups,
+        // and the scoped result the decision approves.
+        let observed = |commit: Option<String>, dry_run: bool| ReviewDecision {
+            request_id: plan.request_id.clone(),
+            review_id: manifest.review_id.id(),
+            branch_ref: branch_ref.clone(),
+            scope_id: resolved.digest.id(),
+            baseline_oid: manifest.baseline_oid.clone(),
+            candidate_oid: manifest.candidate_oid.clone(),
+            candidate_scope_digest: candidate_scope_digest.id(),
+            kept: Some(kept),
+            restored: restored.clone(),
+            paths: intended.paths.clone(),
+            expected_tree: intended.tree.clone(),
+            result_scope_digest: result_scope_digest.id(),
+            message: plan.message.clone(),
+            dry_run,
+            commit,
+            existing_receipt: None,
+        };
+
+        // A dry run is the verification half alone (SPEC 6.4): the retained
+        // state the inspection just proved, reported without the commit.
+        if request.dry_run {
+            return ReviewDecisionResult::success(observed(None, true), Effects::unchanged());
+        }
+
+        // The working-entry baseline for post-failure observation (SPEC 9.1
+        // step 7), read before the commit: the resume rewrites nothing, so
+        // this equals R the inspection proved.
+        let working_before = match scoped_working_state(self.git, &resolved) {
+            Ok(before) => before,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+
+        // The precondition recheck immediately before the only real
+        // mutation of the resume (SPEC 9.1 step 6): the scope, the branch,
+        // the candidate, and the retained result must all still hold when
+        // the commit starts.
+        if let Err(error) = self.recheck_resume_preconditions(
+            &input,
+            &resolved,
+            &settings,
+            &branch_at_guard,
+            &manifest.candidate_oid,
+            &intended,
+        ) {
+            return failure(error, &effects);
+        }
+
+        // The retained plan is accepted and pinned: the modeled protocol
+        // restarts at its commit phase, because the retained result already
+        // passed the application this resume never repeats (SPEC 15.7
+        // `Submit` in resume mode).
+        if let Some(trace) = self.trace.as_ref() {
+            trace.submit_accepted(
+                "resume",
+                &plan.request_id,
+                &manifest.candidate_oid,
+                &manifest.baseline_oid,
+                &restored,
+            );
+        }
+
+        // The one real mutation of the resume (SPEC 9.7): a normal review
+        // commit over the already validated index — no application, no
+        // restaging from the working tree, no `commit --only`. The shared
+        // marker writer compares the real index tree with T and verifies
+        // the actual parent, tree, and every reserved trailer against the
+        // prepared map before the baseline may advance (SPEC 8.4).
+        let marker = match commit_marker(self.git, &metadata, &plan.message) {
+            Ok(marker) => marker,
+            Err(error) => {
+                // Inspect what the failed commit left, then keep the commit
+                // the failure itself names: a commit whose observed state
+                // does not match the prepared map still exists as ordinary
+                // history and confers no approval, while a killed commit
+                // process loses the outcome, which is never narrowed back
+                // to `none` (SPEC 9.6, 7.1). The retained state itself
+                // stays behind for the next explicit recovery.
+                if let Some(trace) = self.trace.as_ref() {
+                    trace.fail(&plan.request_id);
+                }
+                let inspected = self.observe_resume_failure(
+                    &mut effects,
+                    &manifest.candidate_oid,
+                    &intended.tree,
+                    &working_before,
+                    request.scope.as_ref(),
+                );
+                match &error {
+                    MarkerCommitError::Verification { commit, .. } => {
+                        effects.observe_commit(CommitEffect::Created, Some(commit.clone()));
+                    }
+                    MarkerCommitError::Git(GitError::Timeout { .. }) => {
+                        effects.observe_commit(CommitEffect::Unknown, None);
+                    }
+                    _ => {}
+                }
+                let commit = match &error {
+                    MarkerCommitError::Verification { commit, .. } => Some(commit.clone()),
+                    MarkerCommitError::Git(GitError::Timeout { .. }) => None,
+                    _ => inspected,
+                };
+                return ReviewDecisionResult::observed_failure(
+                    OperationError::from(error),
+                    observed(commit, false),
+                    effects,
+                );
+            }
+        };
+        effects.observe_commit(CommitEffect::Created, Some(marker.commit.clone()));
+        if let Some(trace) = self.trace.as_ref() {
+            trace.publish(
+                &plan.request_id,
+                &marker.commit,
+                &manifest.candidate_oid,
+                &marker.result_tree,
+            );
+        }
+
+        // The observed state after the verified commit (SPEC 9.1 step 7,
+        // 9.2): a hook or a concurrent writer may have changed scoped
+        // working bytes or staged entries after the commit the markers
+        // proved. The response reports that newer content as observed, and
+        // never as reviewed, while the verified commit stands.
+        let warnings = self.observe_receipt_completion(
+            request.scope.as_ref(),
+            "review",
+            &marker.commit,
+            &intended.tree,
+            &mut effects,
+        );
+        if let Some(trace) = self.trace.as_ref() {
+            trace.respond(&plan.request_id, &marker.commit);
+        }
+        let data = observed(Some(marker.commit.clone()), false);
+        if warnings.is_empty() {
+            ReviewDecisionResult::success(data, effects)
+        } else {
+            ReviewDecisionResult::success_with_warnings(data, warnings, effects)
+        }
+    }
+
+    /// The shared mutation inspection of the resume (SPEC 9.1 step 4, 9.7):
+    /// every guard of [`Operations::enforce_mutation_guards`] with the one
+    /// explicit index exception of SPEC 9.7 — an exact-plan resume runs
+    /// over the retained result, which stays staged against the candidate.
+    ///
+    /// The exception admits the blocker, never the staging: the
+    /// retained-state inspection proves the whole index tree against the
+    /// recomputed T, so unrelated or partial staged content still refuses
+    /// there. Conflict entries, in-progress Git operations, storage
+    /// transformations, a detached `HEAD`, and a branch other than the
+    /// adopted one all refuse here as they do for every other write.
+    fn enforce_resume_guards(
+        &self,
+        resolved: &ResolvedScope,
+        settings: &LocalSettings,
+    ) -> Result<Option<String>, OperationError> {
+        self.enforce_mutation_guards_except_staged(resolved, settings)
+    }
+
+    /// Proves the retained state of one resumed plan against the recomputed
+    /// intended result (SPEC 9.7): `HEAD` still the candidate C, the staged
+    /// delta exactly the restored passages, the real index tree exactly T,
+    /// and the scoped working content exactly R.
+    ///
+    /// Every mismatch refuses before the commit with one typed stale
+    /// refusal that names the dimension and the observed value, because the
+    /// resume approves only the plan's own proved result: a partial
+    /// application, a later writer, a moved candidate, or unrelated staged
+    /// content each keep the decision unmade, and the recovery inspection
+    /// of `doctor` remains the path that explains the observed state
+    /// (SPEC 9.6, 9.7).
+    fn verify_retained_review_state(
+        &self,
+        resolved: &ResolvedScope,
+        candidate: &str,
+        intended: &IntendedReview,
+    ) -> Result<(), OperationError> {
+        let retained = |dimension: String| {
+            OperationError::new("STALE_REVIEW", dimension).recovery(&["margin", "doctor", "--json"])
+        };
+
+        // The candidate the prepared map names must still be `HEAD`.
+        let fresh_head = self.git.head_commit().map_err(OperationError::from)?;
+        if fresh_head.as_deref() != Some(candidate) {
+            return Err(retained(format!(
+                "the resume requires HEAD at the candidate {candidate} of the retained plan, but \
+                 HEAD holds {}",
+                fresh_head.as_deref().unwrap_or("an unborn branch"),
+            )));
+        }
+
+        // No unrelated staged delta (SPEC 9.7): the staged paths are exactly
+        // the restored passages the plan rewrites.
+        let staged: BTreeSet<OsString> = self
+            .git
+            .staged_against(candidate)
+            .map_err(OperationError::from)?
+            .into_iter()
+            .collect();
+        let expected: BTreeSet<OsString> = intended.paths.iter().map(OsString::from).collect();
+        if staged != expected {
+            let unexpected: Vec<OsString> = staged.difference(&expected).cloned().collect();
+            let missing: Vec<OsString> = expected.difference(&staged).cloned().collect();
+            return Err(retained(format!(
+                "the staged delta disagrees with the retained plan: {} path(s) staged outside \
+                 its restored passages ({}), {} restored path(s) staged nothing ({})",
+                unexpected.len(),
+                listed_paths(&unexpected),
+                missing.len(),
+                listed_paths(&missing),
+            )));
+        }
+
+        // The real index is exactly T (SPEC 9.7): conflict entries stop the
+        // inspection as one observed mismatch, never a fallback that could
+        // read the state as absent.
+        if self
+            .git
+            .ls_files_stage()
+            .map_err(OperationError::from)?
+            .iter()
+            .any(|entry| entry.stage > 0)
+        {
+            return Err(retained(
+                "the index holds conflict entries, so it cannot equal the intended result tree \
+                 of the retained plan"
+                    .to_string(),
+            ));
+        }
+        let index_tree = self.git.write_tree().map_err(OperationError::from)?;
+        if index_tree != intended.tree {
+            return Err(retained(format!(
+                "the index holds the tree {index_tree} instead of the intended result tree {} of \
+                 the retained plan",
+                intended.tree,
+            )));
+        }
+
+        // The scoped working content is exactly R (SPEC 9.7): the same
+        // comparison the application verifies after the real apply, read
+        // from the immutable entries of T alone.
+        let working = scoped_working_state(self.git, resolved).map_err(OperationError::from)?;
+        let expected_working = intended_working_state(self.git, resolved, &intended.tree)
+            .map_err(OperationError::from)?;
+        if working != expected_working {
+            let mut moved: Vec<OsString> = working
+                .keys()
+                .chain(expected_working.keys())
+                .filter(|path| working.get(*path) != expected_working.get(*path))
+                .cloned()
+                .collect();
+            moved.sort();
+            return Err(retained(format!(
+                "the scoped working content does not equal the reviewed result of the retained \
+                 plan: {} path(s) differ ({})",
+                moved.len(),
+                listed_paths(&moved),
+            )));
+        }
+        Ok(())
+    }
+
+    /// The precondition recheck immediately before the resume's one real
+    /// mutation (SPEC 9.1 step 6, 9.7): the scope, the branch, the
+    /// candidate, and the retained result must all still hold when the
+    /// commit starts.
+    fn recheck_resume_preconditions(
+        &self,
+        input: &ScopeInput,
+        resolved: &ResolvedScope,
+        settings: &LocalSettings,
+        branch_at_guard: &Option<String>,
+        candidate: &str,
+        intended: &IntendedReview,
+    ) -> Result<(), OperationError> {
+        // Path safety and the scope's path set (SPEC 14.3): a scoped path
+        // that became a symlink, a nested repository, or one more eligible
+        // untracked file all change what the one resolver returns.
+        let fresh = resolve_scope(self.git, input).map_err(OperationError::from)?;
+        if !fresh.blockers.is_empty() {
+            return Err(scope_blockers_refusal(&fresh.blockers));
+        }
+        if fresh.paths != resolved.paths {
+            return Err(scope_paths_moved("scope", &fresh.paths, &resolved.paths));
+        }
+        // The shared policy guards once more — the index exception of the
+        // resume included — and the branch the guards observed.
+        let branch = self.enforce_resume_guards(&fresh, settings)?;
+        if branch != *branch_at_guard {
+            return Err(branch_moved_refusal(branch_at_guard, &branch));
+        }
+        // The retained state itself, proved once more against the
+        // recomputed result.
+        self.verify_retained_review_state(&fresh, candidate, intended)
+    }
+
+    /// Inspects the workspace after the resume's commit failed (SPEC 9.7,
+    /// 9.6): the resume itself staged nothing and rewrote nothing, so the
+    /// retained result is what the inspection compares — the index against
+    /// the recomputed T, the scoped working bytes against the baseline the
+    /// inspection read before the commit — and the head names any commit a
+    /// failed process still created. The refusal that follows reports this
+    /// observed state and never claims a rollback (SPEC 9.6): the retained
+    /// result stays exactly where it was for the next explicit resume.
+    fn observe_resume_failure(
+        &self,
+        effects: &mut Effects,
+        candidate: &str,
+        intended_tree: &str,
+        before: &BTreeMap<OsString, Option<WorkingEntry>>,
+        scope: Option<&ScopeInput>,
+    ) -> Option<String> {
+        // The branch head first: it names the commit the response reports.
+        let mut observed = None;
+        match self.git.head_commit() {
+            Ok(Some(head)) if head != candidate => {
+                effects.observe_commit(CommitEffect::Created, Some(head.clone()));
+                observed = Some(head);
+            }
+            // The head the resume started from still stands.
+            Ok(_) => effects.observe_commit(CommitEffect::None, None),
+            Err(_) => effects.observe_commit(CommitEffect::Unknown, None),
+        }
+
+        // The retained index: the resume stages nothing, so the index
+        // stayed exactly T unless a concurrent writer staged something new.
+        effects.observe_index(match self.git.write_tree() {
+            Ok(tree) if tree == intended_tree => ObservedEffect::Unchanged,
+            Ok(_) => ObservedEffect::Changed,
+            Err(_) => ObservedEffect::Unknown,
+        });
+
+        // The scoped working content: unchanged while it still equals the
+        // baseline the inspection read, which equals R the resume proved.
+        let inspected = self
+            .context_scope_input(scope)
+            .and_then(|input| resolve_scope(self.git, &input).map_err(OperationError::from))
+            .and_then(|fresh| scoped_working_state(self.git, &fresh).map_err(OperationError::from));
+        effects.observe_working_tree(match inspected {
+            Ok(after) if &after == before => ObservedEffect::Unchanged,
+            Ok(_) => ObservedEffect::Changed,
+            Err(_) => ObservedEffect::Unknown,
+        });
+        observed
     }
 
     /// Validates one already parsed plan against the pinned comparison the
@@ -10437,9 +11957,12 @@ impl<'a> Operations<'a> {
     /// the baseline through the one walk, the working fingerprint through the
     /// one content digest of SPEC 8.6, and the receipt through the same scan
     /// [`find_receipt`] runs, so no interface judges recovery state on its
-    /// own (SPEC 13.6). The index tree comes from `git write-tree` in query
-    /// mode — it stores one tree object, touches no ref, no index entry, and
-    /// no working file, and stays `None` while conflict stages stop it.
+    /// own (SPEC 13.6). The index tree comes from one disposable copy of
+    /// the real index through [`Operations::observed_index_tree`]: plain
+    /// `git write-tree` rewrites the index it addresses to store the
+    /// computed tree cache, optional locks off or not, so the query reads
+    /// the same tree without changing one real index byte, and the tree
+    /// stays `None` while conflict stages stop the computation.
     ///
     /// Blockers and unavailable anchors are observations the data carries,
     /// not failures of the query, because `doctor` is exactly the command a
@@ -10480,9 +12003,9 @@ impl<'a> Operations<'a> {
         let index_tree = if index.iter().any(|entry| entry.stage > 0) {
             None
         } else {
-            match self.git.write_tree() {
+            match self.observed_index_tree() {
                 Ok(tree) => Some(tree),
-                Err(error) => return failure(OperationError::from(error)),
+                Err(error) => return failure(error),
             }
         };
 
@@ -10545,6 +12068,9 @@ impl<'a> Operations<'a> {
             scoped_working_digest.as_ref(),
         );
 
+        if let Some(trace) = self.trace.as_ref() {
+            trace.inspected_recovery(head.as_deref());
+        }
         RecoveryResult::success(
             RecoveryInspection {
                 object_format,
@@ -10580,18 +12106,6 @@ impl<'a> Operations<'a> {
     /// lock instead — step 1, the lock, then
     /// [`Operations::enforce_mutation_guards`] — so the same guards run in
     /// the same order under the serialization the lock provides.
-    fn mutation_context(
-        &self,
-        scope: Option<&ScopeInput>,
-    ) -> Result<ResolvedScope, OperationError> {
-        require_work_tree(self.git)?;
-        let settings = self.effective_settings()?;
-        let input = scope_input_of(scope, &settings).ok_or_else(not_initialized)?;
-        let resolved = resolve_scope(self.git, &input).map_err(OperationError::from)?;
-        self.enforce_mutation_guards(&resolved, &settings)?;
-        Ok(resolved)
-    }
-
     /// The context one query shares: the workspace probe and the one scope
     /// resolver. Queries observe blockers as data; they never enforce
     /// mutation policy as a refusal.
@@ -10799,23 +12313,36 @@ struct WorkingEntry {
 /// The inexpensive path asks Git which paths differ — the index against the
 /// candidate through `diff-index`, the working tree against the index
 /// through `diff-files` — so the index stat cache answers for every
-/// unchanged file without reading its content (SPEC 6.3). Untracked and
-/// deleted scoped paths join the flagged set directly. Each flagged path
-/// is then compared exactly against the candidate's tree entry, because a
-/// working file can match the candidate while it differs from the index,
-/// and vice versa. A path Git did not flag matches the candidate: its
-/// index entry equals the candidate's entry and its working bytes equal
-/// the index entry. The raw bytes of every flagged present path are hashed
-/// by batched processes, never one process per document (SPEC 17.5).
+/// unchanged file without reading its content (SPEC 6.3). Untracked,
+/// deleted, and flag-hidden scoped paths join the flagged set directly:
+/// `assume-unchanged` and `skip-worktree` suppress a path in both diff
+/// calls, so the flags themselves flag the path (SPEC 3.1). Each flagged
+/// path is then compared exactly against the candidate's tree entry,
+/// because a working file can match the candidate while it differs from
+/// the index, and vice versa. A path Git did not flag matches the
+/// candidate: its index entry equals the candidate's entry and its working
+/// bytes equal the index entry. The raw bytes of every flagged present
+/// path are hashed by batched processes, never one process per document
+/// (SPEC 17.5).
 fn scoped_working_changes(
     git: &Git,
     scope: &ResolvedScope,
     candidate: &str,
 ) -> Result<BTreeMap<OsString, Option<WorkingEntry>>, PolicyError> {
+    // A path hidden by assume-unchanged or skip-worktree never appears in
+    // either diff list, whatever its working content holds, so those paths
+    // join the flagged set directly and the comparison below reads their
+    // bytes against the candidate entry (SPEC 3.1).
+    let hidden: BTreeSet<OsString> = git
+        .hidden_index_paths()?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
     let flagged: BTreeSet<OsString> = git
         .staged_against(candidate)?
         .into_iter()
         .chain(git.changed_against_index()?)
+        .chain(hidden)
         .collect();
     let candidate_entries: BTreeMap<OsString, (String, String)> = git
         .ls_tree(candidate)?
@@ -10990,6 +12517,21 @@ fn working_baseline(
         baseline.insert(path.clone(), entry);
     }
     Ok(baseline)
+}
+
+/// The present working entries of one scoped state, keyed by path: absence
+/// (`None`) and a path missing from the state map are the same working
+/// state, because a committed deletion leaves the freshly resolved scope
+/// without its path while the baseline holds that path as absent. Two
+/// states describe the same working tree exactly when their present entries
+/// match.
+fn present_working_entries(
+    state: &BTreeMap<OsString, Option<WorkingEntry>>,
+) -> BTreeMap<&OsString, &WorkingEntry> {
+    state
+        .iter()
+        .filter_map(|(path, entry)| entry.as_ref().map(|entry| (path, entry)))
+        .collect()
 }
 
 /// The uncaptured paths of a workspace with no candidate (SPEC 4.2): no
@@ -11461,22 +13003,6 @@ fn scope_blockers_message(blockers: &[ScopeBlocker]) -> String {
 /// silently (SPEC 3.2 rule 5).
 fn scope_blockers_refusal(blockers: &[ScopeBlocker]) -> OperationError {
     OperationError::new("UNSUPPORTED_REPOSITORY", scope_blockers_message(blockers))
-}
-
-/// The typed failure for an operation whose algorithm a later task of the
-/// plan provides: T017, T020, T023 through T027, T030 through T035.
-///
-/// The refusal is honest about this build: nothing was written, every
-/// observed effect stays unchanged, and no approval is conferred. The code
-/// belongs to the SPEC 7.5 exit class of an unmet operational
-/// precondition. Each arriving task replaces one refusal with its real
-/// algorithm. The interface layer shares this one refusal, so no command
-/// invents its own vocabulary for a missing algorithm.
-pub(crate) fn operation_pending(what: &str) -> OperationError {
-    OperationError::new(
-        "OPERATION_UNAVAILABLE",
-        format!("this build of Margin does not provide {what} yet; nothing was written"),
-    )
 }
 
 /// One bounded message for a policy refusal: every blocker in guard

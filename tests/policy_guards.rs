@@ -10,6 +10,9 @@
 //! - in-progress merge, rebase, cherry-pick, revert, bisect, and sequencer
 //!   states block, and the guard leaves them in place
 //! - a detached `HEAD` and a staged or conflicted index block
+//! - scoped index entries hidden by assume-unchanged or skip-worktree
+//!   block with their own specific paths, an out-of-scope flag blocks
+//!   nothing, and the inspection preserves the user's flags
 //! - the identity storage profile rejects `core.autocrlf` and the `text`,
 //!   `eol`, `filter`, `working-tree-encoding`, and `ident` attributes
 //!   through Git's effective-attribute interface
@@ -32,6 +35,7 @@ use margin::domain::ScopeInput;
 use margin::git::Git;
 use support::env::DEFAULT_BRANCH;
 use support::repo::{ObjectFormat, RepoOptions, TestRepo};
+use support::text;
 
 /// Adapter bound to `repo`'s working tree and isolated environment.
 fn adapter_for(repo: &TestRepo) -> Git {
@@ -379,6 +383,83 @@ fn a_detached_head_blocks() {
 
     let report = guard(&adapter_for(&repo), None);
     assert_eq!(report.blockers, vec![PolicyBlocker::DetachedHead]);
+}
+
+#[test]
+fn hidden_index_flags_block_scoped_mutations_only() {
+    // Unsaved edits behind assume-unchanged and skip-worktree: Git itself
+    // reports no change for either path, so the guard must name the flags
+    // itself, one specific blocker per flag (SPEC 3.1, INV-08).
+    let repo = seeded_repo();
+    repo.write_file("content/b.md", b"beta\n");
+    repo.commit_all("second pass");
+    repo.write_file("content/a.md", b"alpha\r\nunsaved\n");
+    repo.git_ok(["update-index", "--assume-unchanged", "--", "content/a.md"]);
+    repo.git_ok(["update-index", "--skip-worktree", "--", "content/b.md"]);
+    repo.write_file("content/b.md", b"beta revised\n");
+    // Git itself confirms the suppression the flags cause.
+    assert_eq!(
+        text(&repo.git_ok(["status", "--porcelain"])),
+        "",
+        "stock Git reports no change behind either flag"
+    );
+
+    let adapter = adapter_for(&repo);
+    let report = guard(&adapter, Some(&whole_scope(&repo)));
+    assert_eq!(
+        report.blockers,
+        vec![
+            PolicyBlocker::AssumeUnchangedEntries {
+                count: 1,
+                paths: vec![OsString::from("content/a.md")],
+            },
+            PolicyBlocker::SkipWorktreeEntries {
+                count: 1,
+                paths: vec![OsString::from("content/b.md")],
+            },
+        ],
+        "both hiding flags block with their scoped paths"
+    );
+    assert!(
+        !report.ok(),
+        "a normal mutation may not proceed behind the flags"
+    );
+    let message = report.blockers[0].to_string();
+    assert!(
+        message.contains("assume-unchanged") && message.contains("content/a.md"),
+        "the diagnosis names the flag and the path: {message}"
+    );
+
+    // A flag outside the scope hides no scoped content, so it blocks
+    // nothing (SPEC 3.1: the writing scope decides what a capture must
+    // see).
+    repo.git_ok([
+        "update-index",
+        "--no-assume-unchanged",
+        "--",
+        "content/a.md",
+    ]);
+    repo.git_ok(["update-index", "--no-skip-worktree", "--", "content/b.md"]);
+    repo.git_ok([
+        "update-index",
+        "--assume-unchanged",
+        "--",
+        "other/outside.txt",
+    ]);
+    let adapter = adapter_for(&repo);
+    let report = guard(&adapter, Some(&whole_scope(&repo)));
+    assert!(
+        report.ok(),
+        "an out-of-scope flag blocks nothing: {:?}",
+        report.blockers
+    );
+
+    // The inspection preserves the user's flags exactly (SPEC 14.1).
+    assert_eq!(
+        text(&repo.git_ok(["ls-files", "-v", "--", "other/outside.txt"])),
+        "h other/outside.txt",
+        "the flag survives the guard untouched"
+    );
 }
 
 #[test]

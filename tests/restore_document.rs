@@ -20,6 +20,10 @@
 //! - the guards refuse typed and unchanged: uncaptured scoped bytes, a
 //!   staged entry, a foreign branch, a stale candidate context, a path
 //!   outside the scope, and a source revision outside the adopted history
+//! - a skip-worktree flag cannot hide uncaptured bytes from a
+//!   restoration: the specific index-flag blocker refuses both phases
+//!   before any mutation, and the cleared flag leaves the ordinary
+//!   `DIRTY_SCOPE` refusal over the same bytes
 //! - a dry run reports the proved intended tree and writes nothing
 //! - both object formats apply, and the installed executable reports one
 //!   envelope in JSON mode and one line in text mode
@@ -882,6 +886,82 @@ fn a_dry_run_reports_the_intended_result_and_writes_nothing() {
     assert_eq!(data.expected_tree, expected);
     assert_eq!(outcome.effects, Effects::unchanged());
     before.assert_unchanged(&oracle::snapshot(&fixture.repo), "the dry run");
+}
+
+/// The reported defect of task T061 at the restoration boundary: an edit
+/// behind `skip-worktree` is invisible to Git's change reports, so a
+/// restoration used to overwrite content the writer never saw. Both
+/// phases refuse the specific index flag before any mutation, and the
+/// cleared flag leaves the ordinary clean-scope refusal of SPEC 9.5 over
+/// the same bytes (SPEC 3.1, 9.1 step 4).
+#[test]
+fn an_index_flag_cannot_hide_dirty_content_from_a_restoration() {
+    let fixture = fixture(RepoOptions::new());
+    let status = status_of(&fixture.repo);
+    let plan = plan_document(&status, "restore-01", "doc-a.md", &fixture.start, None);
+    // Uncaptured working content Git itself reports as clean.
+    fixture
+        .repo
+        .write_file("doc-a.md", b"hidden working passage\n");
+    fixture
+        .repo
+        .git_ok(["update-index", "--skip-worktree", "--", "doc-a.md"]);
+    assert_eq!(
+        text(&fixture.repo.git_ok(["status", "--porcelain"])),
+        "",
+        "stock Git reports no change behind the flag"
+    );
+    let before = oracle::snapshot(&fixture.repo);
+
+    for (what, dry_run) in [("a dry run", true), ("a restoration", false)] {
+        let outcome = restore_dry(&fixture.repo, &plan, dry_run);
+        assert_refusal(&outcome, "UNSUPPORTED_REPOSITORY", what);
+        let message = outcome.error.as_ref().unwrap().message.clone();
+        assert!(
+            message.contains("skip-worktree") && message.contains("doc-a.md"),
+            "the diagnosis names the flag and the path: {message}"
+        );
+    }
+    // The refusals wrote nothing and hid nothing.
+    assert_eq!(
+        oracle::head_oid(&fixture.repo).as_deref(),
+        Some(fixture.candidate.as_str()),
+        "no restoration commit appeared"
+    );
+    assert_eq!(
+        text(
+            &fixture
+                .repo
+                .git_ok(["diff-index", "--cached", "--name-only", "HEAD"])
+        ),
+        "",
+        "the refusals staged nothing"
+    );
+    assert_eq!(
+        fixture.repo.read_file("doc-a.md"),
+        b"hidden working passage\n",
+        "the hidden edit stays on disk"
+    );
+    assert_eq!(
+        text(&fixture.repo.git_ok(["ls-files", "-v", "--", "doc-a.md"])),
+        "S doc-a.md",
+        "the user's flag survives both refusals"
+    );
+    before.assert_unchanged(&oracle::snapshot(&fixture.repo), "a flagged restoration");
+
+    // With the flag cleared, the same dirty content refuses through the
+    // ordinary clean-scope guard: the hidden state became visible
+    // (SPEC 9.5).
+    fixture
+        .repo
+        .git_ok(["update-index", "--no-skip-worktree", "--", "doc-a.md"]);
+    let outcome = restore(&fixture.repo, &plan);
+    assert_refusal(&outcome, "DIRTY_SCOPE", "a restoration over visible dirt");
+    assert!(
+        outcome.error.as_ref().unwrap().message.contains("doc-a.md"),
+        "the refusal names the dirty path: {:?}",
+        outcome.error
+    );
 }
 
 /// The guards refuse typed and unchanged (SPEC 9.1, 9.5, 7.5).

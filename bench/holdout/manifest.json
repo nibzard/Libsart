@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "purpose": "Manually curated holdout pairs of SPEC 17.2: not used to tune the current optimization.",
+  "protocol": [
+    "No optimization or generator work may read the pairs.",
+    "A release evaluation may use them once, after tuning freezes, and must record that use in its benchmark result record.",
+    "Pairs may be added; existing pairs never change."
+  ],
+  "pairs": [
+    {
+      "name": "claim-shift",
+      "before": "pairs/claim-shift/before.md",
+      "after": "pairs/claim-shift/after.md",
+      "class": "claim-value",
+      "review_note": "One count advances from 3 of 4 to 4 of 5; every other line is identical. The change must surface as a claim change, not as prose noise."
+    },
+    {
+      "name": "link-swap",
+      "before": "pairs/link-swap/before.md",
+      "after": "pairs/link-swap/after.md",
+      "class": "link-target",
+      "review_note": "The archive-guide destination changes while its label and sentence stay identical; the second link must not move."
+    },
+    {
+      "name": "pure-reflow",
+      "before": "pairs/pure-reflow/before.md",
+      "after": "pairs/pure-reflow/after.md",
+      "class": "pure-reflow",
+      "review_note": "The same words, once wrapped at 72 columns and once as one line per paragraph. No reader-visible content change; every changed line still belongs to the review."
+    }
+  ]
+}

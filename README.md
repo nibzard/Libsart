@@ -65,14 +65,32 @@ draft. A review records your decisions about that draft.
 | `margin review --input review.json --dry-run` | Preview the decisions in a review plan |
 | `margin review --input review.json` | Keep or restore changes and record the review |
 | `margin log` | Browse the writing history |
+| `margin tui` | Open the interactive reading and review surface |
+| `margin edit --path content/article.md` | Hand one document to the configured editor |
 | `margin show --path content/article.md --revision HEAD` | Read a saved document |
 | `margin restore --input restore.json` | Restore one historical document in a new commit |
 | `margin doctor` | Inspect recovery state |
+| `margin hook claude` | Translate one Claude Code hook event into a capture |
+| `margin hook install claude` | Add Margin's hook entries to the local Claude Code settings |
+| `margin hook remove claude` | Delete Margin's hook entries from the local Claude Code settings |
 
 Review plans use identifiers from `margin diff --json`. A completed request
 has a receipt in Git history. Repeating the same request returns that receipt.
 Historical restoration creates a new commit and leaves the restored content
 pending review.
+
+The hook adapter reads one Claude Code hook event from standard input and
+answers in Claude Code's own hook protocol, never in the Margin envelope. It
+captures one ordinary draft only while `--auto-checkpoint` is stored, uses a
+generic commit reason, and never blocks a Stop, so it cannot keep an agent
+running. A missing or malformed event captures and approves nothing.
+
+Install the entries with `margin hook install claude`; remove them with
+`margin hook remove claude`. Both commands edit only
+`.claude/settings.local.json`, leave every unrelated key and user hook in
+place, reread the file before writing and refuse when it changed under
+them, and report a repeated run as a no-op. Add `--dry-run` to see the
+exact planned configuration and the adapter capabilities first.
 
 Use `--json` for structured command results. Use `--help` on any command
 for its options. Files outside the writing scope stay outside Margin's
@@ -81,8 +99,41 @@ capture and review operations.
 ## Development status
 
 The implementation is in progress. Core command-line workflows are available
-for testing. The interactive terminal interface, editor and agent integrations,
-and parts of explicit recovery remain unfinished.
+for testing. The interactive terminal interface opens with its Read view,
+its Changes view, and its History view: the Changes view lists every passage
+group with its source, and the `K` and `r` keys record one in-memory plan.
+`Enter` opens a finish summary of the entire writing scope, and a second
+`Enter` keeps the remaining changes and records the review through the same
+operation as `margin review`. The History view lists the writing timeline in
+ancestry order with locally displayed timestamps, previews one document at a
+selected revision against the current candidate, and restores it through the
+same operation as `margin restore`; the review baseline stays unchanged, and
+missing files stay distinct from empty ones.
+
+The keyboard contract of the interface is complete: `Tab` and `Shift-Tab`
+cycle focus between the document list, the reading column, and the standing
+action menu, and the footer names the focused element in words; `:` opens
+every action with its binding and the reason a disabled action cannot run;
+`?` lists the contextual keys and the current blockers; `/` searches within
+the current view and `f` opens the document picker, and inside those fields
+ordinary characters are text, so `Enter` submits the field rather than
+finishing a review and one bracketed paste never fires a sequence of global
+actions. `e` hands the displayed document to the configured editor (set one
+with `margin init --editor-argv-json`), the editor meets a cooked terminal,
+and its return reloads the document. An editor exit never approves; it
+captures one draft only while `--capture-after-edit` is stored.
+Every state is labeled in words and symbols, never hue alone, and
+`--color never` draws a plain monochrome surface. `--reduced-updates`
+redraws only when the frame changed, for terminals and assistive setups
+sensitive to redraws. The surface restores raw mode, the alternate screen,
+bracketed paste, and cursor visibility on quit, `Ctrl-C`, terminal errors,
+resize, and editor return; an uncatchable kill can run no cleanup, so a
+terminal left raw after one recovers with `reset` (or `stty sane`). The
+`edit` command hands one document to the same configured editor from the
+command line. The Claude Code hook adapter translates supported events, and
+`hook install` and `hook remove` edit only Margin's own entries in the local
+Claude Code settings; the tmux desk remains unfinished, as do parts of
+explicit recovery.
 
 Known defects and remaining work are recorded in [to-do.json](to-do.json).
 Use the disposable example repository when evaluating the current behavior.

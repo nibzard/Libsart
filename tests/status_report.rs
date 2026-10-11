@@ -14,6 +14,9 @@
 //!   clean workspace stays idle
 //! - a branch other than the adopted one is one actionable blocker the
 //!   query reports without refusing on it, and the query stays read-only
+//! - assume-unchanged and skip-worktree flags cannot hide unsaved content:
+//!   preservation stays `uncaptured` with the flagged path listed, one
+//!   specific blocker names the flag, and the query preserves the flags
 //! - a `--path` filter narrows the reported path list only; every count
 //!   stays whole-scope
 //! - every query leaves refs, the index, and working bytes unchanged,
@@ -568,6 +571,76 @@ fn preservation_compares_working_bytes_not_index_dirt() {
     let data = data_of(&output, "a moved-on working file over a staged revert");
     assert_eq!(data["preservation"], "uncaptured");
     assert_eq!(data["counts"]["uncaptured_total"], 1);
+}
+
+#[test]
+fn index_flags_cannot_hide_unsaved_content_from_status() {
+    // Both flags suppress the path in every Git change report, so the
+    // comparison must read the working bytes itself: stock Git confirms
+    // the suppression, then the query still reports the unsaved edit as
+    // one actionable blocker (SPEC 4.2 preservation, 3.1).
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n");
+    repo.commit_all("seed");
+    init_notes_scope(&repo);
+    repo.write_file("notes/a.md", b"# One edited\n");
+    // The independent oracle: the committed content is not the working
+    // content.
+    assert_eq!(
+        repo.git_ok(["show", "HEAD:notes/a.md"]),
+        b"# One\n",
+        "the edit is not in HEAD"
+    );
+
+    for flag in ["assume-unchanged", "skip-worktree"] {
+        repo.git_ok(["update-index", &format!("--{flag}"), "--", "notes/a.md"]);
+        assert_eq!(
+            support::text(&repo.git_ok(["status", "--porcelain"])),
+            "",
+            "stock Git reports no change behind --{flag}"
+        );
+
+        let before = support::oracle::snapshot(&repo);
+        let output = margin(repo.env(), repo.path(), &["status", "--json"]);
+        let data = data_of(&output, "status behind an index flag");
+        assert_eq!(data["preservation"], "uncaptured", "behind --{flag}");
+        assert_eq!(data["counts"]["uncaptured_total"], 1, "behind --{flag}");
+        assert_eq!(
+            data["counts"]["uncaptured_paths"],
+            serde_json::json!(["notes/a.md"]),
+            "behind --{flag}"
+        );
+        assert_eq!(data["operation"], "idle", "the flag is no recovery state");
+        assert_eq!(data["eligible"], false, "behind --{flag}");
+        let blockers = data["blockers"].as_array().unwrap();
+        assert_eq!(blockers.len(), 1, "one specific blocker: {blockers:?}");
+        assert!(
+            blockers[0].as_str().unwrap().contains(flag)
+                && blockers[0].as_str().unwrap().contains("notes/a.md"),
+            "the blocker names the flag and the path behind --{flag}: {blockers:?}"
+        );
+
+        // The query observes only: the edit, the index, and the flag the
+        // user set all stay exactly as they were (INV-12).
+        before.assert_unchanged(&support::oracle::snapshot(&repo), "a flagged status");
+        let tags = support::text(&repo.git_ok(["ls-files", "-v", "--", "notes/a.md"]));
+        let expected_tag = if flag == "assume-unchanged" { "h" } else { "S" };
+        assert_eq!(
+            tags,
+            format!("{expected_tag} notes/a.md"),
+            "the flag survives"
+        );
+
+        repo.git_ok(["update-index", &format!("--no-{flag}"), "--", "notes/a.md"]);
+    }
+
+    // With both flags cleared the same repository reports the ordinary
+    // uncaptured edit with no blocker.
+    let output = margin(repo.env(), repo.path(), &["status", "--json"]);
+    let data = data_of(&output, "status after clearing the flags");
+    assert_eq!(data["preservation"], "uncaptured");
+    assert_eq!(data["eligible"], true);
+    assert_eq!(data["blockers"], serde_json::json!([]));
 }
 
 #[test]

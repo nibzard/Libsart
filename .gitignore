@@ -1,5 +1,9 @@
 /target/
 
+# Generated benchmark corpora are rebuild artifacts: the seed reproduces
+# them, so only the generator and manifests are tracked (SPEC 17.2).
+/bench/corpora/
+
 # Pinned formal tools: only the checksum file is tracked; the jar is fetched
 # and verified by formal/run-profiles.sh.
 /formal/tools/*.jar

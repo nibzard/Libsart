@@ -431,6 +431,21 @@ pub struct IndexEntry {
     pub path: OsString,
 }
 
+/// One index flag that makes Git skip its own change detection for a
+/// path (SPEC 3.1). `git update-index` records the flag on the index
+/// entry, and `git diff-files`, `git diff-index`, and `git status` then
+/// report no working change for that path, so unsaved content can sit
+/// behind the flag invisibly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexFlag {
+    /// `git update-index --assume-unchanged`: Git trusts the stat cache
+    /// and stops comparing the working file.
+    AssumeUnchanged,
+    /// `git update-index --skip-worktree`: Git also promises not to touch
+    /// the working file, the sparse-checkout mechanism.
+    SkipWorktree,
+}
+
 /// One entry of `git ls-tree -r -z`, with the path kept as raw bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeEntry {
@@ -1155,6 +1170,32 @@ impl Git {
             .collect())
     }
 
+    /// Returns the index entries that carry a flag Git itself obeys by
+    /// reporting no change for the path, from `git ls-files -v -z`: one
+    /// tag byte, one space, and the NUL-terminated path. `S` marks
+    /// skip-worktree and a lowercase tag marks assume-unchanged; every
+    /// other entry is reported normally by the diff calls above and stays
+    /// out of this list (SPEC 3.1).
+    ///
+    /// The flags decide what [`Git::changed_against_index`] and `git
+    /// status` show, so a caller comparing scoped content must consult
+    /// this list beside them. The call only observes: it sets no flag and
+    /// clears none, exactly as the user left the index (SPEC 14.1).
+    pub fn hidden_index_paths(&self) -> Result<Vec<(OsString, IndexFlag)>, GitError> {
+        let stdout = self.run_ok(Mode::Query, ["ls-files", "-v", "-z"])?;
+        let records = split_nul(&stdout)
+            .map(parse_ls_files_verbose_record)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| GitError::MalformedOutput {
+                command: "ls-files -v".to_string(),
+                detail: "expected `<tag> <path>` records".to_string(),
+            })?;
+        Ok(records
+            .into_iter()
+            .filter_map(|(path, flag)| flag.map(|flag| (path, flag)))
+            .collect())
+    }
+
     /// Returns the paths whose entry differs between the trees of two
     /// commits, from `git diff-tree -r --name-only --no-commit-id -z`.
     /// Rename detection stays off: a rename is a deletion plus an addition
@@ -1332,9 +1373,11 @@ impl Git {
     }
 
     /// Writes the current index as a tree and returns its object ID from
-    /// `git write-tree`. The call reads the index and stores one tree object
-    /// but touches no ref and no working file; it fails on unresolved
-    /// conflict stages.
+    /// `git write-tree`. The call stores one tree object and touches no ref
+    /// and no working file, but it rewrites the index it addresses to store
+    /// the computed tree cache — optional locks off or not — so a caller
+    /// that must leave the real index untouched points `GIT_INDEX_FILE` at
+    /// one disposable copy first. It fails on unresolved conflict stages.
     pub fn write_tree(&self) -> Result<String, GitError> {
         let stdout = self.run_ok(Mode::Query, ["write-tree"])?;
         validate_oid(strip_trailing_newline(&stdout)).ok_or_else(|| GitError::MalformedOutput {
@@ -1684,6 +1727,23 @@ fn parse_ls_files_record(record: &[u8]) -> Option<IndexEntry> {
     })
 }
 
+/// Parses one `<tag> SP <path>` record of `git ls-files -v -z` into the
+/// path and its hiding flag. `None` rejects a malformed record; a parsed
+/// record without a hiding flag carries `None` as its flag, because the
+/// diff calls report that path normally.
+fn parse_ls_files_verbose_record(record: &[u8]) -> Option<(OsString, Option<IndexFlag>)> {
+    let (&tag, rest) = record.split_first()?;
+    if rest.first() != Some(&b' ') || rest.len() < 2 {
+        return None;
+    }
+    let flag = match tag {
+        b'S' => Some(IndexFlag::SkipWorktree),
+        tag if tag.is_ascii_lowercase() => Some(IndexFlag::AssumeUnchanged),
+        _ => None,
+    };
+    Some((os_string_from_bytes(rest[1..].to_vec()), flag))
+}
+
 /// Parses one `<mode> SP <kind> SP <oid> TAB <path>` record.
 fn parse_ls_tree_record(record: &[u8]) -> Option<TreeEntry> {
     let separator = record.iter().position(|&byte| byte == b'\t')?;
@@ -1783,6 +1843,31 @@ mod tests {
         assert!(parse_ls_files_record(format!("10064 {oid} 0\tp\n").as_bytes()).is_none());
         assert!(parse_ls_files_record(format!("100644 {oid} 9\tp\n").as_bytes()).is_none());
         assert!(parse_ls_files_record(format!("100644 {oid} 0 extra\tp\n").as_bytes()).is_none());
+    }
+
+    #[test]
+    fn ls_files_verbose_records_parse_strictly() {
+        let (path, flag) =
+            parse_ls_files_verbose_record(b"S spa ce.md\n").expect("skip-worktree parses");
+        assert_eq!(path, OsString::from("spa ce.md\n"));
+        assert_eq!(flag, Some(IndexFlag::SkipWorktree));
+        let (path, flag) = parse_ls_files_verbose_record(b"h a.md").expect("assume-unchanged");
+        assert_eq!(path, OsString::from("a.md"));
+        assert_eq!(flag, Some(IndexFlag::AssumeUnchanged));
+
+        // Ordinary entries report their changes normally, so they parse
+        // with no hiding flag.
+        for ordinary in ["H a.md", "R a.md", "? a.md", "M a.md"] {
+            let (path, flag) = parse_ls_files_verbose_record(ordinary.as_bytes())
+                .unwrap_or_else(|| panic!("{ordinary} parses"));
+            assert_eq!(path, OsString::from("a.md"));
+            assert_eq!(flag, None, "{ordinary} hides nothing");
+        }
+        // Malformed records never reach a caller.
+        assert!(parse_ls_files_verbose_record(b"S").is_none());
+        assert!(parse_ls_files_verbose_record(b"S ").is_none());
+        assert!(parse_ls_files_verbose_record(b"Sno-space a.md").is_none());
+        assert!(parse_ls_files_verbose_record(b"").is_none());
     }
 
     #[test]
