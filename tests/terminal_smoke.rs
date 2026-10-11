@@ -394,9 +394,7 @@ impl SmokeServer {
 
     /// Says whether the session still exists.
     fn session_alive(&self, session: &str) -> bool {
-        self.run(&["has-session", "-t", session])
-            .status
-            .success()
+        self.run(&["has-session", "-t", session]).status.success()
     }
 }
 
@@ -469,7 +467,15 @@ fn a_real_emulator_renders_the_surface_and_passes_it_a_resize() {
 
     // A resize through the emulator reaches the process, which redraws
     // its minimum-size explanation; growing back redraws the document.
-    server.ok(&["resize-window", "-t", "smoke:margin", "-x", "50", "-y", "10"]);
+    server.ok(&[
+        "resize-window",
+        "-t",
+        "smoke:margin",
+        "-x",
+        "50",
+        "-y",
+        "10",
+    ]);
     let deadline = std::time::Instant::now() + LIMIT;
     let mut screen = server.screen("smoke:margin");
     while !screen.contains("Terminal too small") && std::time::Instant::now() < deadline {
@@ -480,7 +486,15 @@ fn a_real_emulator_renders_the_surface_and_passes_it_a_resize() {
         screen.contains("Terminal too small"),
         "the resized emulator shows the minimum-size explanation: {screen}",
     );
-    server.ok(&["resize-window", "-t", "smoke:margin", "-x", "110", "-y", "32"]);
+    server.ok(&[
+        "resize-window",
+        "-t",
+        "smoke:margin",
+        "-x",
+        "110",
+        "-y",
+        "32",
+    ]);
     let deadline = std::time::Instant::now() + LIMIT;
     let mut screen = server.screen("smoke:margin");
     while !screen.contains("First passage") && std::time::Instant::now() < deadline {

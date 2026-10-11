@@ -17,6 +17,14 @@
 //! longer than a Unix socket address allows. Every directory name carries
 //! the Looper resource prefix, the process id, and a counter, so parallel
 //! tests never share a server.
+//!
+//! The desk contract needs tmux 3.1 or newer: direct execution after `--`
+//! and percentage sizes of `split-window -l` both arrived in that release.
+//! A machine without a usable tmux skips the composition cases with a
+//! notice, unless `MARGIN_REQUIRE_TMUX` is set to any value other than 0,
+//! which turns the absence into a failure. The CI tiers set that variable
+//! after `ci/install-tmux.sh` installs the release pinned in
+//! `ci/tmux.version`, so a tier image cannot pass without evidence.
 
 #![cfg(unix)]
 
@@ -44,16 +52,111 @@ const MAX_SOCKET_PATH: usize = 96;
 /// Numbers the private socket directories of one test process.
 static SERVERS: AtomicU32 = AtomicU32::new(0);
 
-/// Says whether this machine has a tmux the desk can compose with. The
-/// desk is optional (SPEC 12.6), so the composition claims are exercised
-/// wherever tmux exists; the missing-tool guidance has its own case.
-fn tmux_present() -> bool {
-    Command::new("tmux")
+/// The oldest tmux the desk contract supports (SPEC 12.6): direct
+/// execution of the pane command after `--` and percentage sizes of
+/// `split-window -l` both arrived in tmux 3.1. The CI tiers install one
+/// exact release, pinned in `ci/tmux.version`, so the composition claims
+/// always execute against a known tmux.
+const TMUX_FLOOR: (u32, u32) = (3, 1);
+
+/// What `tmux -V` answered on this machine.
+enum TmuxOnPath {
+    /// The reported release pair, like `(3, 4)` for "tmux 3.4".
+    Release((u32, u32)),
+    /// tmux answered, but with a report that names no release, like the
+    /// "tmux master" of a development build.
+    NoRelease(String),
+    /// No tmux answered at all.
+    Absent,
+}
+
+/// Asks the tmux on `PATH` which release it is.
+fn tmux_on_path() -> TmuxOnPath {
+    let output = Command::new("tmux")
         .arg("-V")
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let report = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            match parse_release(&report) {
+                Some(release) => TmuxOnPath::Release(release),
+                None => TmuxOnPath::NoRelease(report),
+            }
+        }
+        _ => TmuxOnPath::Absent,
+    }
+}
+
+/// Reads one release pair out of a `tmux -V` report, so `"tmux 3.4"`
+/// reads as `(3, 4)`. A minor release letter, like the "1a" of "tmux
+/// 3.1a", counts as its number; a word like "master" is no release.
+fn parse_release(report: &str) -> Option<(u32, u32)> {
+    let token = report.split_whitespace().last()?;
+    let mut parts = token.split('.');
+    let major = leading_digits(parts.next()?)?;
+    let minor = leading_digits(parts.next()?)?;
+    Some((major, minor))
+}
+
+/// The number at the start of one part, so "4" and "4a" both read as 4.
+fn leading_digits(part: &str) -> Option<u32> {
+    let digits: &str = &part[..part
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(part.len())];
+    (!digits.is_empty()).then(|| digits.parse().expect("only digits"))
+}
+
+/// Says the runner demanded a working tmux instead of the courteous skip:
+/// `MARGIN_REQUIRE_TMUX` is set to any value other than 0. The CI tiers
+/// set it to 1 after `ci/install-tmux.sh` installed the pinned release.
+/// A set-but-empty value counts as a demand, so a tier template that
+/// renders an empty string cannot silently lose its demand.
+fn require_tmux() -> bool {
+    std::env::var_os("MARGIN_REQUIRE_TMUX").is_some_and(|value| value != "0")
+}
+
+/// Names why the composition cases cannot run on this machine, or `None`
+/// when they can: no tmux answered, or the reported release predates the
+/// floor of the desk contract. A report that names no release, like the
+/// "tmux master" of a development build, also counts as unusable, because
+/// the floor cannot be confirmed.
+fn describe_tmux_problem(found: &TmuxOnPath) -> Option<String> {
+    match found {
+        TmuxOnPath::Release(release) if *release >= TMUX_FLOOR => None,
+        TmuxOnPath::Release(release) => Some(format!(
+            "the tmux on PATH is {}.{}, older than the tmux {}.{} the desk contract needs: \
+             direct execution after `--` and percentage sizes of `split-window -l` both \
+             arrived in tmux 3.1",
+            release.0, release.1, TMUX_FLOOR.0, TMUX_FLOOR.1,
+        )),
+        TmuxOnPath::NoRelease(report) => Some(format!(
+            "the tmux on PATH reported '{report}', which names no release, so the tmux {}.{} \
+             floor cannot be confirmed",
+            TMUX_FLOOR.0, TMUX_FLOOR.1,
+        )),
+        TmuxOnPath::Absent => Some("tmux is not installed".to_string()),
+    }
+}
+
+/// Runs the guard of one composition case (SPEC 12.6) and says whether
+/// the case must skip: a machine with a usable tmux returns `false` at
+/// once, a machine without one gets the courteous skip notice here, and
+/// `MARGIN_REQUIRE_TMUX` turns that notice into a failure instead,
+/// because a tier image is broken, not optional, without its tmux.
+fn skip_for_tmux() -> bool {
+    let Some(problem) = describe_tmux_problem(&tmux_on_path()) else {
+        return false;
+    };
+    if require_tmux() {
+        panic!(
+            "MARGIN_REQUIRE_TMUX is set, but {problem}; the CI tiers install the pinned \
+             release with ci/install-tmux.sh, which reads ci/tmux.version"
+        );
+    }
+    eprintln!("skipped: {problem}");
+    true
 }
 
 /// One private tmux server, removed with everything it created when the
@@ -343,8 +446,7 @@ fn inside_identity(server: &DeskServer, session: &str) -> (String, String) {
 
 #[test]
 fn outside_tmux_the_desk_composes_an_agent_pane_and_a_margin_pane() {
-    if !tmux_present() {
-        eprintln!("skipped: tmux is not installed");
+    if skip_for_tmux() {
         return;
     }
     let repo = TestRepo::init();
@@ -480,8 +582,7 @@ fn outside_tmux_the_desk_composes_an_agent_pane_and_a_margin_pane() {
 
 #[test]
 fn outside_tmux_a_narrow_desk_keeps_one_command_per_window() {
-    if !tmux_present() {
-        eprintln!("skipped: tmux is not installed");
+    if skip_for_tmux() {
         return;
     }
     let repo = TestRepo::init();
@@ -527,8 +628,7 @@ fn outside_tmux_a_narrow_desk_keeps_one_command_per_window() {
 
 #[test]
 fn closing_the_last_window_while_attached_reports_the_ended_session() {
-    if !tmux_present() {
-        eprintln!("skipped: tmux is not installed");
+    if skip_for_tmux() {
         return;
     }
     let repo = TestRepo::init();
@@ -570,8 +670,7 @@ fn closing_the_last_window_while_attached_reports_the_ended_session() {
 
 #[test]
 fn inside_tmux_the_desk_adds_one_window_and_touches_nothing_else() {
-    if !tmux_present() {
-        eprintln!("skipped: tmux is not installed");
+    if skip_for_tmux() {
         return;
     }
     let repo = TestRepo::init();
@@ -651,8 +750,7 @@ fn inside_tmux_the_desk_adds_one_window_and_touches_nothing_else() {
 
 #[test]
 fn inside_tmux_a_narrow_desk_puts_margin_in_its_own_window() {
-    if !tmux_present() {
-        eprintln!("skipped: tmux is not installed");
+    if skip_for_tmux() {
         return;
     }
     let repo = TestRepo::init();
@@ -703,8 +801,7 @@ fn inside_tmux_a_narrow_desk_puts_margin_in_its_own_window() {
 
 #[test]
 fn quitting_margin_leaves_the_agent_running() {
-    if !tmux_present() {
-        eprintln!("skipped: tmux is not installed");
+    if skip_for_tmux() {
         return;
     }
     let repo = TestRepo::init();
@@ -789,8 +886,7 @@ fn quitting_margin_leaves_the_agent_running() {
 
 #[test]
 fn a_new_desk_session_never_lands_on_an_existing_margin_session() {
-    if !tmux_present() {
-        eprintln!("skipped: tmux is not installed");
+    if skip_for_tmux() {
         return;
     }
     let repo = TestRepo::init();
@@ -834,8 +930,7 @@ fn a_new_desk_session_never_lands_on_an_existing_margin_session() {
 
 #[test]
 fn an_agent_that_exits_at_once_leaves_nothing_behind() {
-    if !tmux_present() {
-        eprintln!("skipped: tmux is not installed");
+    if skip_for_tmux() {
         return;
     }
     let repo = TestRepo::init();
@@ -924,4 +1019,67 @@ fn a_desk_without_a_terminal_refuses_typed() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("OPERATION_UNAVAILABLE"), "got: {stderr}");
     assert!(stderr.contains("needs a terminal"), "got: {stderr}");
+}
+
+#[test]
+fn parse_release_reads_the_reports_tmux_prints() {
+    assert_eq!(parse_release("tmux 3.4"), Some((3, 4)));
+    assert_eq!(parse_release("tmux 3.4\n"), Some((3, 4)));
+    assert_eq!(parse_release("tmux 3.1"), Some((3, 1)));
+    // A minor release letter still names its release.
+    assert_eq!(parse_release("tmux 3.1a"), Some((3, 1)));
+    assert_eq!(parse_release("tmux 3.0"), Some((3, 0)));
+    assert_eq!(parse_release("tmux 4.0"), Some((4, 0)));
+}
+
+#[test]
+fn parse_release_rejects_words_that_name_no_release() {
+    assert_eq!(parse_release("tmux master"), None);
+    assert_eq!(parse_release("tmux next-3.5"), None);
+    assert_eq!(parse_release("tmux"), None);
+    assert_eq!(parse_release(""), None);
+}
+
+#[test]
+fn the_desk_floor_is_tmux_3_1() {
+    // Direct execution after `--` and percentage sizes of `split-window
+    // -l` both arrived in tmux 3.1 (SPEC 12.6), and the CI tiers pin the
+    // release they exercise in ci/tmux.version.
+    assert_eq!(
+        describe_tmux_problem(&TmuxOnPath::Release((3, 1))),
+        None,
+        "the floor release itself is usable"
+    );
+    assert_eq!(
+        describe_tmux_problem(&TmuxOnPath::Release((3, 4))),
+        None,
+        "the pinned release is usable"
+    );
+    for report in ["tmux 3.0", "tmux 2.9a"] {
+        let release = parse_release(report).expect("the report parses");
+        let problem = describe_tmux_problem(&TmuxOnPath::Release(release));
+        assert!(
+            problem
+                .as_deref()
+                .is_some_and(|text| text.contains("older than the tmux 3.1")),
+            "{report} names a release below the floor: {problem:?}"
+        );
+    }
+}
+
+#[test]
+fn a_tmux_that_names_no_release_or_is_absent_is_reported() {
+    let absent = describe_tmux_problem(&TmuxOnPath::Absent);
+    assert!(
+        absent
+            .as_deref()
+            .is_some_and(|text| text.contains("tmux is not installed"))
+    );
+    let unnamed = describe_tmux_problem(&TmuxOnPath::NoRelease("tmux master".to_string()));
+    assert!(
+        unnamed
+            .as_deref()
+            .is_some_and(|text| text.contains("names no release")),
+        "an unnamed release cannot confirm the floor: {unnamed:?}"
+    );
 }

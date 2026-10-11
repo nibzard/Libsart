@@ -172,7 +172,11 @@ fn words(parts: &[&str]) -> Vec<OsString> {
 
 /// Appends the direct-exec separator and one explicit argv (SPEC 12.6):
 /// every element stays one argv element of the pane process, and no shell
-/// reads it.
+/// reads it. The desk contract this builds needs tmux 3.1 or newer: the
+/// command-after-`--` form of `new-session`, `new-window`, and
+/// `split-window`, and the percentage size of `MARGIN_SHARE`, both
+/// arrived in that release. The CI tiers pin the release they exercise
+/// in `ci/tmux.version`.
 fn direct_exec(args: &mut Vec<OsString>, argv: &[String]) {
     args.push(OsString::from("--"));
     args.extend(argv.iter().map(OsString::from));
