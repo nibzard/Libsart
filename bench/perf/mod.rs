@@ -22,6 +22,7 @@ pub mod metric;
 pub mod oracle;
 pub mod pty;
 pub mod record;
+pub mod resource;
 pub mod runner;
 pub mod samples;
 pub mod stats;
