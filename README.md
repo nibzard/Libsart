@@ -166,6 +166,12 @@ cargo test --all-targets --locked
 The tests use temporary Git repositories to check file content, history,
 scope boundaries, receipts, and failure behavior.
 
+The tmux desk suite needs tmux 3.1 or newer: direct execution after `--`
+and percentage pane sizes both arrived in that release. The suite skips
+with a notice where no usable tmux exists. The CI tiers install the
+pinned release with `ci/install-tmux.sh` and set `MARGIN_REQUIRE_TMUX=1`,
+which turns a missing tmux into a failure. See [CI tier support](ci/README.md).
+
 For more detail, see:
 
 - [Examples and demonstration](examples/README.md)
