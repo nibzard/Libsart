@@ -170,6 +170,7 @@ For more detail, see:
 
 - [Examples and demonstration](examples/README.md)
 - [Behavior and design specification](SPEC.md)
+- [Supported terminal smoke matrix](docs/terminal-smoke-matrix.md)
 - [Review plan schema](schemas/review-plan-v1.json)
 - [Formal model](formal/MarginReview.tla)
 - [Formal mutation checks](formal/mutations/README.md)

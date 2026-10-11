@@ -1,5 +1,5 @@
 //! Terminal-lifecycle tests over a real pseudo-terminal (SPEC 11.5,
-//! task T046).
+//! 16.9, tasks T046 and T051).
 //!
 //! The buffer tests prove what the surface draws; these tests prove what
 //! it does to the terminal itself. Every case spawns the built binary on
@@ -8,8 +8,13 @@
 //! alternate screen, bracketed paste, and cursor visibility are restored
 //! on a normal quit, on `Ctrl-C`, on a terminal error, and around a
 //! resize; the editor handoff suspends every mode for the child editor
-//! and takes them back when it returns. An uncatchable kill cannot run
-//! cleanup, and these tests do not claim otherwise.
+//! and takes them back when it returns. One case drives a whole
+//! selection-and-finish sequence through the keys and compares the
+//! commit with the same plan applied by the command line, one observes a
+//! stale arrival reach the frame through the background inspection
+//! without a key press, and one meets a failing editor child. An
+//! uncatchable kill cannot run cleanup, and these tests do not claim
+//! otherwise.
 
 #![cfg(unix)]
 
@@ -20,6 +25,10 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;
 
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use margin::app::Operations;
+use margin::git::Git;
+use margin::tui::{FinishSummary, Shell, TuiOptions};
 use support::pty::Pty;
 use support::repo::TestRepo;
 
@@ -373,6 +382,227 @@ fn the_editor_handoff_suspends_the_terminal_and_takes_it_back() {
         "the editor return committed nothing",
     );
 
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+}
+
+/// One key-press event for the in-process shell of the parity side.
+fn key(code: KeyCode) -> Event {
+    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// Trims one Git output to text.
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim().to_string()
+}
+
+#[test]
+fn a_selection_and_finish_sequence_applies_through_the_keys() {
+    // The whole review sequence through the keys of a real terminal
+    // (SPEC 16.9): select one passage, restore it, finish, and apply.
+    // Stock Git proves the commit; the command line proves the parity —
+    // the same decisions as one plan document the surface itself
+    // composes, applied by the installed executable on an identical
+    // repository, agree on tree, marker, and working bytes.
+    let repo = adopted_repo();
+    let candidate = support::oracle::head_oid(&repo).expect("the draft stands at HEAD");
+    let mut pty = spawn_tui(&repo, &[], 110, 32);
+    drew_first_frame(&mut pty);
+
+    // The Changes view, one restoration, the summary, the apply.
+    pty.send_key(b"2");
+    assert!(
+        pty.wait_for("Group 1 of 1", LIMIT),
+        "the changes view shows the undecided passage: {}",
+        String::from_utf8_lossy(&pty_snapshot(&pty)),
+    );
+    assert!(
+        pty.wait_for("Undecided", LIMIT),
+        "the passage starts undecided: {}",
+        String::from_utf8_lossy(&pty_snapshot(&pty)),
+    );
+    pty.send_key(b"r");
+    // The repaint redraws only changed cells, so the fresh state label
+    // is the text to read: a partial frame may leave separator and
+    // notice cells undrawn beside it.
+    assert!(
+        pty.wait_for("Restored", LIMIT),
+        "the key recorded the proposed restoration: {}",
+        String::from_utf8_lossy(&pty_snapshot(&pty)),
+    );
+    pty.send_key(b"\r");
+    assert!(
+        pty.wait_for("Finish review", LIMIT),
+        "the first Enter opened the summary: {}",
+        String::from_utf8_lossy(&pty_snapshot(&pty)),
+    );
+    pty.send_key(b"\r");
+    assert!(
+        pty.wait_for("review recorded", LIMIT),
+        "the second Enter applied the plan: {}",
+        String::from_utf8_lossy(&pty_snapshot(&pty)),
+    );
+
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+
+    // Stock Git proves the application: one commit joined, it carries the
+    // review marker, and the working document holds the restored passage
+    // (SPEC 16.3, 16.9).
+    let applied = support::oracle::head_oid(&repo).expect("the finish committed");
+    assert_ne!(applied, candidate, "one commit joined");
+    let parents = text(&repo.git_ok(["log", "-n", "1", "--format=%P", &applied]));
+    assert_eq!(parents, candidate, "one parent: the candidate C");
+    let message = text(&repo.git_ok(["log", "-n", "1", "--format=%B", &applied]));
+    assert!(
+        message.contains("Margin-Kind: review"),
+        "the commit carries the review marker: {message}",
+    );
+    assert_eq!(
+        repo.read_file("notes/a.md"),
+        b"# One\n\nFirst passage.\n",
+        "the restored passage returned to the baseline bytes",
+    );
+
+    // The command line applies the same decisions on an identical
+    // repository (SPEC 16.9): the plan document the surface composes,
+    // written out and applied by the installed executable. Commit OIDs
+    // may differ; the trees, the marker kind, and the bytes may not.
+    let peer = adopted_repo();
+    let peer_git = Git::from_env(peer.env().vars().clone()).at(peer.path());
+    let peer_operations = Operations::new(&peer_git);
+    let mut shell = Shell::open(peer.path(), &peer_operations, &TuiOptions::default());
+    shell.handle_event(&key(KeyCode::Char('2')));
+    shell.handle_event(&key(KeyCode::Char('r')));
+    shell.handle_event(&key(KeyCode::Enter));
+    let document = shell
+        .finish()
+        .and_then(FinishSummary::plan_document)
+        .map(|document| document.to_vec())
+        .expect("the summary composes one plan document");
+    shell.handle_event(&key(KeyCode::Esc));
+    peer.write_file("peer-plan.json", &document);
+    let cli = margin(
+        peer.env(),
+        peer.path(),
+        &["review", "--input", "peer-plan.json", "--json"],
+    );
+    assert_eq!(
+        cli.status.code(),
+        Some(0),
+        "the command line applies the same plan: {}",
+        String::from_utf8_lossy(&cli.stderr),
+    );
+    assert_eq!(
+        text(&peer.git_ok(["rev-parse", "HEAD^{tree}"])),
+        text(&repo.git_ok(["rev-parse", "HEAD^{tree}"])),
+        "both entry points produced one tree",
+    );
+    let cli_message = text(&peer.git_ok(["log", "-n", "1", "--format=%B"]));
+    assert!(cli_message.contains("Margin-Kind: review"));
+    assert_eq!(peer.read_file("notes/a.md"), repo.read_file("notes/a.md"));
+}
+
+#[test]
+fn a_stale_arrival_reaches_the_frame_without_a_key_press() {
+    // The background inspection observes new edits while the surface
+    // waits for input, and the frame states the arrival on its own
+    // (SPEC 5.3, 13.3): no key press drives the notice.
+    let repo = adopted_repo();
+    let mut pty = spawn_tui(&repo, &[], 110, 32);
+    drew_first_frame(&mut pty);
+
+    // New edits arrive: another checkpoint moves the head past the
+    // comparison the open surface pinned.
+    repo.write_file("notes/a.md", b"# One\n\nFirst passage, edited again.\n");
+    let output = margin(
+        repo.env(),
+        repo.path(),
+        &["checkpoint", "--message", "Later edits", "--json"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the later checkpoint must succeed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    assert!(
+        pty.wait_for("New edits arrived", LIMIT),
+        "the inspection tick surfaced the arrival without a key: {}",
+        String::from_utf8_lossy(&pty_snapshot(&pty)),
+    );
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+}
+
+#[test]
+fn a_failing_editor_child_is_stated_and_the_surface_survives() {
+    // One child of the surface fails while it runs (SPEC 16.9): the
+    // editor exits nonzero, the surface states the abandoned pass, takes
+    // its modes back, and keeps working until a clean quit.
+    let scratch = tempfile::TempDir::new().expect("a scratch folder");
+    let editor = scratch.path().join("failing-editor.sh");
+    std::fs::write(&editor, b"#!/bin/sh\nexit 3\n").expect("the failing editor");
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755))
+        .expect("the failing editor is executable");
+
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# One\n\nFirst passage.\n");
+    repo.commit_all("import");
+    let editor_json = format!("[\"{}\"]", editor.display());
+    let output = margin(
+        repo.env(),
+        repo.path(),
+        &[
+            "init",
+            "--scope",
+            "notes/",
+            "--editor-argv-json",
+            &editor_json,
+            "--json",
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "init with an editor must succeed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let head_at_init = support::oracle::head_oid(&repo).expect("the init recorded a head");
+
+    let mut pty = spawn_tui(&repo, &[], 110, 32);
+    drew_first_frame(&mut pty);
+
+    // `e` hands the document to the editor; the child fails at once.
+    pty.send_key(b"e");
+    assert!(
+        pty.wait_for("editor exited with", LIMIT),
+        "the failed pass is stated: {}",
+        String::from_utf8_lossy(&pty_snapshot(&pty)),
+    );
+    assert!(
+        pty.wait_for("nothing was applied", LIMIT),
+        "the failed pass applies nothing: {}",
+        String::from_utf8_lossy(&pty_snapshot(&pty)),
+    );
+    assert!(
+        pty.count_raw("\x1b[?1049h") >= 2,
+        "the surface re-entered the alternate screen after the child",
+    );
+
+    // The failure committed and rewrote nothing, and the surface still
+    // quits cleanly through its restored terminal.
+    assert_eq!(
+        support::oracle::head_oid(&repo),
+        Some(head_at_init),
+        "the failed editor pass committed nothing",
+    );
+    assert_eq!(
+        repo.read_file("notes/a.md"),
+        b"# One\n\nFirst passage.\n",
+        "the failed editor pass changed no byte",
+    );
     pty.send_key(b"q");
     assert_restored(&mut pty, 0);
 }
