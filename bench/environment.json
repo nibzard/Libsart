@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "status": "unassigned",
+  "runner_id": null,
+  "declared_class": "developer-laptop-class linux x86-64, local SSD storage",
+  "matches_declared_class": null,
+  "observed_class": null,
+  "registered_at": null,
+  "hardware": null,
+  "software": null,
+  "build": null,
+  "tools": null,
+  "power": null,
+  "terminal": null,
+  "notes": [
+    "No runner is registered yet; SPEC 17.6 keeps this record unassigned and every result not_measured until one is."
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "metric": "P-CHECKPOINT",
+  "corpus": "C2",
+  "status": "not_measured",
+  "environment_id": null,
+  "implementation_commit": null,
+  "executable_hash": null,
+  "corpus_manifest_hash": null,
+  "sample_count": 0,
+  "median_ms": null,
+  "p95_ms": null,
+  "budget_p95_ms": 1500,
+  "correctness_oracle": "not_run",
+  "raw_samples_path": null,
+  "details": null
+}

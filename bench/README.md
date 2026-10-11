@@ -1,21 +1,23 @@
-# Bench: corpora, manifests, and the generator
+# Bench: corpora, harness, and results
 
-`bench/` holds the benchmark fixture side of SPEC 17: the seeded corpus
-generator, the manifests every run records, the manually curated holdout
-set, and — in later slices — the environment record and the process
-benchmark harness with its results.
-
-The process timing harness itself (SPEC 17.3-17.8) is a separate task;
-this directory currently contains its input: reproducible corpora.
+`bench/` holds the benchmark side of SPEC 17: the seeded corpus
+generator, the process benchmark harness, the registered runner
+environment record, the initial result records, and the manually
+curated holdout set.
 
 ## Layout
 
 ```text
 bench/README.md            this overview
 bench/corpus/main.rs       the corpusgen example entry point
-bench/corpus/gen/          the generator library
+bench/corpus/gen/          the corpus generator library
+bench/perf/main.rs         the benchrun example entry point
+bench/perf/                the harness library
+bench/environment.json     the runner record (SPEC 17.6), unassigned until registration
+bench/results/             one not_measured record per metric and corpus (SPEC 17.8)
+bench/results/raw/         raw sample streams of measured runs, untracked
 bench/holdout/             the manually curated holdout set (SPEC 17.2)
-bench/corpora/             generated output, never committed
+bench/corpora/             generated corpora, never committed
 ```
 
 Generator modules:
@@ -129,11 +131,18 @@ generator memory for its 10,000 commits.
 
 ```sh
 cargo test --test bench_corpora            # every corpus at test scale
+cargo test --test bench_harness            # the harness acceptance suite
 cargo test --example corpusgen             # just the generator's unit tests
+cargo test --example benchrun              # the harness's unit tests
 MARGIN_BENCH_FULL_C1=1 cargo test --test bench_corpora   # exact sizes
 MARGIN_BENCH_FULL_C2=1 cargo test --test bench_corpora
 MARGIN_BENCH_FULL_C3=1 cargo test --test bench_corpora   # slow: 1 GiB, about an hour
 ```
+
+The harness suite generates its own small corpora under the run's
+`LOOPER_RESOURCE_PREFIX` scratch space, registers a probe record, and
+runs real measurements through the debug executable: shortened,
+diagnostic runs whose verdicts are honestly `failed` or `inconclusive`.
 
 Plain `cargo test` runs the generator's unit tests too, because they live
 in the example target.
@@ -145,6 +154,83 @@ variant states, and it reruns generation to prove the manifest
 reproduces. Marker validity is additionally checked through the
 product's own recognizer, because the corpora are Margin fixtures; that
 check establishes fixture validity, not product correctness.
+
+## The process benchmark harness (SPEC 17.3-17.8)
+
+`cargo run --example benchrun` drives the measurement side. Its modules:
+
+| Module | Responsibility |
+| --- | --- |
+| `perf/envrec.rs` | The runner record: probing actual hardware, software, build, tools, power, terminal facts |
+| `perf/metric.rs` | The SPEC 17.4 metric table with its budgets |
+| `perf/timing.rs` | The SPEC 17.3 boundary: before process creation through exit and full response delivery |
+| `perf/fixture.rs` | Corpus preparation and the mutation reset every iteration starts from |
+| `perf/oracle.rs` | Independent stock-Git oracles, including the index plumbing that derives expected result trees |
+| `perf/samples.rs` | Raw paired samples: JSON Lines, warmups and slow runs retained |
+| `perf/stats.rs` | Nearest-rank median/p95 and the 10,000-resample paired bootstrap |
+| `perf/record.rs` | The SPEC 17.8 result record and its statuses |
+| `perf/runner.rs` | The SPEC 17.7 run loop and the block invalidation rule |
+| `perf/hash.rs` | Self-contained SHA-256 for executable, lock, and manifest hashes |
+
+The workflow:
+
+```sh
+# 1. Register the runner (SPEC 17.6). The shipped record is unassigned;
+#    every probe reads this machine, nothing is transcribed.
+cargo run --example benchrun -- register --id the-laptop \
+    --conditions "on AC power, governor performance, no competing builds"
+
+# 2. Write the initial not_measured records if they are absent.
+cargo run --example benchrun -- init-results
+
+# 3. Time one metric against one corpus. The corpus is generated at
+#    test scale when absent; pass --scale full for the SPEC sizes.
+cargo run --example benchrun -- run --metric P-STATUS --corpus c1 \
+    --executable target/release/margin
+
+# 4. Compare a candidate against a baseline under the paired policy.
+cargo run --example benchrun -- run --metric P-DIFF --corpus c2 \
+    --baseline target/release/margin-base --candidate target/release/margin
+
+# 5. A documented incident invalidates a whole block; samples stay.
+cargo run --example benchrun -- invalidate --samples <samples.jsonl> \
+    --block 3 --reason "build storm" --record bench/results/P-STATUS.C1.json
+```
+
+Defaults follow SPEC 17.7.3 exactly: five warmups and twenty independent
+blocks of five fresh-process runs per version. Shortened runs are
+diagnostic: their records come back `inconclusive` with a note, never
+`passed`.
+
+What the harness guarantees:
+
+- **The boundary (17.3).** The clock starts immediately before `spawn`
+  and stops after both pipes drain and the child is reaped, so Git
+  children, parsing, verification, and serialization are all inside.
+  Warm CLI means a fresh process with warmed caches; the method is
+  recorded in every sample.
+- **The reset (17.7.2).** Every iteration — warmups included — starts
+  from `git reset --hard` to the candidate C plus the exact dirty bytes
+  for P-CHECKPOINT or a freshly numbered review plan for P-APPLY, and
+  the pre-state is asserted before the clock starts, so a run cannot
+  degrade into a no-op or a receipt lookup.
+- **The oracles (17.7.6).** Each run is verified through stock Git:
+  reported heads and baselines, manifest group totals, the moved
+  commit's parent, trailer block, and — for the selective review — a
+  result tree derived by independent index plumbing from the manifest's
+  blob IDs. A fast incorrect command fails the benchmark.
+- **The samples (17.7.3-17.7.4).** Both versions' runs land in one raw
+  stream with version, block, order index, oracle outcome, and the
+  recorded order seed. Slow samples and warmups are retained; block
+  invalidation marks and preserves.
+- **The verdicts (17.1, 17.8).** Records distinguish `not_measured`,
+  `passed`, `failed`, and `inconclusive`. Until a runner registers,
+  measurement refuses and the records stay `not_measured`.
+
+The PTY metrics (P-OPEN, P-KEY, P-REFRESH) and the resource metrics
+(P-CPU, P-RSS, P-TREE-MEM) are in the registry with their budgets but
+have no sampler in this harness yet; their records stay `not_measured`
+and the `run` command refuses them explicitly.
 
 ## Holdout set
 
