@@ -319,6 +319,17 @@ fn detach(pty: &mut Pty) {
     pty.send_key(b"\x02d");
 }
 
+/// Closes the attached desk's last window with the writer's own bindings
+/// (SPEC 12.6): the prefix and `&` ask for confirmation, and `y` answers it.
+fn close_last_window(pty: &mut Pty) {
+    pty.send_key(b"\x02&");
+    assert!(
+        pty.wait_for("kill-window", LIMIT),
+        "the client asked before closing the window"
+    );
+    pty.send_key(b"y");
+}
+
 /// The `TMUX` value of a process inside one session of this server.
 fn inside_identity(server: &DeskServer, session: &str) -> (String, String) {
     let tmux = format!(
@@ -511,6 +522,49 @@ fn outside_tmux_a_narrow_desk_keeps_one_command_per_window() {
         widths,
         ["agent=90", "margin=90"],
         "no pane is squeezed beside the other"
+    );
+}
+
+#[test]
+fn closing_the_last_window_while_attached_reports_the_ended_session() {
+    if !tmux_present() {
+        eprintln!("skipped: tmux is not installed");
+        return;
+    }
+    let repo = TestRepo::init();
+    let work = tempfile::TempDir::new().expect("a private work directory");
+    let server = DeskServer::new("ended");
+    let agent = write_agent(work.path(), &work.path().join("agent.log"));
+
+    // One wide desk, so the session holds a single window: closing that
+    // window with the writer's own tmux bindings ends the session while
+    // the desk is still attached to it.
+    let mut pty = spawn_desk(&repo, &server, &[agent.to_str().unwrap()], 170, 45, None);
+    assert!(
+        pty.wait_for("0:agent", LIMIT),
+        "the desk attached and selected the agent window"
+    );
+    close_last_window(&mut pty);
+
+    // The attach ended because the session ended, so the report states
+    // that honestly: no detach line, no desk left behind (SPEC 12.6).
+    let status = pty
+        .wait_exit(LIMIT)
+        .expect("the desk returns when its session ends");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "an ended desk is reported, not failed"
+    );
+    assert!(pty.shows("margin desk: session margin"));
+    assert!(pty.shows("the session has ended; no desk is left running"));
+    assert!(
+        !pty.shows("detached; the session keeps running"),
+        "an ended session is not reported as a detach"
+    );
+    assert!(
+        !server.try_run(&["has-session", "-t", "margin"]),
+        "nothing of the desk survives the closed window"
     );
 }
 
