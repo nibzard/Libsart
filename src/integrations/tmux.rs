@@ -137,9 +137,7 @@ fn probe() -> Result<(), OperationError> {
     match Command::new("tmux").arg("-V").output() {
         Ok(output) if output.status.success() => Ok(()),
         Ok(output) => Err(failure("-V", &output.stderr)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Err(missing_tmux())
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(missing_tmux()),
         Err(error) => Err(failure("-V", error.to_string().as_bytes())),
     }
 }
@@ -187,16 +185,13 @@ fn run(args: &[OsString]) -> Result<String, OperationError> {
         .first()
         .map(|word| word.to_string_lossy().into_owned())
         .unwrap_or_else(|| "tmux".to_string());
-    let output = Command::new("tmux")
-        .args(args)
-        .output()
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::NotFound {
-                missing_tmux()
-            } else {
-                failure(&command, error.to_string().as_bytes())
-            }
-        })?;
+    let output = Command::new("tmux").args(args).output().map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            missing_tmux()
+        } else {
+            failure(&command, error.to_string().as_bytes())
+        }
+    })?;
     if !output.status.success() {
         return Err(failure(&command, &output.stderr));
     }
@@ -223,7 +218,9 @@ fn kill_session(name: &str) {
 /// Ends one window this desk created inside the writer's session; a
 /// window that already closed is not an error here.
 fn kill_window(window: &str) {
-    let _ = Command::new("tmux").args(["kill-window", "-t", window]).output();
+    let _ = Command::new("tmux")
+        .args(["kill-window", "-t", window])
+        .output();
 }
 
 /// The tmux sessions that exist. No server yet means none: the first desk
@@ -268,11 +265,13 @@ fn first_free_name(taken: &BTreeSet<String>) -> Option<String> {
 }
 
 /// The prefix key of one session, exactly as tmux reports it (SPEC 12.6:
-/// queried, never assumed). `None` also covers the explicit `None` value
-/// of a session with the prefix disabled.
+/// queried, never assumed). `-A` follows the inheritance a real client
+/// obeys, so a prefix set only globally still reads here instead of
+/// vanishing behind the session's own table. `None` also covers the
+/// explicit `None` value of a session with the prefix disabled.
 fn prefix_of(session: &str) -> Option<String> {
     let output = Command::new("tmux")
-        .args(["show-options", "-t", session, "-v", "prefix"])
+        .args(["show-options", "-A", "-t", session, "-v", "prefix"])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -559,7 +558,9 @@ impl Summary {
         prefix: &Option<String>,
         window: &str,
     ) -> Summary {
-        let mut lines = vec![format!("margin desk: window \"{window}\" in session {session}")];
+        let mut lines = vec![format!(
+            "margin desk: window \"{window}\" in session {session}"
+        )];
         match layout {
             Layout::SideBySide => lines.push(format!(
                 "  the agent pane runs {}; the margin pane beside it runs {}",
@@ -600,14 +601,14 @@ impl Summary {
         self.lines.push(format!(
             "  the attach ended with {status}; the session keeps running"
         ));
-        self.lines.push(format!("  reattach with tmux attach-session -t {name}"));
+        self.lines
+            .push(format!("  reattach with tmux attach-session -t {name}"));
     }
 
     /// An attach after which no session is left.
     fn session_ended(&mut self) {
-        self.lines.push(
-            "  the session has ended; no desk is left running".to_string(),
-        );
+        self.lines
+            .push("  the session has ended; no desk is left running".to_string());
     }
 
     /// The complete report.
@@ -625,7 +626,13 @@ fn show_argv(argv: &[String]) -> String {
         .map(|argument| {
             argument
                 .chars()
-                .map(|character| if character.is_control() { '\u{FFFD}' } else { character })
+                .map(|character| {
+                    if character.is_control() {
+                        '\u{FFFD}'
+                    } else {
+                        character
+                    }
+                })
                 .collect::<String>()
         })
         .collect::<Vec<String>>()
@@ -698,17 +705,13 @@ mod tests {
         assert!(text.contains("tmux attach-session -t margin"));
         assert!(text.contains("quitting margin leaves the agent running"));
 
-        let narrow = Summary::created_session(
-            "margin-2",
-            Layout::Focused,
-            &agent,
-            &margin,
-            &None,
-        );
+        let narrow = Summary::created_session("margin-2", Layout::Focused, &agent, &margin, &None);
         assert!(narrow.text().contains("window \"margin\""));
-        assert!(narrow
-            .text()
-            .contains("tmux prefix: none is configured for this session"));
+        assert!(
+            narrow
+                .text()
+                .contains("tmux prefix: none is configured for this session")
+        );
 
         let joined = Summary::joined_window(
             "base",
@@ -718,7 +721,11 @@ mod tests {
             &Some("C-a".to_string()),
             DESK_WINDOW,
         );
-        assert!(joined.text().contains("window \"margin-desk\" in session base"));
+        assert!(
+            joined
+                .text()
+                .contains("window \"margin-desk\" in session base")
+        );
         assert!(joined.text().contains("tmux prefix: C-a"));
     }
 
@@ -735,7 +742,10 @@ mod tests {
         assert_eq!(error.code, "OPERATION_UNAVAILABLE");
         assert!(error.message.contains("tmux"));
         assert!(error.message.contains("margin tui"));
-        assert_eq!(error.recovery_argv, vec!["margin".to_string(), "tui".to_string()]);
+        assert_eq!(
+            error.recovery_argv,
+            vec!["margin".to_string(), "tui".to_string()]
+        );
     }
 
     #[test]

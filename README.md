@@ -73,6 +73,7 @@ draft. A review records your decisions about that draft.
 | `margin hook claude` | Translate one Claude Code hook event into a capture |
 | `margin hook install claude` | Add Margin's hook entries to the local Claude Code settings |
 | `margin hook remove claude` | Delete Margin's hook entries from the local Claude Code settings |
+| `margin desk -- claude` | Compose an optional tmux desk with the agent beside Margin |
 
 Review plans use identifiers from `margin diff --json`. A completed request
 has a receipt in Git history. Repeating the same request returns that receipt.
@@ -91,6 +92,21 @@ Install the entries with `margin hook install claude`; remove them with
 place, reread the file before writing and refuse when it changed under
 them, and report a repeated run as a no-op. Add `--dry-run` to see the
 exact planned configuration and the adapter capabilities first.
+
+`margin desk -- claude` composes an optional tmux writing desk around an
+explicit agent command line. Outside tmux it creates a dedicated detached
+session, attaches it, and detaches back to the same shell when you press
+the session's prefix and `d`. Inside an existing session it adds one
+clearly named window and leaves every other pane alone. The agent argv
+runs through tmux direct execution, so each argument stays one argument
+and no shell reads it. Terminals narrower than 140 columns get one
+command per window instead of two unreadable columns. The desk edits no
+global tmux option, sends no keystrokes into any pane, and reports the
+processes it created, the session's own prefix key (queried, never
+assumed), and how to reattach. You own the agent process: quitting Margin
+or closing its pane leaves the agent running. Without tmux, `desk`
+refuses with the two-tab arrangement instead — run `margin tui` in one
+tab and the agent in another.
 
 Use `--json` for structured command results. Use `--help` on any command
 for its options. Files outside the writing scope stay outside Margin's
@@ -132,8 +148,8 @@ terminal left raw after one recovers with `reset` (or `stty sane`). The
 `edit` command hands one document to the same configured editor from the
 command line. The Claude Code hook adapter translates supported events, and
 `hook install` and `hook remove` edit only Margin's own entries in the local
-Claude Code settings; the tmux desk remains unfinished, as do parts of
-explicit recovery.
+Claude Code settings; `margin desk` composes the optional tmux writing desk.
+Parts of explicit recovery remain unfinished.
 
 Known defects and remaining work are recorded in [to-do.json](to-do.json).
 Use the disposable example repository when evaluating the current behavior.
