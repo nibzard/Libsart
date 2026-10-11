@@ -4,6 +4,13 @@
 # them, so only the generator and manifests are tracked (SPEC 17.2).
 /bench/corpora/
 
+# Benchmark harness scratch: private homes and oracle index files. The
+# initial not_measured result records stay tracked; raw sample streams
+# under bench/results/raw/ stay untracked-but-visible so release
+# evidence can be committed deliberately (SPEC 17.8).
+/bench/results/scratch.*/
+/bench/results/raw/
+
 # Pinned formal tools: only the checksum file is tracked; the jar is fetched
 # and verified by formal/run-profiles.sh.
 /formal/tools/*.jar

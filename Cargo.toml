@@ -35,3 +35,10 @@ tempfile = "=3.27.0"
 [[example]]
 name = "corpusgen"
 path = "bench/corpus/main.rs"
+
+# The process benchmark harness of SPEC 17.3-17.8 is a development
+# example too: `cargo run --example benchrun` registers the runner,
+# times fresh-process operations, and writes result records.
+[[example]]
+name = "benchrun"
+path = "bench/perf/main.rs"
