@@ -28,6 +28,13 @@ jar="${tools}/tla2tools-${version}.jar"
 cases="${here}/mutations/cases.tsv"
 out=${1:-${here}/evidence/mutations}
 
+# The script changes directory before writing its logs, so a relative log
+# directory is anchored to the invocation directory while it still applies.
+case $out in
+/*) ;;
+*) out="$(pwd)/$out" ;;
+esac
+
 for tool in patch python3; do
   command -v "${tool}" >/dev/null 2>&1 || {
     echo "run-mutations.sh needs ${tool} in PATH" >&2

@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "metric": "P-TREE-MEM",
+  "corpus": "C1",
+  "status": "passed",
+  "environment_id": "the-developer-vm",
+  "implementation_commit": "fcac83eb2fef068b632560165fe8afeb4f87efa1",
+  "executable_hash": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64",
+  "corpus_manifest_hash": "e6dd7dc04db26c98718213241d85db1b0438ae1f9c5eef9a661c18856f7a9539",
+  "sample_count": 12,
+  "median_ms": null,
+  "p95_ms": null,
+  "budget_p95_ms": null,
+  "correctness_oracle": "passed",
+  "raw_samples_path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/raw/P-TREE-MEM.C1/2026-10-12T010139Z/samples.jsonl",
+  "details": {
+    "metric_kind": "resource",
+    "metric_about": "Peak concurrently sampled process-tree RSS, Margin plus Git children",
+    "measured_at": "2026-10-12T01:01:39Z",
+    "environment": {
+      "path": "bench/environment.json",
+      "git_version": "2.43.0",
+      "rustc_version": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "cargo_version": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+      "kernel": "6.8.0-139-generic",
+      "os": "Ubuntu 24.04.3 LTS",
+      "dependency_lock_sha256": "4f73ced8a50e9f05067c4c47da81ace72c20aebe9e168af17301c1e7e503cdf4",
+      "build_profile": "release",
+      "rustflags": "none",
+      "harness_revision": "margin-benchrun/2"
+    },
+    "executable": {
+      "path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/target/release/margin",
+      "bytes": 4669056,
+      "sha256": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64"
+    },
+    "corpus": {
+      "directory": "/tmp/looper_f213b06f607af254209d-t054/corpora/c1",
+      "manifest_path": "/tmp/looper_f213b06f607af254209d-t054/corpora/c1/manifest.json",
+      "manifest_sha256": "e6dd7dc04db26c98718213241d85db1b0438ae1f9c5eef9a661c18856f7a9539",
+      "generator_revision": "margin-corpusgen/1",
+      "seed": 7881706609582276609,
+      "test_scale": false
+    },
+    "sampling": {
+      "warmups": 1,
+      "blocks": 4,
+      "runs_per_block": 3,
+      "order_seed": 1,
+      "boundary": "a kernel-accounted quantity of the session's process tree, not a wall latency: VmHWM, the concurrent tree sum, or utime+stime",
+      "cache_method": "one fresh surface session per run on a 120-column, 40-row xterm-256color pseudo-terminal, driven with --reduced-updates through the fixed open/review/history sequence",
+      "order_rule": "one recorded-seed coin flip per block decides baseline/candidate order",
+      "events_per_session": 0,
+      "window_seconds": 0
+    },
+    "statistics": {
+      "sample_count": 12,
+      "median_ms": 9.0703125,
+      "p95_ms": 9.22265625,
+      "min_ms": 8.890625,
+      "max_ms": 9.22265625,
+      "method": "nearest-rank over MiB values; every counted run retained; the gate is the maximum sample against the ceiling"
+    },
+    "comparison": null,
+    "gate": {
+      "budget": "peak <= 128 MiB",
+      "budget_exceeded": false,
+      "confirmation_required": false
+    },
+    "process_counts": null,
+    "memory_definition": "peak of the concurrent sum of VmRSS over the process tree rooted at the surface parent (Margin plus every Git child, found through PPid links in /proc/*/stat), sampled every 20 ms across launch, the fixed sequence, and quit, in MiB; a per-process maximum or a child's lone peak is a different statistic (SPEC 17.5)",
+    "invalidated_blocks": [],
+    "notes": [
+      "every session drove the fixed sequence: the useful Read frame, the Changes view, the History view, back to Read, one j/k reading pair, then quit"
+    ]
+  }
+}

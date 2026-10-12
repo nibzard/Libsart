@@ -5396,10 +5396,10 @@ mod tests {
         let descriptor =
             ScopeDescriptor::assemble(&[entry(&["content"], true)], &[], &[".md".to_string()])
                 .unwrap();
-        map.scope_spec = format!(
-            "{{\"include\":[\"content/\"],\"v\":1,\"exclude\":[],\"suffixes\":[\".md\"],\
-             \"path_policy\":\"literal-utf8-v1\",\"storage_policy\":\"identity-v1\"}}"
-        );
+        map.scope_spec =
+            "{\"include\":[\"content/\"],\"v\":1,\"exclude\":[],\"suffixes\":[\".md\"],\
+             \"path_policy\":\"literal-utf8-v1\",\"storage_policy\":\"identity-v1\"}"
+                .to_string();
         assert_eq!(
             map.commit_message("m"),
             Err(MetadataProblem::NonCanonicalScopeSpec)

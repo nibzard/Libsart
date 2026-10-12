@@ -1,9 +1,9 @@
 {
-  "schema_version": 1,
   "project": {
     "name": "Margin",
     "root": "."
   },
+  "schema_version": 1,
   "source_files": [
     "SPEC.md"
   ],
@@ -14,8 +14,6 @@
       "priority": 1,
       "status": "done",
       "details": "Acceptance: A pinned stable toolchain builds one Cargo package with a library and executable. The planned modules exist, the six planned runtime crates have pinned versions and minimal features, and cargo check and cargo test pass. See SPEC 13.",
-      "depends_on": [],
-      "updated_at": "2026-10-09T23:09:47Z",
       "files": [
         ".gitignore",
         "Cargo.lock",
@@ -32,7 +30,8 @@
         "src/main.rs",
         "src/markdown.rs",
         "src/tui/mod.rs"
-      ]
+      ],
+      "updated_at": "2026-10-09T23:09:47Z"
     },
     {
       "id": "T002",
@@ -40,8 +39,6 @@
       "priority": 1,
       "status": "done",
       "details": "Acceptance: formal/MarginReview.tla and all five configuration files match Appendix A exactly. A repeatable extraction check detects drift between the canonical files and the specification. See SPEC 15 and Appendix A.",
-      "depends_on": [],
-      "updated_at": "2026-10-09T23:15:04Z",
       "files": [
         "formal/MarginReview.cfg",
         "formal/MarginReview.tla",
@@ -50,7 +47,8 @@
         "formal/MarginReviewNightly.cfg",
         "formal/MarginReviewUncooperative.cfg",
         "tests/formal_extraction.rs"
-      ]
+      ],
+      "updated_at": "2026-10-09T23:15:04Z"
     },
     {
       "id": "T003",
@@ -61,7 +59,6 @@
       "depends_on": [
         "T002"
       ],
-      "updated_at": "2026-10-10T00:27:58Z",
       "files": [
         ".gitignore",
         "SPEC.md",
@@ -78,7 +75,8 @@
         "formal/evidence/logs/tlc-MarginReviewUncooperative.log",
         "formal/run-profiles.sh",
         "formal/tools/tla2tools-1.8.0.jar.sha256"
-      ]
+      ],
+      "updated_at": "2026-10-10T00:27:58Z"
     },
     {
       "id": "T004",
@@ -89,7 +87,6 @@
       "depends_on": [
         "T003"
       ],
-      "updated_at": "2026-10-10T17:12:12Z",
       "files": [
         "formal/evidence/T004-mutation-checks.md",
         "formal/evidence/mutations/01-draft-advances-baseline.counterexample.json",
@@ -142,7 +139,8 @@
         "formal/mutations/cases.tsv",
         "formal/run-mutations.sh",
         "tests/formal_mutations.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T17:12:12Z"
     },
     {
       "id": "T005",
@@ -153,7 +151,6 @@
       "depends_on": [
         "T001"
       ],
-      "updated_at": "2026-10-10T00:45:28Z",
       "files": [
         "Cargo.lock",
         "Cargo.toml",
@@ -162,7 +159,8 @@
         "tests/support/mod.rs",
         "tests/support/oracle.rs",
         "tests/support/repo.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T00:45:28Z"
     },
     {
       "id": "T006",
@@ -170,15 +168,14 @@
       "priority": 1,
       "status": "done",
       "details": "Acceptance: At least 60 reviewed source pairs cover the content classes in SPEC 16.7. Each fixture records exact source changes, expected grouping or fallback, expected result trees, and reader-visible differences.",
-      "depends_on": [
-        "T005"
-      ],
       "steps": [
         "Build the correctness corpus before T024. Start with independent source pairs and expected Git results, then test the implementation against them.",
         "Cover the required content classes and at least 60 reviewed pairs from SPEC 16.7. Record expected whole-file fallbacks as well as independent groups.",
         "Keep fixture expectations independent of the manifest and grouping code. T025 must reuse these fixtures for exact restoration checks."
       ],
-      "updated_at": "2026-10-10T09:08:41Z",
+      "depends_on": [
+        "T005"
+      ],
       "files": [
         ".gitattributes",
         "tests/c0_corpus.rs",
@@ -191,17 +188,42 @@
         "tests/fixtures/c0/transitions.rs",
         "tests/fixtures/c0/whitespace.rs",
         "tests/support/mod.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T09:08:41Z"
     },
     {
       "id": "T007",
       "title": "Generate reproducible benchmark corpora",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: Seeded generators create C1, C2, C3, and C4 with the exact sizes and Git histories in SPEC 17.2. Manifests record hashes, graph shape, expected results, object format, and storage state; reruns reproduce them.",
       "depends_on": [
         "T005"
-      ]
+      ],
+      "files": [
+        ".gitignore",
+        "Cargo.toml",
+        "bench/README.md",
+        "bench/corpus/gen/build.rs",
+        "bench/corpus/gen/edits.rs",
+        "bench/corpus/gen/manifest.rs",
+        "bench/corpus/gen/mod.rs",
+        "bench/corpus/gen/plan.rs",
+        "bench/corpus/gen/rng.rs",
+        "bench/corpus/gen/runner.rs",
+        "bench/corpus/gen/text.rs",
+        "bench/corpus/main.rs",
+        "bench/holdout/README.md",
+        "bench/holdout/manifest.json",
+        "bench/holdout/pairs/claim-shift/after.md",
+        "bench/holdout/pairs/claim-shift/before.md",
+        "bench/holdout/pairs/link-swap/after.md",
+        "bench/holdout/pairs/link-swap/before.md",
+        "bench/holdout/pairs/pure-reflow/after.md",
+        "bench/holdout/pairs/pure-reflow/before.md",
+        "tests/bench_corpora.rs"
+      ],
+      "updated_at": "2026-10-11T09:44:58Z"
     },
     {
       "id": "T008",
@@ -213,11 +235,11 @@
         "T001",
         "T005"
       ],
-      "updated_at": "2026-10-10T01:19:47Z",
       "files": [
         "src/git.rs",
         "tests/git_adapter.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T01:19:47Z"
     },
     {
       "id": "T009",
@@ -228,14 +250,14 @@
       "depends_on": [
         "T008"
       ],
-      "updated_at": "2026-10-10T01:55:39Z",
       "files": [
         "src/app.rs",
         "src/domain.rs",
         "src/git.rs",
         "tests/scope_resolver.rs",
         "tests/support/mod.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T01:55:39Z"
     },
     {
       "id": "T010",
@@ -247,12 +269,12 @@
         "T008",
         "T009"
       ],
-      "updated_at": "2026-10-10T02:23:27Z",
       "files": [
         "src/app.rs",
         "src/git.rs",
         "tests/policy_guards.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T02:23:27Z"
     },
     {
       "id": "T011",
@@ -264,13 +286,13 @@
         "T008",
         "T009"
       ],
-      "updated_at": "2026-10-10T02:44:48Z",
       "files": [
         "src/app.rs",
         "src/domain.rs",
         "src/git.rs",
         "tests/identities.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T02:44:48Z"
     },
     {
       "id": "T012",
@@ -282,13 +304,13 @@
         "T008",
         "T011"
       ],
-      "updated_at": "2026-10-10T04:01:18Z",
       "files": [
         "src/app.rs",
         "src/domain.rs",
         "src/git.rs",
         "tests/commit_metadata.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T04:01:18Z"
     },
     {
       "id": "T013",
@@ -299,12 +321,12 @@
       "depends_on": [
         "T012"
       ],
-      "updated_at": "2026-10-10T04:17:15Z",
       "files": [
         "src/app.rs",
         "src/git.rs",
         "tests/baseline_selection.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T04:17:15Z"
     },
     {
       "id": "T014",
@@ -317,11 +339,11 @@
         "T008",
         "T012"
       ],
-      "updated_at": "2026-10-10T04:40:01Z",
       "files": [
         "src/app.rs",
         "tests/operations.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T04:40:01Z"
     },
     {
       "id": "T015",
@@ -332,13 +354,13 @@
       "depends_on": [
         "T014"
       ],
-      "updated_at": "2026-10-10T05:11:13Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
         "src/main.rs",
         "tests/cli_contract.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T05:11:13Z"
     },
     {
       "id": "T016",
@@ -350,14 +372,14 @@
         "T008",
         "T009"
       ],
-      "updated_at": "2026-10-10T05:47:50Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
         "src/domain.rs",
         "src/git.rs",
         "tests/local_settings.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T05:47:50Z"
     },
     {
       "id": "T017",
@@ -372,7 +394,6 @@
         "T015",
         "T016"
       ],
-      "updated_at": "2026-10-10T06:17:07Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
@@ -380,7 +401,8 @@
         "tests/cli_contract.rs",
         "tests/initialization.rs",
         "tests/operations.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T06:17:07Z"
     },
     {
       "id": "T018",
@@ -391,12 +413,12 @@
       "depends_on": [
         "T017"
       ],
-      "updated_at": "2026-10-10T06:36:36Z",
       "files": [
         "src/app.rs",
         "tests/initialization.rs",
         "tests/operations.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T06:36:36Z"
     },
     {
       "id": "T019",
@@ -410,7 +432,6 @@
         "T015",
         "T017"
       ],
-      "updated_at": "2026-10-10T07:09:58Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
@@ -421,7 +442,8 @@
         "tests/local_settings.rs",
         "tests/operations.rs",
         "tests/status_report.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T07:09:58Z"
     },
     {
       "id": "T020",
@@ -436,14 +458,14 @@
         "T015",
         "T017"
       ],
-      "updated_at": "2026-10-10T07:39:46Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
         "tests/checkpoint.rs",
         "tests/local_settings.rs",
         "tests/operations.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T07:39:46Z"
     },
     {
       "id": "T021",
@@ -456,14 +478,14 @@
         "T015",
         "T017"
       ],
-      "updated_at": "2026-10-10T17:48:15Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
         "src/domain.rs",
         "tests/cli_contract.rs",
         "tests/show_document.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T17:48:15Z"
     },
     {
       "id": "T022",
@@ -476,7 +498,6 @@
         "T013",
         "T015"
       ],
-      "updated_at": "2026-10-10T19:48:13Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
@@ -484,7 +505,8 @@
         "src/git.rs",
         "tests/cli_contract.rs",
         "tests/editorial_log.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T19:48:13Z"
     },
     {
       "id": "T023",
@@ -492,13 +514,6 @@
       "priority": 1,
       "status": "done",
       "details": "Acceptance: A fixed Git diff contract captures every scoped B-to-C change, including additions, deletions, modes, whitespace, and opaque files. Full patch bytes and source ranges produce stable manifest and change IDs. See SPEC 10.1-10.2.",
-      "depends_on": [
-        "T005",
-        "T008",
-        "T009",
-        "T013"
-      ],
-      "updated_at": "2026-10-10T08:23:19Z",
       "steps": [
         "Finish this active task before selecting another task. Review on 2026-10-10 found 16 failures in tests/change_manifest.rs. This is a snapshot of ongoing work, not a reason to change its status.",
         "Run cargo test --test change_manifest. Investigate empty patch output from Git::diff_tree_patch and the no-patch-section errors against an independent stock Git command.",
@@ -506,12 +521,19 @@
         "Verify exact patches for binary content, mode changes, unusual names, whitespace, both object formats, and hostile Git configuration. Do not weaken tree or byte oracles to make tests pass.",
         "Run cargo test --all-targets --no-fail-fast before completion. Remove temporary diagnostic probes when they are no longer needed."
       ],
+      "depends_on": [
+        "T005",
+        "T008",
+        "T009",
+        "T013"
+      ],
       "files": [
         "src/app.rs",
         "src/domain.rs",
         "src/git.rs",
         "tests/change_manifest.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T08:23:19Z"
     },
     {
       "id": "T024",
@@ -519,24 +541,24 @@
       "priority": 1,
       "status": "done",
       "details": "Acceptance: Presentation uses Markdown offsets without rewriting source. Groups contain complete hunks, couple dependent structures, and enlarge uncertain cases to a whole file. Headings, word hints, and exact-source fallback expose links and whitespace. See SPEC 10.2-10.5.",
+      "steps": [
+        "Complete the source corpus and manifest first. T028 and T058 are deliberate sequencing gates: repair existing capture commands before expanding the review workflow.",
+        "Keep Markdown parsing in the presentation layer. Group complete canonical hunks and prove fallback behavior from both source versions.",
+        "Assign final manifest, review, and change IDs only after grouping and exact-application validation. Never change groups after issuing actionable IDs."
+      ],
       "depends_on": [
         "T006",
         "T023",
         "T028",
         "T058"
       ],
-      "updated_at": "2026-10-10T11:40:42Z",
-      "steps": [
-        "Complete the source corpus and manifest first. T028 and T058 are deliberate sequencing gates: repair existing capture commands before expanding the review workflow.",
-        "Keep Markdown parsing in the presentation layer. Group complete canonical hunks and prove fallback behavior from both source versions.",
-        "Assign final manifest, review, and change IDs only after grouping and exact-application validation. Never change groups after issuing actionable IDs."
-      ],
       "files": [
         "src/app.rs",
         "src/git.rs",
         "src/markdown.rs",
         "tests/grouping.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T11:40:42Z"
     },
     {
       "id": "T025",
@@ -548,10 +570,10 @@
         "T006",
         "T024"
       ],
-      "updated_at": "2026-10-10T12:33:05Z",
       "files": [
         "tests/restoration.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T12:33:05Z"
     },
     {
       "id": "T026",
@@ -564,14 +586,14 @@
         "T023",
         "T024"
       ],
-      "updated_at": "2026-10-10T13:16:30Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
         "src/domain.rs",
         "tests/diff_results.rs",
         "tests/operations.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T13:16:30Z"
     },
     {
       "id": "T027",
@@ -584,7 +606,6 @@
         "T015",
         "T026"
       ],
-      "updated_at": "2026-10-10T14:01:05Z",
       "files": [
         "schemas/review-plan-v1.json",
         "src/app.rs",
@@ -601,7 +622,8 @@
         "tests/local_settings.rs",
         "tests/operations.rs",
         "tests/review_plans.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T14:01:05Z"
     },
     {
       "id": "T028",
@@ -609,12 +631,6 @@
       "priority": 1,
       "status": "done",
       "details": "Acceptance: One nonblocking operating-system lock serializes all Margin writes, including init, repeat init settings, and checkpoint. A competing operation returns BUSY without intended effects. Hold the lock through postcondition inspection and settings persistence. Recheck branch, scope, HEAD, index, working content, path safety, and applicable writer activity before the first real mutation. Stale state refuses before staging. Compute and verify the intended init tree before staging the real index. See SPEC 9.1 and 14.3. Review finding: current init and checkpoint have no application mutation lock; checkpoint rechecks only the index. Implement this foundation before review features. The former dependency on T027 delayed protection for commands that already write.",
-      "depends_on": [
-        "T010",
-        "T014",
-        "T020",
-        "T059"
-      ],
       "steps": [
         "Use the supported standard-library file lock and a scoped guard. Verify compatibility with the declared minimum Rust version. Do not use a stale PID file as a lock.",
         "Acquire the lock for existing repositories before mutation inspection. Serialize repository creation and adoption as far as the supported contract permits; document and test the bootstrap boundary.",
@@ -622,6 +638,12 @@
         "Compute the intended init result in a disposable index. Compare the real staged tree with that result before commit, as checkpoint already does.",
         "Use deterministic synchronization in real-process tests. Prove BUSY behavior, release after failure, and refusal when HEAD, branch, index, scoped bytes, or path kinds change before mutation.",
         "Keep receipt lookup before present-day eligibility checks when T030 is connected. Cover that ordering in receipt tests; do not wait for the plan parser to implement locking."
+      ],
+      "depends_on": [
+        "T010",
+        "T014",
+        "T020",
+        "T059"
       ],
       "files": [
         "Cargo.toml",
@@ -647,14 +669,14 @@
         "T027",
         "T028"
       ],
-      "updated_at": "2026-10-10T14:26:24Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
         "tests/operations.rs",
         "tests/review_dry_run.rs",
         "tests/review_plans.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T14:26:24Z"
     },
     {
       "id": "T030",
@@ -667,12 +689,12 @@
         "T013",
         "T027"
       ],
-      "updated_at": "2026-10-10T14:54:39Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
         "tests/receipts.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T14:54:39Z"
     },
     {
       "id": "T031",
@@ -680,12 +702,18 @@
       "priority": 1,
       "status": "done",
       "details": "Acceptance: A complete keep-all plan creates one verified empty review commit with no file rewrite and the candidate full tree. The baseline advances only after parent, tree, and reserved metadata match the intended result. See SPEC 9.4.",
+      "steps": [
+        "Before completing this active task, test successful commit hooks as well as failed hooks. Review reproduction: initialize draft.md, edit and checkpoint it, then apply a keep-all plan with a post-commit hook that writes new bytes to draft.md. The current command succeeds with working_tree=unchanged and no warning.",
+        "Inspect working content and the index after a successful commit. Report actual hook effects and newer uncaptured content. Preserve the verified commit, but do not imply that the newer working bytes were reviewed.",
+        "Add real Git regressions for a successful hook that edits a scoped file, adds a scoped file, or stages content after the commit. Compare reported effects with independent before/after observations.",
+        "Keep success and failure observation rules shared across capture and review operations. Reuse the existing observation code where suitable instead of adding another independent effect policy.",
+        "Run review application, initialization, checkpoint, receipt, and status tests before marking this task done."
+      ],
       "depends_on": [
         "T003",
         "T029",
         "T030"
       ],
-      "updated_at": "2026-10-10T15:25:43Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
@@ -694,13 +722,7 @@
         "tests/review_apply.rs",
         "tests/review_plans.rs"
       ],
-      "steps": [
-        "Before completing this active task, test successful commit hooks as well as failed hooks. Review reproduction: initialize draft.md, edit and checkpoint it, then apply a keep-all plan with a post-commit hook that writes new bytes to draft.md. The current command succeeds with working_tree=unchanged and no warning.",
-        "Inspect working content and the index after a successful commit. Report actual hook effects and newer uncaptured content. Preserve the verified commit, but do not imply that the newer working bytes were reviewed.",
-        "Add real Git regressions for a successful hook that edits a scoped file, adds a scoped file, or stages content after the commit. Compare reported effects with independent before/after observations.",
-        "Keep success and failure observation rules shared across capture and review operations. Reuse the existing observation code where suitable instead of adding another independent effect policy.",
-        "Run review application, initialization, checkpoint, receipt, and status tests before marking this task done."
-      ]
+      "updated_at": "2026-10-10T15:25:43Z"
     },
     {
       "id": "T032",
@@ -708,14 +730,6 @@
       "priority": 1,
       "status": "done",
       "details": "Acceptance: Selected complete reverse patches apply through the guarded Git index path. The committed result exactly matches the preview; kept groups and out-of-scope entries match C. Stale or partial plans change nothing. See SPEC 9.4.",
-      "depends_on": [
-        "T025",
-        "T029",
-        "T030",
-        "T031",
-        "T060"
-      ],
-      "updated_at": "2026-10-10T16:46:26Z",
       "steps": [
         "Implement selective review only after the successful-hook observation fix in T031 and historical retry fix in T060.",
         "Reuse the disposable-index proof and the exact selected reverse patch. Check and apply with the same explicit whitespace settings. Do not regenerate a different patch, restage working files, or broaden selected groups.",
@@ -724,13 +738,21 @@
         "Report actual retained state and recovery guidance. Never claim rollback, automatically replay the patch, or grant approval to an unmatched result. T037 extends this coverage; it is not a reason to defer these tests.",
         "Run restoration, dry-run, application, receipt, and effect regressions before completion."
       ],
+      "depends_on": [
+        "T025",
+        "T029",
+        "T030",
+        "T031",
+        "T060"
+      ],
       "files": [
         "src/app.rs",
         "src/git.rs",
         "tests/receipts.rs",
         "tests/review_apply.rs",
         "tests/review_dry_run.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T16:46:26Z"
     },
     {
       "id": "T033",
@@ -743,14 +765,14 @@
         "T029",
         "T030"
       ],
-      "updated_at": "2026-10-10T18:36:31Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
         "src/domain.rs",
         "tests/operations.rs",
         "tests/restore_document.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T18:36:31Z"
     },
     {
       "id": "T034",
@@ -763,42 +785,59 @@
         "T028",
         "T030"
       ],
-      "updated_at": "2026-10-10T20:17:59Z",
       "files": [
         "src/app.rs",
         "src/cli.rs",
         "tests/operations.rs",
         "tests/recovery_doctor.rs"
-      ]
+      ],
+      "updated_at": "2026-10-10T20:17:59Z"
     },
     {
       "id": "T035",
       "title": "Resume an exact retained review plan",
       "priority": 1,
-      "status": "doing",
+      "status": "done",
       "details": "Acceptance: review --resume recomputes the original intended tree and commits only when HEAD, index, scoped working result, branch, scope, and decisions match. It never reapplies a patch or approves an unmatched partial state. See SPEC 9.7.",
       "depends_on": [
         "T032",
         "T034"
       ],
-      "updated_at": "2026-10-10T20:19:23Z"
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "tests/operations.rs",
+        "tests/review_plans.rs",
+        "tests/review_resume.rs"
+      ],
+      "updated_at": "2026-10-10T20:44:09Z"
     },
     {
       "id": "T036",
       "title": "Capture inspected staged recovery content",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: checkpoint --include-staged requires matching expected HEAD, index, and working fingerprints with all staged entries in scope. It saves exactly that state as an unreviewed draft; ordinary staged content still blocks normal checkpointing. See SPEC 9.7.",
       "depends_on": [
         "T020",
         "T034"
-      ]
+      ],
+      "files": [
+        "src/app.rs",
+        "src/cli.rs",
+        "tests/checkpoint.rs",
+        "tests/cli_contract.rs",
+        "tests/operations.rs",
+        "tests/recovery_doctor.rs",
+        "tests/review_apply.rs"
+      ],
+      "updated_at": "2026-10-10T21:15:09Z"
     },
     {
       "id": "T037",
       "title": "Test failure phases and truthful effects",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: Failpoints and process tests cover each boundary in SPEC 16.6, including hooks, timeouts, crash, response loss, and partial writes. Every result reports the observed commit and file/index state, preserves recoverability, and grants no unearned approval.",
       "depends_on": [
         "T032",
@@ -808,24 +847,37 @@
         "T058",
         "T059"
       ],
-      "updated_at": "2026-10-10T08:16:25Z"
+      "files": [
+        "tests/failure_phases.rs"
+      ],
+      "updated_at": "2026-10-10T21:42:58Z"
     },
     {
       "id": "T038",
       "title": "Map implementation transitions to the model",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: formal/refinement documentation maps every model action to an application operation and an independent real Git test. A trace check validates allowed transitions; protocol changes update model, tests, and error docs together. See SPEC 15.7.",
       "depends_on": [
         "T004",
         "T037"
-      ]
+      ],
+      "files": [
+        "SPEC.md",
+        "formal/refinement.md",
+        "src/app.rs",
+        "tests/refinement_map.rs",
+        "tests/refinement_trace.rs",
+        "tests/support/mod.rs",
+        "tests/support/model.rs"
+      ],
+      "updated_at": "2026-10-10T23:47:36Z"
     },
     {
       "id": "T039",
       "title": "Run CLI contract conformance tests",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: The installed binary passes JSON/schema, parser-error, stdin-plan, cursor, output-limit, broken-pipe, exit-class, raw-export, and no-terminal cases. With an intact pipe, each JSON call emits one valid envelope. See SPEC 16.8.",
       "depends_on": [
         "T018",
@@ -833,13 +885,17 @@
         "T033",
         "T035",
         "T036"
-      ]
+      ],
+      "files": [
+        "tests/cli_contract.rs"
+      ],
+      "updated_at": "2026-10-10T22:04:25Z"
     },
     {
       "id": "T040",
       "title": "Complete the real Git behavior matrix",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: The matrix in SPEC 16.5 passes for initialization, scope, baselines, storage policy, stale state, retries, hooks, object formats, limits, and removal. Independent stock Git checks prove retained content and exact tree equality.",
       "depends_on": [
         "T018",
@@ -847,138 +903,264 @@
         "T032",
         "T033",
         "T037"
-      ]
+      ],
+      "files": [
+        "tests/git_matrix.rs"
+      ],
+      "updated_at": "2026-10-10T22:35:51Z"
     },
     {
       "id": "T041",
       "title": "Build the TUI shell and Read view",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: tui opens read-only before adoption, displays a useful document with saved and review state, and retains document/source context across views. Layout works at specified widths and gives a useful minimum-size message. See SPEC 5 and 11.",
       "depends_on": [
         "T019",
         "T021",
         "T026"
-      ]
+      ],
+      "files": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "src/cli.rs",
+        "src/tui/layout.rs",
+        "src/tui/mod.rs",
+        "src/tui/render.rs",
+        "src/tui/run.rs",
+        "src/tui/shell.rs",
+        "src/tui/wrap.rs",
+        "tests/tui_shell.rs"
+      ],
+      "updated_at": "2026-10-11T01:06:55Z"
     },
     {
       "id": "T042",
       "title": "Build the Changes view and plan controls",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: Changes renders every group's source context and labels kept, restored, undecided, unavailable, and stale states. K and r change only an in-memory plan; source fallback and unvisited scope counts remain available. See SPEC 5.2 and 11.3.",
       "depends_on": [
         "T026",
         "T041"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "src/tui/changes.rs",
+        "src/tui/mod.rs",
+        "src/tui/render.rs",
+        "src/tui/shell.rs",
+        "tests/tui_changes.rs"
+      ],
+      "updated_at": "2026-10-11T01:45:25Z"
     },
     {
       "id": "T043",
       "title": "Finish reviews through the shared operation",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: The finish flow summarizes the entire scope and requires explicit keep-remaining intent. Equivalent CLI and TUI plans yield the same result tree, marker meaning, errors, and effects; quit never commits selections. See SPEC 5.2 and 16.9.",
       "depends_on": [
         "T032",
         "T042"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "src/tui/changes.rs",
+        "src/tui/finish.rs",
+        "src/tui/mod.rs",
+        "src/tui/render.rs",
+        "src/tui/run.rs",
+        "src/tui/shell.rs",
+        "tests/tui_finish.rs"
+      ],
+      "updated_at": "2026-10-11T02:19:05Z"
     },
     {
       "id": "T044",
       "title": "Build History view and restore preview",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: History shows ancestry-based starts, drafts, reviews, and restorations; a selected document can be previewed and restored through the shared operation. Missing files remain distinct from empty files and the baseline stays unchanged. See SPEC 5.5.",
       "depends_on": [
         "T022",
         "T033",
         "T041"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "src/tui/history.rs",
+        "src/tui/mod.rs",
+        "src/tui/render.rs",
+        "src/tui/run.rs",
+        "src/tui/shell.rs",
+        "tests/tui_history.rs"
+      ],
+      "updated_at": "2026-10-11T02:56:40Z"
     },
     {
       "id": "T045",
       "title": "Refresh TUI state without losing pinned context",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: A worker keeps input responsive while two-second inspection polling detects edits. Stale plans stay readable but cannot apply; explicit refresh rebuilds the review, explains selection reset, and preserves source anchors. See SPEC 5.3 and 13.3.",
       "depends_on": [
         "T019",
         "T041",
         "T042"
-      ]
+      ],
+      "files": [
+        "src/tui/changes.rs",
+        "src/tui/history.rs",
+        "src/tui/mod.rs",
+        "src/tui/refresh.rs",
+        "src/tui/render.rs",
+        "src/tui/run.rs",
+        "src/tui/shell.rs",
+        "tests/tui_refresh.rs"
+      ],
+      "updated_at": "2026-10-11T03:46:38Z"
     },
     {
       "id": "T046",
       "title": "Implement accessible keyboard and terminal behavior",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: The keymap, action menu, focus, text-entry precedence, color-off labels, and reduced-update mode work in buffer tests. PTY tests prove cleanup on quit, Ctrl-C, errors, resize, and editor return. See SPEC 11.",
       "depends_on": [
         "T041",
         "T043",
         "T045"
-      ]
+      ],
+      "files": [
+        "Cargo.toml",
+        "README.md",
+        "src/cli.rs",
+        "src/tui/actions.rs",
+        "src/tui/changes.rs",
+        "src/tui/history.rs",
+        "src/tui/mod.rs",
+        "src/tui/render.rs",
+        "src/tui/run.rs",
+        "src/tui/shell.rs",
+        "tests/support/mod.rs",
+        "tests/support/pty.rs",
+        "tests/tui_access.rs",
+        "tests/tui_history.rs",
+        "tests/tui_lifecycle.rs",
+        "tests/tui_refresh.rs",
+        "tests/tui_shell.rs"
+      ],
+      "updated_at": "2026-10-11T05:21:05Z"
     },
     {
       "id": "T047",
       "title": "Hand off editing to a configured editor",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: edit and the TUI use explicit editor argv with literal file paths, restore terminal state after exit, and refresh document state. Editor exit never approves; capture occurs only when the configured policy enables it. See SPEC 5.6 and 12.5.",
       "depends_on": [
         "T020",
         "T041"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "src/cli.rs",
+        "src/tui/run.rs",
+        "src/tui/shell.rs",
+        "tests/edit_handoff.rs",
+        "tests/tui_access.rs"
+      ],
+      "updated_at": "2026-10-11T05:56:01Z"
     },
     {
       "id": "T048",
       "title": "Translate supported Claude Code boundaries",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: The hook adapter validates bounded upstream payloads, uses enabled checkpoint policy, and emits only supported hook responses. Normal Stop never creates a continuation loop; missing or interrupted events never imply capture or approval. See SPEC 12.2-12.3.",
       "depends_on": [
         "T015",
         "T020"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "src/cli.rs",
+        "src/integrations/claude.rs",
+        "tests/cli_contract.rs",
+        "tests/fixtures/hooks/README.md",
+        "tests/fixtures/hooks/session-end.json",
+        "tests/fixtures/hooks/session-start.json",
+        "tests/fixtures/hooks/stop-continued.json",
+        "tests/fixtures/hooks/stop-failure.json",
+        "tests/fixtures/hooks/stop.json",
+        "tests/fixtures/hooks/user-prompt-submit.json",
+        "tests/integrations.rs"
+      ],
+      "updated_at": "2026-10-11T06:37:45Z"
     },
     {
       "id": "T049",
       "title": "Install and remove only Margin hook entries",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: Dry run shows the exact local config patch and capabilities. Install checks a config fingerprint, preserves unrelated keys/hooks, and removal deletes only identifiable Margin entries; repeated actions are no-ops. See SPEC 12.4.",
       "depends_on": [
         "T048"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "src/cli.rs",
+        "src/integrations/claude.rs",
+        "tests/cli_contract.rs",
+        "tests/hook_setup.rs"
+      ],
+      "updated_at": "2026-10-11T07:02:12Z"
     },
     {
       "id": "T050",
       "title": "Compose an optional tmux writing desk",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: desk launches explicit agent argv and a Margin pane or window without editing global tmux settings or unrelated panes. Narrow layouts remain readable, missing tmux has clear guidance, and quitting Margin leaves the agent running. See SPEC 12.6.",
       "depends_on": [
         "T041"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "src/integrations/tmux.rs",
+        "tests/tmux_desk.rs"
+      ],
+      "updated_at": "2026-10-11T14:18:53Z",
+      "unblock_when": "None; no external prerequisite is missing (tmux 3.4 is installed and exercised)"
     },
     {
       "id": "T051",
       "title": "Verify TUI and integration sequences",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: Buffer and PTY tests cover selection, finish, stale refresh, source/history, editor return, resize, errors, quit, hooks, and tmux. The supported terminal smoke matrix records observed behavior and CLI/TUI parity. See SPEC 16.9.",
       "depends_on": [
         "T046",
         "T047",
         "T049",
         "T050"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "docs/terminal-smoke-matrix.md",
+        "tests/terminal_smoke.rs",
+        "tests/tui_lifecycle.rs"
+      ],
+      "updated_at": "2026-10-11T14:56:15Z",
+      "unblock_when": "None; no external prerequisite is missing (tmux 3.4 and all terminfo profile entries are installed and were exercised)"
     },
     {
       "id": "T052",
       "title": "Configure continuous verification tiers",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: Pull request and nightly jobs run the gates in SPEC 18.3, including formal profiles, 256 or 10,000 property cases, Git/OS variants, and retained failure artifacts. Claimed Rust, Git, Linux, and macOS versions are documented.",
       "depends_on": [
         "T003",
@@ -986,52 +1168,390 @@
         "T039",
         "T040",
         "T051"
-      ]
+      ],
+      "files": [
+        ".cargo/config.toml",
+        ".github/workflows/nightly-tier.yml",
+        ".github/workflows/pr-tier.yml",
+        ".gitignore",
+        "README.md",
+        "bench/perf/envrec.rs",
+        "bench/perf/fixture.rs",
+        "bench/perf/hash.rs",
+        "bench/perf/main.rs",
+        "bench/perf/metric.rs",
+        "bench/perf/oracle.rs",
+        "bench/perf/pty.rs",
+        "bench/perf/record.rs",
+        "bench/perf/resource.rs",
+        "bench/perf/runner.rs",
+        "bench/perf/stats.rs",
+        "bench/perf/timing.rs",
+        "ci-artifacts-git-2.34.1/tests-pr/environment.txt",
+        "ci-artifacts-git-2.34.1/tests-pr/run.log",
+        "ci-artifacts-git-2.34.1/tests-pr/summary.tsv",
+        "ci-artifacts-git-2.43.0/tests-pr/environment.txt",
+        "ci-artifacts-git-2.43.0/tests-pr/run.log",
+        "ci-artifacts-git-2.43.0/tests-pr/summary.tsv",
+        "ci-artifacts-git-2.45.0/tests-pr/environment.txt",
+        "ci-artifacts-git-2.45.0/tests-pr/run.log",
+        "ci-artifacts-git-2.45.0/tests-pr/summary.tsv",
+        "ci-artifacts-git-2.56.0/tests-pr/environment.txt",
+        "ci-artifacts-git-2.56.0/tests-pr/run.log",
+        "ci-artifacts-git-2.56.0/tests-pr/summary.tsv",
+        "ci-artifacts-git245-timing-2026-10-12/tests-pr/environment.txt",
+        "ci-artifacts-git245-timing-2026-10-12/tests-pr/run.log",
+        "ci-artifacts-git245-timing-2026-10-12/tests-pr/summary.tsv",
+        "ci-artifacts-stress-enospc-2026-10-12/environment.txt",
+        "ci-artifacts-stress-enospc-2026-10-12/run.log",
+        "ci-artifacts-stress-enospc-2026-10-12/summary.tsv",
+        "ci/README.md",
+        "ci/git.sha256",
+        "ci/install-git.sh",
+        "ci/run-tier.sh",
+        "docs/verification-tiers.md",
+        "formal/run-mutations.sh",
+        "formal/run-profiles.sh",
+        "src/app.rs",
+        "src/cli.rs",
+        "src/domain.rs",
+        "src/git.rs",
+        "tests/bench_corpora.rs",
+        "tests/bench_harness.rs",
+        "tests/c0_corpus.rs",
+        "tests/commit_metadata.rs",
+        "tests/git_harness.rs",
+        "tests/integrations.rs",
+        "tests/restoration.rs",
+        "tests/review_plans.rs",
+        "tests/support/model.rs",
+        "tests/tui_lifecycle.rs"
+      ],
+      "updated_at": "2026-10-12T13:31:50Z",
+      "unblock_when": "Not blocked; the task completed with all pull-request gates green."
     },
     {
       "id": "T053",
       "title": "Build the benchmark harness and environment record",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: A registered runner record contains actual hardware, software, build, and tool details. The harness times full fresh-process operations, resets mutation fixtures, records independent oracles and raw paired samples, and distinguishes unmeasured results. See SPEC 17.3-17.8.",
       "depends_on": [
         "T007",
         "T051"
-      ]
+      ],
+      "files": [
+        ".gitignore",
+        "Cargo.toml",
+        "bench/README.md",
+        "bench/environment.json",
+        "bench/perf/envrec.rs",
+        "bench/perf/fixture.rs",
+        "bench/perf/hash.rs",
+        "bench/perf/main.rs",
+        "bench/perf/metric.rs",
+        "bench/perf/mod.rs",
+        "bench/perf/oracle.rs",
+        "bench/perf/record.rs",
+        "bench/perf/runner.rs",
+        "bench/perf/samples.rs",
+        "bench/perf/stats.rs",
+        "bench/perf/timing.rs",
+        "bench/results/P-APPLY.C1.json",
+        "bench/results/P-APPLY.C2.json",
+        "bench/results/P-CHECKPOINT.C1.json",
+        "bench/results/P-CHECKPOINT.C2.json",
+        "bench/results/P-CPU.C1.json",
+        "bench/results/P-CPU.C2.json",
+        "bench/results/P-DIFF.C1.json",
+        "bench/results/P-DIFF.C2.json",
+        "bench/results/P-HELP.C1.json",
+        "bench/results/P-HELP.C2.json",
+        "bench/results/P-HISTORY.C1.json",
+        "bench/results/P-HISTORY.C2.json",
+        "bench/results/P-KEY.C1.json",
+        "bench/results/P-KEY.C2.json",
+        "bench/results/P-OPEN.C1.json",
+        "bench/results/P-OPEN.C2.json",
+        "bench/results/P-REFRESH.C1.json",
+        "bench/results/P-REFRESH.C2.json",
+        "bench/results/P-RSS.C1.json",
+        "bench/results/P-RSS.C2.json",
+        "bench/results/P-STATUS.C1.json",
+        "bench/results/P-STATUS.C2.json",
+        "bench/results/P-TREE-MEM.C1.json",
+        "bench/results/P-TREE-MEM.C2.json",
+        "tests/bench_harness.rs"
+      ],
+      "updated_at": "2026-10-11T17:24:30Z",
+      "unblock_when": "\"\""
     },
     {
       "id": "T054",
       "title": "Measure and meet release performance budgets",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: C1 and C2 primary metrics meet SPEC 17.4 on the registered runner under the stated sampling and regression policy. C3 fails within explicit limits without omitted approval; raw samples, memory definitions, and any failed gate remain visible.",
       "depends_on": [
         "T053"
-      ]
+      ],
+      "files": [
+        "bench/README.md",
+        "bench/campaign.sh",
+        "bench/perf/main.rs",
+        "bench/perf/metric.rs",
+        "bench/perf/mod.rs",
+        "bench/perf/pty.rs",
+        "bench/perf/record.rs",
+        "bench/perf/resource.rs",
+        "bench/perf/runner.rs",
+        "bench/perf/samples.rs",
+        "bench/results/C3-stress.md",
+        "bench/results/P-APPLY.C1.json",
+        "bench/results/P-APPLY.C2.json",
+        "bench/results/P-CHECKPOINT.C1.json",
+        "bench/results/P-CHECKPOINT.C2.json",
+        "bench/results/P-CPU.C1.json",
+        "bench/results/P-CPU.C2.json",
+        "bench/results/P-DIFF.C1.json",
+        "bench/results/P-DIFF.C2.json",
+        "bench/results/P-HELP.C1.json",
+        "bench/results/P-HELP.C2.json",
+        "bench/results/P-HISTORY.C1.json",
+        "bench/results/P-HISTORY.C2.json",
+        "bench/results/P-KEY.C1.json",
+        "bench/results/P-KEY.C2.json",
+        "bench/results/P-OPEN.C1.json",
+        "bench/results/P-OPEN.C2.json",
+        "bench/results/P-REFRESH.C1.json",
+        "bench/results/P-REFRESH.C2.json",
+        "bench/results/P-RSS.C1.json",
+        "bench/results/P-RSS.C2.json",
+        "bench/results/P-STATUS.C1.json",
+        "bench/results/P-STATUS.C2.json",
+        "bench/results/P-TREE-MEM.C1.json",
+        "bench/results/P-TREE-MEM.C2.json",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-limited.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-limited.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-selected.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-selected.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-whole.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-whole.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d00_doc-00008.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d00_doc-00008.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d01_doc-00001.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d01_doc-00001.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d01_doc-00009.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d01_doc-00009.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d02_doc-00002.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d02_doc-00002.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d03_doc-00003.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d03_doc-00003.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d04_doc-00004.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d04_doc-00004.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d05_doc-00005.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d05_doc-00005.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d06_doc-00006.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d06_doc-00006.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d07_doc-00007.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/diff-writing_d07_doc-00007.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/git-check.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/git-check.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/index.txt",
+        "bench/results/raw/C3-stress/20261011T232845Z/log.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/log.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-selected.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-selected.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d00_doc-00008.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d00_doc-00008.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d01_doc-00001.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d01_doc-00001.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d01_doc-00009.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d01_doc-00009.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d02_doc-00002.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d02_doc-00002.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d03_doc-00003.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d03_doc-00003.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d04_doc-00004.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d04_doc-00004.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d05_doc-00005.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d05_doc-00005.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d06_doc-00006.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d06_doc-00006.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d07_doc-00007.md.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/show-writing_d07_doc-00007.md.out",
+        "bench/results/raw/C3-stress/20261011T232845Z/status.err",
+        "bench/results/raw/C3-stress/20261011T232845Z/status.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-limited.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-limited.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-selected.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-selected.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-whole.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-whole.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d00_doc-00008.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d00_doc-00008.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d01_doc-00001.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d01_doc-00001.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d01_doc-00009.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d01_doc-00009.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d02_doc-00002.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d02_doc-00002.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d03_doc-00003.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d03_doc-00003.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d04_doc-00004.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d04_doc-00004.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d05_doc-00005.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d05_doc-00005.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d06_doc-00006.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d06_doc-00006.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d07_doc-00007.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/diff-writing_d07_doc-00007.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/git-check.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/git-check.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/index.txt",
+        "bench/results/raw/C3-stress/20261012T004329Z/log.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/log.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-selected.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-selected.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d00_doc-00008.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d00_doc-00008.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d01_doc-00001.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d01_doc-00001.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d01_doc-00009.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d01_doc-00009.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d02_doc-00002.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d02_doc-00002.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d03_doc-00003.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d03_doc-00003.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d04_doc-00004.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d04_doc-00004.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d05_doc-00005.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d05_doc-00005.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d06_doc-00006.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d06_doc-00006.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d07_doc-00007.md.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/show-writing_d07_doc-00007.md.out",
+        "bench/results/raw/C3-stress/20261012T004329Z/status.err",
+        "bench/results/raw/C3-stress/20261012T004329Z/status.out",
+        "bench/results/raw/P-APPLY.C1/2026-10-11T211603Z/samples.jsonl",
+        "bench/results/raw/P-APPLY.C1/2026-10-12T005116Z/samples.jsonl",
+        "bench/results/raw/P-APPLY.C2/2026-10-11T221450Z/samples.jsonl",
+        "bench/results/raw/P-APPLY.C2/2026-10-12T013933Z/samples.jsonl",
+        "bench/results/raw/P-CHECKPOINT.C1/2026-10-11T211324Z/samples.jsonl",
+        "bench/results/raw/P-CHECKPOINT.C1/2026-10-12T004952Z/samples.jsonl",
+        "bench/results/raw/P-CHECKPOINT.C2/2026-10-11T220513Z/samples.jsonl",
+        "bench/results/raw/P-CHECKPOINT.C2/2026-10-12T013106Z/samples.jsonl",
+        "bench/results/raw/P-CPU.C1/2026-10-11T213733Z/samples.jsonl",
+        "bench/results/raw/P-CPU.C1/2026-10-12T011140Z/samples.jsonl",
+        "bench/results/raw/P-CPU.C2/2026-10-11T225745Z/samples.jsonl",
+        "bench/results/raw/P-CPU.C2/2026-10-12T020920Z/samples.jsonl",
+        "bench/results/raw/P-DIFF.C1/2026-10-11T210959Z/samples.jsonl",
+        "bench/results/raw/P-DIFF.C1/2026-10-12T004725Z/samples.jsonl",
+        "bench/results/raw/P-DIFF.C2/2026-10-11T214213Z/samples.jsonl",
+        "bench/results/raw/P-DIFF.C2/2026-10-12T011406Z/samples.jsonl",
+        "bench/results/raw/P-HELP.C1/2026-10-11T210855Z/samples.jsonl",
+        "bench/results/raw/P-HELP.C1/2026-10-12T004647Z/samples.jsonl",
+        "bench/results/raw/P-HELP.C2/2026-10-11T213737Z/samples.jsonl",
+        "bench/results/raw/P-HELP.C2/2026-10-12T011144Z/samples.jsonl",
+        "bench/results/raw/P-HISTORY.C1/2026-10-11T210904Z/samples.jsonl",
+        "bench/results/raw/P-HISTORY.C1/2026-10-12T004653Z/samples.jsonl",
+        "bench/results/raw/P-HISTORY.C2/2026-10-11T213801Z/samples.jsonl",
+        "bench/results/raw/P-HISTORY.C2/2026-10-12T011200Z/samples.jsonl",
+        "bench/results/raw/P-KEY.C1/2026-10-11T212711Z/samples.jsonl",
+        "bench/results/raw/P-KEY.C1/2026-10-12T010121Z/samples.jsonl",
+        "bench/results/raw/P-KEY.C2/2026-10-11T223902Z/samples.jsonl",
+        "bench/results/raw/P-KEY.C2/2026-10-12T015634Z/samples.jsonl",
+        "bench/results/raw/P-OPEN.C1/2026-10-11T211123Z/samples.jsonl",
+        "bench/results/raw/P-OPEN.C1/2026-10-12T004812Z/samples.jsonl",
+        "bench/results/raw/P-OPEN.C2/2026-10-11T215222Z/samples.jsonl",
+        "bench/results/raw/P-OPEN.C2/2026-10-12T012015Z/samples.jsonl",
+        "bench/results/raw/P-REFRESH.C1/2026-10-11T211251Z/samples.jsonl",
+        "bench/results/raw/P-REFRESH.C1/2026-10-12T004926Z/samples.jsonl",
+        "bench/results/raw/P-REFRESH.C2/2026-10-11T220259Z/samples.jsonl",
+        "bench/results/raw/P-REFRESH.C2/2026-10-12T012926Z/samples.jsonl",
+        "bench/results/raw/P-RSS.C1/2026-10-11T212722Z/samples.jsonl",
+        "bench/results/raw/P-RSS.C1/2026-10-12T010130Z/samples.jsonl",
+        "bench/results/raw/P-RSS.C2/2026-10-11T224300Z/samples.jsonl",
+        "bench/results/raw/P-RSS.C2/2026-10-12T015724Z/samples.jsonl",
+        "bench/results/raw/P-STATUS.C1/2026-10-11T210843Z/samples.jsonl",
+        "bench/results/raw/P-STATUS.C1/2026-10-11T210924Z/samples.jsonl",
+        "bench/results/raw/P-STATUS.C1/2026-10-12T004703Z/samples.jsonl",
+        "bench/results/raw/P-STATUS.C2/2026-10-11T213842Z/samples.jsonl",
+        "bench/results/raw/P-STATUS.C2/2026-10-12T011220Z/samples.jsonl",
+        "bench/results/raw/P-TREE-MEM.C1/2026-10-11T212732Z/samples.jsonl",
+        "bench/results/raw/P-TREE-MEM.C1/2026-10-12T010139Z/samples.jsonl",
+        "bench/results/raw/P-TREE-MEM.C2/2026-10-11T224743Z/samples.jsonl",
+        "bench/results/raw/P-TREE-MEM.C2/2026-10-12T015918Z/samples.jsonl",
+        "bench/results/raw/campaign-2026-10-12/P-APPLY.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-APPLY.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-CHECKPOINT.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-CHECKPOINT.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-CPU.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-CPU.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-DIFF.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-DIFF.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-HELP.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-HELP.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-HISTORY.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-HISTORY.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-KEY.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-KEY.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-OPEN.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-OPEN.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-REFRESH.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-REFRESH.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-RSS.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-RSS.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-STATUS.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-STATUS.c2.log",
+        "bench/results/raw/campaign-2026-10-12/P-TREE-MEM.c1.log",
+        "bench/results/raw/campaign-2026-10-12/P-TREE-MEM.c2.log",
+        "bench/results/raw/campaign-2026-10-12/final-progress.txt",
+        "bench/results/raw/campaign-2026-10-12/shakedown-progress.txt",
+        "bench/stress-exercise.sh",
+        "src/app.rs",
+        "src/git.rs",
+        "src/tui/refresh.rs",
+        "src/tui/run.rs",
+        "src/tui/shell.rs",
+        "tests/bench_harness.rs"
+      ],
+      "updated_at": "2026-10-12T05:50:07Z",
+      "unblock_when": "The registered runner the-developer-vm holds an exclusive window (one-minute load under 6 for the campaign's duration, honoring the environment record's no-competing-builds condition) or measurement moves to an exclusive host; then re-run bench/campaign.sh, which overwrites the records and retains both raw streams."
     },
     {
       "id": "T055",
       "title": "Evaluate the supported agent workflow",
       "priority": 3,
-      "status": "todo",
+      "status": "blocked",
       "details": "Acceptance: The 10 AX scenarios run 20 fresh trials each with a pinned agent setup and independent Git grader. Record per-scenario counts, Wilson intervals, command/output costs, zero unsafe accepted mutations, and every unmet threshold. See SPEC 17.9.",
       "depends_on": [
         "T039",
         "T048",
         "T049"
-      ]
+      ],
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-4819b780a3dc169e/work-00-session-0d18339513076235/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:38Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
     },
     {
       "id": "T056",
       "title": "Evaluate the writer review workflow",
       "priority": 3,
-      "status": "todo",
+      "status": "blocked",
       "details": "Acceptance: A frozen pilot and release protocol test at least 12 writers on the specified seeded document. Record raw workflow, recall, exact-restoration, state-comprehension, time, control, and failure results against SPEC 17.10 gates.",
       "depends_on": [
         "T043",
         "T044",
         "T046"
-      ]
+      ],
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-4d3fcc1e7c1c9e4a/work-00-session-85d3711b7313e26a/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:38Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
     },
     {
       "id": "T057",
@@ -1076,8 +1596,8 @@
         "correctness",
         "effects"
       ],
-      "created_at": "2026-10-10T08:16:25Z",
-      "updated_at": "2026-10-10T09:39:50Z"
+      "updated_at": "2026-10-10T09:39:50Z",
+      "created_at": "2026-10-10T08:16:25Z"
     },
     {
       "id": "T059",
@@ -1109,8 +1629,8 @@
         "correctness",
         "guards"
       ],
-      "created_at": "2026-10-10T08:16:25Z",
-      "updated_at": "2026-10-10T10:01:12Z"
+      "updated_at": "2026-10-10T10:01:12Z",
+      "created_at": "2026-10-10T08:16:25Z"
     },
     {
       "id": "T060",
@@ -1142,14 +1662,14 @@
         "correctness",
         "receipts"
       ],
-      "created_at": "2026-10-10T15:25:43Z",
-      "updated_at": "2026-10-10T16:16:38Z"
+      "updated_at": "2026-10-10T16:16:38Z",
+      "created_at": "2026-10-10T15:25:43Z"
     },
     {
       "id": "T061",
       "title": "Detect unsaved content hidden by index flags",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: Scoped files marked assume-unchanged or skip-worktree cannot hide unsaved content. Status must not report captured when working bytes differ from the candidate. Checkpoint must either save the exact scoped content or refuse with a specific blocker before mutation. Review and restore guards must detect the same dirty state. Review reproduction on 2026-10-10: Initialize draft.md, run git update-index --assume-unchanged draft.md, and edit the file. margin status --json reports preservation=captured and uncaptured_total=0. margin checkpoint --json succeeds with changed=false while HEAD retains the old bytes. The same failure occurs with --skip-worktree. scoped_working_changes checks only paths reported by Git, which suppresses these entries. See SPEC 3.1, 4.2, 9.1, and 9.2.",
       "steps": [
         "Add real Git and executable regressions for both index flags. Compare working bytes with git show HEAD:draft.md independently.",
@@ -1167,13 +1687,13 @@
       "files": [
         "src/app.rs",
         "src/git.rs",
-        "tests/status_report.rs",
         "tests/checkpoint.rs",
-        "tests/policy_guards.rs",
+        "tests/cli_contract.rs",
         "tests/diff_results.rs",
-        "tests/review_apply.rs",
+        "tests/policy_guards.rs",
         "tests/restore_document.rs",
-        "tests/cli_contract.rs"
+        "tests/review_apply.rs",
+        "tests/status_report.rs"
       ],
       "tags": [
         "review-follow-up",
@@ -1181,14 +1701,14 @@
         "preservation",
         "guards"
       ],
-      "created_at": "2026-10-10T20:17:23Z",
-      "updated_at": "2026-10-10T20:17:23Z"
+      "updated_at": "2026-10-10T23:07:26Z",
+      "created_at": "2026-10-10T20:17:23Z"
     },
     {
       "id": "T062",
       "title": "Keep recovery inspection from changing the index",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: doctor reports the real index tree without changing any real index bytes, refs, or working files. Compute the tree with a disposable index or an equivalent read-only method. Review reproduction on 2026-10-10: Initialize draft.md, edit it, and run git add draft.md. Save the raw .git/index bytes, run margin doctor --json, and compare the index bytes again. They differ, but effects.index reports unchanged. inspect_recovery calls git write-tree on the real index, which updates its cache even with GIT_OPTIONAL_LOCKS=0. Existing snapshots compare index trees and call write-tree themselves, so they miss this change. See SPEC 9.7, 14.1, and 16.3.",
       "steps": [
         "Add a regression that captures raw index bytes immediately after staging and before any oracle calls write-tree.",
@@ -1202,9 +1722,9 @@
       "files": [
         "src/app.rs",
         "src/git.rs",
+        "tests/git_adapter.rs",
         "tests/recovery_doctor.rs",
-        "tests/support/oracle.rs",
-        "tests/git_adapter.rs"
+        "tests/support/oracle.rs"
       ],
       "tags": [
         "review-follow-up",
@@ -1212,14 +1732,14 @@
         "read-only",
         "recovery"
       ],
-      "created_at": "2026-10-10T20:17:23Z",
-      "updated_at": "2026-10-10T20:17:23Z"
+      "updated_at": "2026-10-11T07:37:02Z",
+      "created_at": "2026-10-10T20:17:23Z"
     },
     {
       "id": "T063",
       "title": "Report hook edits after successful checkpoints",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Acceptance: A successful checkpoint reports observed working-file effects against its initial state. If a hook changes scoped working bytes, effects.working_tree is changed and the response retains the verified commit and DIRTY_SCOPE warning. If final working state cannot be inspected, report unknown rather than unchanged. Review reproduction on 2026-10-10: Initialize draft.md, edit it, and install a successful pre-commit hook that overwrites draft.md without staging the hook edit. margin checkpoint --json creates the expected commit and emits DIRTY_SCOPE, but effects.working_tree remains unchanged. The success path only adds a warning and does not update the working-tree effect. See SPEC 7.1, 9.2, and 9.6.",
       "steps": [
         "Add a successful-hook regression that checks the original working bytes, committed bytes, final working bytes, warning, and reported effects independently.",
@@ -1241,8 +1761,410 @@
         "correctness",
         "effects"
       ],
-      "created_at": "2026-10-10T20:17:23Z",
-      "updated_at": "2026-10-10T20:17:23Z"
+      "updated_at": "2026-10-11T07:54:42Z",
+      "created_at": "2026-10-10T20:17:23Z"
+    },
+    {
+      "id": "T064",
+      "title": "Optional editor window inside a desk",
+      "priority": 3,
+      "status": "blocked",
+      "details": "SPEC 11.4/12.5 (line 313): \"In a tmux desk, an optional editor window can occupy the writing side.\" Today `edit` suspends the TUI and runs the editor in the Margin pane; no desk-specific editor-window arrangement exists. This is optional behavior, not part of T050 acceptance.\nEvidence: src/tui editor handoff and tests/edit_handoff.rs cover the in-pane suspend/resume path only; no desk editor-window code exists in src/integrations/tmux.rs",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-2b73d354bc22ffa8/work-00-session-76d232b2365881ed/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:39Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T065",
+      "title": "Cover the session-ends-during-attach report branch",
+      "priority": 3,
+      "status": "done",
+      "details": "Summary::session_ended (src/integrations/tmux.rs) reports the case where the attached session ends while the client is attached (writer closes the last window with their own bindings). No test drives that path; a PTY case that kills the agent window during attach would cover it.\nEvidence: tests/tmux_desk.rs covers detach, abnormal attach status is partially covered by detach only; no case asserts \"the session has ended; no desk is left running\"",
+      "files": [
+        "src/integrations/tmux.rs",
+        "tests/tmux_desk.rs"
+      ],
+      "updated_at": "2026-10-11T16:16:07Z",
+      "unblock_when": "Not applicable; tmux 3.4 was available on the machine and no external prerequisite was missing."
+    },
+    {
+      "id": "T066",
+      "title": "Pin a tmux version in the CI tiers",
+      "priority": 2,
+      "status": "done",
+      "details": "The desk tests skip with a notice where tmux is absent and run against tmux 3.4 here. SPEC 16.4 tiers should install a pinned tmux in the PR/nightly images so the composition claims always execute, and note the direct-exec `--` contract requires tmux \u003e= 3.1.\nEvidence: tmux_present() early-returns in all 7 composition cases in tests/tmux_desk.rs; CI tier work is task T052",
+      "files": [
+        "README.md",
+        "ci/README.md",
+        "ci/install-tmux.sh",
+        "ci/tmux.sha256",
+        "ci/tmux.version",
+        "src/integrations/tmux.rs",
+        "tests/terminal_smoke.rs",
+        "tests/tmux_desk.rs"
+      ],
+      "updated_at": "2026-10-11T16:28:05Z",
+      "unblock_when": "None — no external prerequisite is missing; the tier-image wiring belongs to task T052 and is recorded as a followup."
+    },
+    {
+      "id": "T067",
+      "title": "Extend the terminal smoke matrix to the named release platforms",
+      "priority": 3,
+      "status": "blocked",
+      "details": "The record at docs/terminal-smoke-matrix.md observes one Linux host with tmux 3.4 as the only real emulator. GNOME Terminal, Konsole, kitty, Alacritty, wezterm, iTerm2, Windows Terminal, and assistive-technology combinations remain unobserved; terminfo entries exist for several of them but an entry is not an emulator. SPEC 20.2 lists the named Linux/macOS/terminal matrix as an open validation. Once the CI tiers exist, extend tests/terminal_smoke.rs to the named platforms and regenerate the record.\nEvidence: docs/terminal-smoke-matrix.md 'What this machine cannot observe' section; infocmp shows kitty/alacritty/foot/wezterm/rxvt-unicode entries present while no graphical emulator runs here",
+      "depends_on": [
+        "T052"
+      ],
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-a512ca84e47b221b/work-00-session-e88ac2e74326b72b/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:39Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T068",
+      "title": "Cover the attach_ended report branch of the tmux desk",
+      "priority": 3,
+      "status": "blocked",
+      "details": "Summary::attach_ended (src/integrations/tmux.rs) reports an attach that exits abnormally while the session still runs (\"the attach ended with {status}; the session keeps running\"). It is now the only attach-outcome branch with no driven test; a PTY case that kills the attached tmux client process by signal during attach (leaving the detached session alive) would cover it.\nEvidence: tests/tmux_desk.rs covers detached (outside composition case) and, after T065, session_ended (closing_the_last_window_while_attached_reports_the_ended_session); no case asserts the \"the attach ended with\" wording.",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-42a7461d9147b36b/work-00-session-ca7751ee04c8f635/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:40Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T069",
+      "title": "Make tests/terminal_smoke.rs rustfmt-clean",
+      "priority": 3,
+      "status": "blocked",
+      "details": "cargo fmt --check reports diffs at lines 394, 469, and 480 of tests/terminal_smoke.rs (committed by T051, untouched by this task). A PR-tier format gate (SPEC 18.3) would flag these; running cargo fmt on that one file fixes it.\nEvidence: cargo fmt --check output on this worktree lists three Diff hunks, all in tests/terminal_smoke.rs; the file is unmodified in this worktree's git status, so the committed content is not rustfmt-clean.",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-5a3527cdb35c4d4b/work-00-session-6e242237bb8b7d73/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:40Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T070",
+      "title": "Wire ci/install-tmux.sh and MARGIN_REQUIRE_TMUX=1 into the tier jobs (T052)",
+      "priority": 2,
+      "status": "blocked",
+      "details": "SPEC 18.3 states the tier table describes future repository CI and schedules no user automation now. The PR and nightly jobs must run ci/install-tmux.sh and then MARGIN_REQUIRE_TMUX=1 cargo test --test tmux_desk --locked, per ci/README.md.\nEvidence: ci/README.md:3-5 says the tier jobs of SPEC 18.3 are wired by their own task (T052); no workflow files exist in the repository yet.",
+      "depends_on": [
+        "T052"
+      ],
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-0034ceec25a3bbeb/work-00-session-6cebbd2ae59ee334/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:31Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T071",
+      "title": "Clear the standing clippy warning baseline",
+      "priority": 3,
+      "status": "blocked",
+      "details": "cargo clippy --all-targets exits 0 but emits 63 warnings across the library and many test targets (collapsible if in src/app.rs and src/cli.rs, needless borrows, and others). None are in the T066 files; fixing them or promoting them to denied lints is separate cleanup.\nEvidence: cargo clippy --locked --all-targets on commit 70764e4 reports warnings in src/app.rs:10617, src/cli.rs:1437, src/cli.rs:1461, and about 20 test targets, with exit code 0.",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-64713b96c99da6d6/work-00-session-9de12d274c8ff591/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:41Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T072",
+      "title": "Build the PTY metric sampler for P-OPEN, P-KEY, and P-REFRESH",
+      "priority": 2,
+      "status": "done",
+      "details": "The three PTY metrics of SPEC 17.4 are in the registry with budgets but have no driver: P-OPEN needs launch-to-first-useful-frame detection over a PTY, P-KEY needs at least 10,000 deterministic navigation events with key-to-terminal-byte timing, and P-REFRESH needs external-edit detection at 2 s polling. Their records stay not_measured and `benchrun run` refuses them explicitly. T054 cannot claim these budgets without this sampler.\nEvidence: bench/perf/metric.rs marks them Kind::Pty; tests/bench_harness.rs::pty_and_resource_metrics_stay_not_measured_under_this_harness asserts the refusal.",
+      "depends_on": [
+        "T053"
+      ],
+      "updated_at": "2026-10-12T06:24:47Z"
+    },
+    {
+      "id": "T073",
+      "title": "Add resource and process-count samplers for P-CPU, P-RSS, P-TREE-MEM, and Git process counts",
+      "priority": 2,
+      "status": "blocked",
+      "details": "SPEC 17.5 requires a sampler that measures the concurrent process-tree RSS sum (not a per-process peak), plus five-minute idle CPU of Margin plus Git children, and the diagnostic Git process counts (status \u003c=8, selected diff \u003c=12). The result records already carry `process_counts` and `memory_definition` fields, currently null.\nEvidence: bench/perf/record.rs Details.process_counts and memory_definition serialize as null today.",
+      "depends_on": [
+        "T053"
+      ],
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-5104d16c23e1773f/work-00-session-1344e747f378d0eb/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:33Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T074",
+      "title": "Register the actual dedicated runner in bench/environment.json",
+      "priority": 1,
+      "status": "done",
+      "details": "SPEC 17.6 wants one dedicated developer-laptop-class Linux x86-64 runner registered before the first gated measurement. The shipped record is unassigned by design (no hardware SKU is invented), so an operator must run `cargo run --example benchrun -- register` on the intended machine and commit the result before T054 measurements count as gates.\nEvidence: bench/environment.json status is `unassigned`; runner::require_registered refuses measurement while it is.",
+      "depends_on": [
+        "T053"
+      ],
+      "files": [
+        "bench/README.md",
+        "bench/environment.json",
+        "bench/perf/envrec.rs",
+        "tests/bench_harness.rs"
+      ],
+      "updated_at": "2026-10-11T18:05:04Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T075",
+      "title": "Support cold-cache experiments as a separately reported method",
+      "priority": 3,
+      "status": "blocked",
+      "details": "SPEC 17.3 requires cold-start/cache experiments to be reported separately with their actual method; the harness currently records only the warm fresh-process method and notes that a new temp directory does not establish cold caches. A cold-cache lane (for example pinned cache-dropping with its limits stated) is still missing.\nEvidence: Every sample carries cache_method `warm`; no cold path exists in bench/perf.",
+      "depends_on": [
+        "T053"
+      ],
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-729b09b5967c8a09/work-00-session-fe501546a803f1fd/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:42Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T076",
+      "title": "Register Criterion-based internal-function measurements",
+      "priority": 3,
+      "status": "blocked",
+      "details": "SPEC 17.7 names Criterion for registered internal-function microbenchmarks with explicit sampling settings. None exist yet, and adding Criterion would move the development dependency count (currently one of a planned three), so it needs its own slice with the dependency rationale recorded.\nEvidence: Cargo.toml dev-dependencies hold only tempfile; no criterion target exists.",
+      "depends_on": [
+        "T053"
+      ],
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-f41fb0b83c972a8c/work-00-session-ee2f7ff8f01d0971/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:42Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T077",
+      "title": "Committed README links an untracked backlog file",
+      "priority": 2,
+      "status": "done",
+      "details": "The shipped README must not direct readers to a file absent from the repository. Acceptance: commit a to-do.json snapshot (regenerated at milestones) or replace both links with tracked documentation of known defects and remaining work, so a fresh clone has no broken references.\nEvidence: README.md:154 ('Known defects and remaining work are recorded in [to-do.json](to-do.json)') and README.md:183 ('[Implementation backlog](to-do.json)') exist at HEAD c227e17, but `git show HEAD:to-do.json` fails ('exists on disk, but not in HEAD'), `git ls-files` lists no to-do.json, and the file left tracking in snapshot commit 5d4d11b. The working-tree copy holds 76 tasks (60 done, 16 todo) visible only to this runtime.",
+      "files": [
+        "README.md"
+      ],
+      "updated_at": "2026-10-12T05:58:48Z"
+    },
+    {
+      "id": "T078",
+      "title": "Seventh direct runtime dependency has no ADR; the repository contains no ADRs",
+      "priority": 2,
+      "status": "blocked",
+      "details": "SPEC 13.4 requires an ADR explaining capability, alternatives, and measured impact for a seventh direct runtime dependency; SPEC 18.5 and 20.1 (ADR-009) record the six-dependency decision. Acceptance: docs/adr/ holds an ADR justifying unicode-width, and the dependency-inventory deviations from the plan (seven runtime crates; dev-dependencies hold only tempfile of the planned three, with proptest never adopted and criterion pending T076) are recorded before T057 publishes the dependency documentation.\nEvidence: Cargo.toml [dependencies] at HEAD pins seven crates: clap, serde, serde_json, ratatui, crossterm, unicode-width, pulldown-cmark. `find . -name '*.md' -path '*adr*'` returns nothing and grep -ri 'adr' README.md docs/ bench/README.md finds no decision records; no backlog task mentions creating one.",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-8a24e0d70dd05fbb/work-00-session-e4656008bb1474ff/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:33Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T079",
+      "title": "T053 committed rustfmt drift beyond T069's scope; T069's named target is already fixed",
+      "priority": 2,
+      "status": "blocked",
+      "details": "A PR-tier format gate (SPEC 18.3) must find every committed file rustfmt-clean. Acceptance: bench/perf/*.rs and tests/bench_harness.rs are rustfmt-clean, and T069 is re-scoped to the current drift or closed because tests/terminal_smoke.rs was reformatted by T066.\nEvidence: `cargo fmt --check` at c227e17 reports 77 diff sites: 61 across bench/perf/{envrec,fixture,hash,main,metric,oracle,record,runner,stats,timing}.rs and 16 in tests/bench_harness.rs, all introduced by commit 3f9a720 'Complete T053'. tests/terminal_smoke.rs — T069's target at lines 394/469/480 — no longer appears; it was fixed in c5c850d 'Complete T066'.",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-c46510fdc66db4cd/work-00-session-460dce691a246fbc/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:34Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T080",
+      "title": "Stale limits section in the example walkthrough contradicts the shipped product",
+      "priority": 3,
+      "status": "blocked",
+      "details": "examples/README.md must describe current behavior, because the README directs evaluation users to it. Acceptance: the 'Current limits' section no longer claims the interactive surface and recovery commands are under development and no longer cites T061 as open work.\nEvidence: examples/README.md:167 ('The interactive terminal interface and explicit recovery commands are still under development') and :169 ('hidden edits under assume-unchanged and skip-worktree are tracked in task T061') at HEAD, while the TUI (T041-T046), doctor (T034), review --resume (T035), checkpoint --include-staged (T036), and T061 itself are all done with passing suites in the exit-0 full run.",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-93948594f4e4eb85/work-00-session-ccc28f2f0c59254a/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:43Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T081",
+      "title": "Several SPEC 17.5 additional budgets and diagnostics have no owner",
+      "priority": 3,
+      "status": "blocked",
+      "details": "SPEC 17.7's resource gate blocks release when binary-size, CPU, or RSS limits are exceeded, and SPEC 17.5 diagnostics must be recorded with release evidence. Acceptance: a task owns measuring the stripped release executable (\u003c=16 MiB gate), long-session retained memory, idle-rendering diagnostics, Git storage overhead, and the 1 MiB document view budget (p95 \u003c=1.5 s under C2), or T054/T073 are explicitly extended to cover them.\nEvidence: T054's acceptance names only the SPEC 17.4 primary metrics; T073 names P-CPU, P-RSS, P-TREE-MEM, and Git process counts; T057 only publishes binary size and licenses; bench/results/*.json carry no fields for these items and no open task mentions them.",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-8f0d1901e8386659/work-00-session-0123fc8e695ea22d/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:43Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T082",
+      "title": "Run T054 gated measurements under quiet conditions",
+      "priority": 2,
+      "status": "blocked",
+      "details": "T054 can now measure: the committed bench/environment.json is registered, so require_registered admits measurement. But registration observed load average 6.7 on 4 cores from concurrent sessions sharing this machine, and SPEC 17.6 requires no competing build jobs. Gated runs need a quiet window (no parallel cargo activity from other worktrees) and release-built executables per SPEC 17.7.1.\nEvidence: bench/environment.json power.load_average reads \"6.73 5.81 5.90 ...\"; the T074 diagnostic run of the debug binary measured 1089 ms median against the 150 ms P-STATUS budget.",
+      "depends_on": [
+        "T074"
+      ],
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-a101af9802463d95/work-00-session-3bae7a67dbdfd3ae/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:34Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T083",
+      "title": "Refresh the stale SPEC 17.6 state sentence",
+      "priority": 3,
+      "status": "blocked",
+      "details": "SPEC.md line 1315 still says \"The runner is currently `unassigned`, results are `not_measured`\". The first half is now historical; results stay not_measured until T054. Update the sentence the next time the SPEC is amended, so the text matches the registered record.\nEvidence: SPEC.md:1315 vs bench/environment.json status \"registered\".",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-64d5a46a50c2f0e8/work-00-session-79e8ccc5fe07e777/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:44Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T084",
+      "title": "Reuse one manifest derivation in the review apply path",
+      "priority": 1,
+      "status": "blocked",
+      "details": "P-APPLY fails on both corpora (C1 1044.5 ms vs 750; C2 6656.6 ms vs 2000) while the same binary's P-CHECKPOINT passes. The apply flow derives the grouped manifest, then appears to derive it again while validating the submitted plan; reusing one derivation should bring C1 inside budget and C2 near it.\nEvidence: bench/results/P-APPLY.C1.json, bench/results/P-APPLY.C2.json, raw streams under bench/results/raw/P-APPLY.*",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-49ce8edbc9839b36/work-01-session-ba0c3062cfe64ce9/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:32Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T085",
+      "title": "Close the remaining whole-scope diff gap",
+      "priority": 1,
+      "status": "blocked",
+      "details": "P-DIFF fails on both corpora (C1 303.9 ms vs 200; C2 1433.1 ms vs 500 at load ~11). After batching, one C2 diff runs ~140 Git processes (from ~400); the remaining cost is the two applies per change group that SPEC 10.2 step 6 requires, each dominated by re-inflating the ~100 KiB document blob. The next structural lever is applying patches in process or through a persistent applier.\nEvidence: bench/results/P-DIFF.C1.json, bench/results/P-DIFF.C2.json; strace execve counts in the task log; process economics documented in src/app.rs prove_chunk",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-e4ac23c0eabf2cd0/work-00-session-d63260e5b692cae4/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:32Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T086",
+      "title": "Generate path-filtered diff patches",
+      "priority": 2,
+      "status": "blocked",
+      "details": "diff --path and diff --limit on the full-scale C3 corpus refuse with LIMIT_EXCEEDED because patch generation batches all 100 changed paths and the stream crosses the 16 MiB capture bound. Generating only the requested paths' patches would serve bounded pages of the C3 shape inside the same bound.\nEvidence: bench/results/C3-stress.md and bench/results/raw/C3-stress/",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-57b4f534be74431f/work-00-session-b652360c07cbe957/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:35Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T087",
+      "title": "Re-measure the load-failed gates in an exclusive window",
+      "priority": 2,
+      "status": "blocked",
+      "details": "P-KEY C2 p99 2001 ms (frame-limit timeouts, p95 12.6 ms is inside budget), P-REFRESH C2 5598 ms vs 3000, P-CPU C2 2.60 percent vs 2.0, and P-STATUS C1 153.6 ms vs 150 were all measured while other tenants held the registered runner at load 8-19, against the environment record's registered no-competing-builds condition. P-CPU C1 measured 0.89 percent in the campaign's quiet head, showing the code meets the ceiling without contention.\nEvidence: bench/results/raw/campaign-2026-10-12/final-progress.txt (per-metric load), the four failed records and their raw streams",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-89f87054d3118be7/work-00-session-86559162398f609b/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:35Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T088",
+      "title": "Regenerate the to-do.json snapshot at each integration milestone",
+      "priority": 2,
+      "status": "blocked",
+      "details": "The tracked to-do.json is a point-in-time snapshot; the runtime advances task statuses in the live copy under /home/agent/margin. Each integration step should re-commit the refreshed snapshot so the README's reference stays current, exactly as the acceptance's '(regenerated at milestones)' parenthetical describes.\nEvidence: Snapshot commit d5e2f23 captured 83 tasks (61 done / 20 todo / 2 doing) on 2026-10-12; the live main-checkout copy already differs (T077 marked 'doing' there, 'todo' in the committed snapshot).",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-1ac0e558feb339c7/work-00-session-d42062e5df9c05aa/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:36Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T089",
+      "title": "Add a README relative-link integrity check to CI",
+      "priority": 3,
+      "status": "blocked",
+      "details": "A small test or CI step asserting every relative link in README.md resolves to a tracked file would prevent this defect class from recurring, matching SPEC 16.8's discipline that a README which misdirects readers is a failure.\nEvidence: No test or ci/ script parses root-README links today (searched tests/ and ci/ on 2026-10-12); the breakage was found only by manual inspection.",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-c92c666815239925/work-00-session-9a6418a66bbaf31e/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:44Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T090",
+      "title": "Bring P-REFRESH on C2 inside its 3 s p95 budget",
+      "priority": 2,
+      "status": "blocked",
+      "details": "The measured p95 is 5597.6 ms against the 3000 ms budget over 100 samples; C1 passed at 378.8 ms. The edit-to-notice path under C2 scale needs work; SPEC 17.7 requires one declared confirmation run of both versions, preserved, before the failure blocks release.\nEvidence: bench/results/P-REFRESH.C2.json: status failed, median 5102.13 ms, p95 5597.59 ms, note 'the p95 exceeded its budget'",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-e579ab7e161bdb27/work-00-session-181b118508904509/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:37Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T091",
+      "title": "Bring the P-KEY p99 on C2 inside its 100 ms budget",
+      "priority": 2,
+      "status": "blocked",
+      "details": "p95 is 12.65 ms (inside its 50 ms budget) but the p99 is 2000.8 ms against the 100 ms budget over a full 10,000-event series. The key-to-bytes tail during background Git work on C2 is what this gate exists to catch; one declared confirmation run must precede any release.\nEvidence: bench/results/P-KEY.C2.json: status failed, p95 12.649733 ms, p99 2000.813792 ms, 10000 samples, note 'the p99 exceeded its budget'",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-28c60c690e60b0b2/work-00-session-6b4019b340e2b2f0/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:37Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T092",
+      "title": "Reclaim runner disk headroom so verification builds do not require a tmpfs target",
+      "priority": 3,
+      "status": "blocked",
+      "details": "The root filesystem sits at 97% with 5.3 G free and swap is full, so full-workspace builds die at link time (rust-lld SIGBUS). Builds currently need a /dev/shm target directory with CARGO_INCREMENTAL=0 and debug=0. Reclaiming space (old worktree targets, stale /tmp experiment dirs of this lineage) would make verification self-contained again.\nEvidence: Failed verification: 'collect2: fatal error: ld terminated with signal 7 [Bus error]' while linking tests/diff_results; df shows / at 97%; memory note margin-machine-disk-pressure documents the same pattern",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-3df97d285ccfc880/work-00-session-75001063f1a25a8c/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:45Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T093",
+      "title": "docs/verification-tiers.md still says the benchmark runner is unassigned",
+      "priority": 3,
+      "status": "blocked",
+      "details": "Acceptance: the support matrix that SPEC 18.5 requires (and that T057 will publish) must not contradict the committed environment record. Update the sentence 'No runner is registered yet — bench/environment.json is unassigned' the next time the document is amended, in the same class as the SPEC.md:1315 refresh tracked by T083.\nEvidence: docs/verification-tiers.md:36-38 versus bench/environment.json:3-4, which reads \"status\": \"registered\", \"runner_id\": \"the-developer-vm\" (T074 completed 2026-10-11, before T052 closed over the document).",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-ed9cae0b67086564/work-00-session-0dc40e7bd434c71a/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:46Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
+    },
+    {
+      "id": "T094",
+      "title": "Four open backlog tasks are already satisfied at the reviewed revision",
+      "priority": 3,
+      "status": "blocked",
+      "details": "Acceptance: close or re-scope T069, T070, T071, and T079 against the integrated tree so the backlog states real remaining work instead of work that later commits (T052's repair passes, T066) already delivered.\nEvidence: At 0fe5222: cargo fmt --check exits 0, satisfying T069 and T079 including their named bench/perf and terminal_smoke targets; cargo clippy --locked --all-targets -- -D warnings exits 0, satisfying T071 (whose evidence commit 70764e4 is not an ancestor of HEAD; git merge-base --is-ancestor returns 1); .github/workflows/pr-tier.yml:68-74 and nightly-tier.yml:56,103 run ci/install-tmux.sh and ci/run-tier.sh:143 exports MARGIN_REQUIRE_TMUX=1 for the tests gate, satisfying T070.",
+      "blockers": [
+        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-c3934e0ccb8d4d6c/work-00-session-5af59baca76e0acb/events-00.jsonl"
+      ],
+      "updated_at": "2026-10-12T15:18:46Z",
+      "unblock_when": "Resolve the recorded condition and set this task to todo."
     }
   ]
 }

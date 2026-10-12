@@ -204,6 +204,34 @@ fn plan_of(context: &str, members: &str) -> String {
     format!("{}, {members}}}", &context[..context.len() - 1])
 }
 
+/// One change identity the pinned review never issued, derived from a real
+/// one so it stays a well-formed value of the same shape. The first hex
+/// digit flips to the opposite nibble, and the result is checked against
+/// every issued identity: a replacement that happens to land on an issued
+/// identity would turn the refusal under test into an approval.
+fn stranger_change(changes: &[String]) -> String {
+    let issued = &changes[0];
+    let position = issued
+        .rfind(':')
+        .expect("a change identity carries an algorithm prefix")
+        + 1;
+    let flipped = if issued.as_bytes()[position] == b'f' {
+        '0'
+    } else {
+        'f'
+    };
+    let stranger = format!(
+        "{}{flipped}{}",
+        &issued[..position],
+        &issued[position + 1..]
+    );
+    assert!(
+        changes.iter().all(|issued| *issued != stranger),
+        "the flipped identity {stranger} must differ from every issued one"
+    );
+    stranger
+}
+
 /// The typed problem one invalid fixture must refuse with. The two variants
 /// whose text repeats implementation wording are compared by variant and
 /// public code only.
@@ -565,7 +593,7 @@ fn structural_faults_are_typed_invalid_plans() {
 #[test]
 fn unknown_and_undecided_changes_are_named() {
     let (repo, context, changes, _review_id) = pending_review();
-    let stranger = changes[0].replace('0', "f");
+    let stranger = stranger_change(&changes);
 
     // An identity the pinned review never issued.
     let unknown = plan_of(
@@ -756,7 +784,7 @@ fn the_plan_rules_are_reachable_through_the_library() {
     );
     assert_eq!(domain::validate_plan_coverage(&keep_one, &known), Ok(()));
 
-    let stranger = changes[0].replace('0', "f");
+    let stranger = stranger_change(&changes);
     let unknown = ReviewPlan::parse(
         plan_of(
             &context,
@@ -790,7 +818,10 @@ fn a_broken_document_refuses_typed_before_the_application() {
     assert_eq!(envelope["effects"]["commit"], "none");
 
     // A well-formed keep-all plan reaches the application and commits it
-    // (SPEC 9.4, T031), while the resumption slice stays pending (T035).
+    // (SPEC 9.4, T031), and the resumption of that same request reports
+    // the receipt the history already holds: the receipt lookup of SPEC 8.7
+    // runs before any stale check, so the completed decision never
+    // commits twice (SPEC 9.7, T035).
     let plan = plan_file(&repo, "apply.json", &valid);
     let output = margin(
         repo.env(),
@@ -807,10 +838,23 @@ fn a_broken_document_refuses_typed_before_the_application() {
     );
     assert_eq!(envelope["effects"]["commit"], "created");
 
-    let (_, code, _) = refusal_of(
+    let output = margin(
         repo.env(),
         repo.path(),
         &["review", "--input", &plan, "--resume", "--json"],
     );
-    assert_eq!(code, "OPERATION_UNAVAILABLE");
+    assert_eq!(exit_of(&output), 0, "the resumption reports the receipt");
+    let envelope = envelope_of(&output, "resume");
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    assert_eq!(envelope["effects"]["commit"], "existing_receipt");
+    assert_eq!(
+        envelope["data"]["existing_receipt"],
+        text(&repo.git_ok(["rev-parse", "HEAD"])),
+        "the resumption names the receipt commit"
+    );
+    assert_eq!(
+        envelope["data"]["commit"],
+        Value::Null,
+        "no second review commit was made: {envelope}"
+    );
 }

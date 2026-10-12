@@ -15,7 +15,8 @@
 //!   only mutations refuse on them
 //! - operation phases whose algorithms arrive in later tasks refuse with
 //!   one typed code and unchanged effects, never silently or untyped; the
-//!   scoped checkpoint of task T020 is covered by the checkpoint suite
+//!   scoped checkpoint of task T020 and the retained-plan resume of T035
+//!   are covered by their own suites
 
 mod support;
 
@@ -24,7 +25,8 @@ use std::os::unix::fs::symlink;
 
 use margin::app::{
     BaselineStatus, CheckpointRequest, CommitEffect, DiffRequest, Effects, InspectRequest,
-    OperationOutcome, Operations, RecoveryRequest, ReviewRequest, commit_marker, resolve_scope,
+    ObservedEffect, OperationOutcome, Operations, RecoveryRequest, ReviewRequest, commit_marker,
+    resolve_scope,
 };
 use margin::domain::{CommitKind, CommitMetadata, ScopeInput};
 use margin::git::Git;
@@ -303,6 +305,9 @@ fn guard_refusals_write_nothing_and_report_effects() {
         scope: Some(scope.clone()),
         message: None,
         include_staged: false,
+        expect_head: None,
+        expect_index: None,
+        expect_working: None,
         dry_run: false,
     });
     assert_refusal(
@@ -382,7 +387,7 @@ fn guard_refusals_write_nothing_and_report_effects() {
 }
 
 #[test]
-fn pending_algorithms_refuse_without_writing() {
+fn queries_write_nothing_and_the_resume_commits_only_the_proved_decision() {
     let repo = TestRepo::init();
     repo.write_file("notes/a.md", b"# One\n");
     repo.commit_all("import");
@@ -394,9 +399,10 @@ fn pending_algorithms_refuse_without_writing() {
     let head = oracle::head_oid(&repo).unwrap();
     let before = oracle::snapshot(&repo);
 
-    // Every algorithm a later task provides refuses with one typed code and
-    // unchanged effects. The initialization contract, first use and repeat,
-    // and the checkpoint contract are covered by their own suites.
+    // The queries observe only, the staged-content capture of T036 refuses
+    // typed, and the resumption of T035 commits exactly the decision it
+    // proves. The initialization contract, first use and repeat, and the
+    // checkpoint contract are covered by their own suites.
     //
     // The plan is a real document the strict parser accepts: the pinned
     // comparison of this workspace carries no group, so an empty restore
@@ -441,20 +447,31 @@ fn pending_algorithms_refuse_without_writing() {
     assert_eq!(decision.kept, Some(0));
     assert_eq!(decision.expected_tree, oracle::commit_tree(&repo, &head));
     assert_eq!(validation.effects, Effects::unchanged());
+
+    // The guarded staged capture of SPEC 9.7 (T036) needs its expected
+    // state: `--include-staged` without the three fingerprints a recovery
+    // inspection reports is invalid input that refuses with the honest
+    // effects of an operation that wrote nothing (SPEC 7.1, 9.7).
     assert_refusal(
-        &operations.resume_review(&ReviewRequest {
+        &operations.create_checkpoint(&CheckpointRequest {
             scope: Some(scope.clone()),
-            plan,
+            message: None,
+            include_staged: true,
+            expect_head: None,
+            expect_index: None,
+            expect_working: None,
             dry_run: false,
         }),
-        "OPERATION_UNAVAILABLE",
-        "review resumption",
+        "INVALID_ARGUMENT",
+        "the staged-content recovery capture without its expected state",
     );
 
     // The recovery inspection of T034 is real: it reports the observed
     // state of this workspace and writes nothing. Its own test file covers
     // the full contract against installed Git.
-    let recovery = operations.inspect_recovery(&RecoveryRequest { scope: Some(scope) });
+    let recovery = operations.inspect_recovery(&RecoveryRequest {
+        scope: Some(scope.clone()),
+    });
     assert!(
         recovery.ok(),
         "the recovery inspection succeeds: {:?}",
@@ -462,7 +479,60 @@ fn pending_algorithms_refuse_without_writing() {
     );
     assert_eq!(recovery.effects, Effects::unchanged());
 
-    // Every refusal reports one typed error, no data, and the honest
-    // effects of an operation that wrote nothing (SPEC 7.1).
-    before.assert_unchanged(&oracle::snapshot(&repo), "pending operations");
+    // The guarded staged capture over the inspection's own values is the
+    // explicit no-op of unchanged content (SPEC 9.2, 9.7): this workspace
+    // holds nothing staged and the scoped working content equals the
+    // candidate, so the capture writes nothing and stays a success.
+    let report = recovery.data.as_ref().unwrap();
+    let capture = operations.create_checkpoint(&CheckpointRequest {
+        scope: Some(scope.clone()),
+        message: None,
+        include_staged: true,
+        expect_head: report.head.clone(),
+        expect_index: report.index_tree.clone(),
+        expect_working: report
+            .scoped_working_digest
+            .as_ref()
+            .map(|digest| digest.id()),
+        dry_run: false,
+    });
+    assert!(
+        capture.ok(),
+        "the recovery capture no-op: {:?}",
+        capture.error
+    );
+    let data = capture.data.as_ref().unwrap();
+    assert_eq!(data.commit, None);
+    assert!(!data.changed);
+    assert_eq!(data.candidate, head);
+    assert_eq!(capture.effects, Effects::unchanged());
+
+    // The operations above wrote nothing (SPEC 7.1).
+    before.assert_unchanged(&oracle::snapshot(&repo), "the queries");
+
+    // The resumption of T035 is real too, and this workspace holds its
+    // exact retained state: a keep-all plan intends C's own tree, so the
+    // clean workspace is the proved result, and the resume is one newly
+    // validated explicit approval that commits without rewriting anything
+    // (SPEC 9.7).
+    let resumed = operations.resume_review(&ReviewRequest {
+        scope: Some(scope),
+        plan,
+        dry_run: false,
+    });
+    assert!(resumed.ok(), "the resume commits: {:?}", resumed.error);
+    let decision = resumed.data.as_ref().unwrap();
+    assert!(!decision.dry_run);
+    assert_eq!(decision.restored, Vec::<String>::new());
+    assert_eq!(decision.kept, Some(0));
+    assert_eq!(resumed.effects.commit, CommitEffect::Created);
+    assert_eq!(resumed.effects.working_tree, ObservedEffect::Unchanged);
+    assert_eq!(resumed.effects.index, ObservedEffect::Unchanged);
+    let commit = decision.commit.clone().expect("the resume commits");
+    assert_eq!(oracle::head_oid(&repo).as_deref(), Some(commit.as_str()));
+    assert_eq!(
+        oracle::commit_tree(&repo, &commit),
+        oracle::commit_tree(&repo, &head),
+        "the empty review commit holds the candidate's tree"
+    );
 }

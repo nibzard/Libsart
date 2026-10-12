@@ -7,6 +7,8 @@
 //! - literal pathspecs, both object formats, bounded time and output
 //! - typed failures for nonzero exits, hangs, floods, and malformed output
 //! - read-only calls that avoid optional index writes and lazy fetches
+//! - `write-tree` rewrites the index it addresses even in query mode, so
+//!   read-only callers compute their tree from one disposable copy
 //! - refused inherited environment redirection and explicit overrides
 
 mod support;
@@ -581,6 +583,51 @@ fn inherited_redirection_is_refused_and_overrides_are_explicit() {
     );
 }
 
+/// `write-tree` rewrites the index it addresses to store the computed tree
+/// cache, and query mode's optional locks off does not prevent it (task
+/// T062): a read-only caller must point `GIT_INDEX_FILE` at one disposable
+/// copy first, the pattern the recovery inspection and the guarded capture
+/// use. The rewrite is idempotent, which is why one oracle that ran
+/// `write-tree` first could never see a later change.
+#[test]
+fn write_tree_rewrites_the_index_it_addresses_even_in_query_mode() {
+    let repo = TestRepo::init();
+    repo.write_file("doc.md", b"body\n");
+    repo.commit_all("first pass");
+    repo.write_file("doc.md", b"revised\n");
+    repo.git_ok(["add", "--", "doc.md"]);
+
+    let index_path = repo.path().join(".git/index");
+    let staged = fs::read(&index_path).expect("the real index can be read");
+    let adapter = adapter_for(&repo);
+    let tree = adapter
+        .run_ok(Mode::Query, ["write-tree"])
+        .expect("the tree computes in query mode");
+    assert_eq!(
+        support::text(&tree),
+        support::oracle::index_tree(&repo).expect("the tree of the staged index"),
+        "query mode computes the same tree"
+    );
+    assert_ne!(
+        fs::read(&index_path).expect("the real index can be read again"),
+        staged,
+        "query mode does not stop the cached-tree write"
+    );
+
+    // The rewrite prepared the cache, so the same call writes the same
+    // bytes again: one snapshot taken after a `write-tree` cannot observe
+    // a later one.
+    let prepared = fs::read(&index_path).expect("the real index can be read");
+    adapter
+        .run_ok(Mode::Query, ["write-tree"])
+        .expect("the tree computes again");
+    assert_eq!(
+        fs::read(&index_path).expect("the real index can be read again"),
+        prepared,
+        "the cached-tree write is idempotent"
+    );
+}
+
 #[test]
 fn nonzero_exits_are_typed() {
     let repo = TestRepo::init();
@@ -689,4 +736,41 @@ fn version_reporting_matches_the_harness_record() {
         .git_version()
         .expect("the installed Git reports a version");
     assert_eq!(version, support::environment_report().git_version);
+}
+
+#[test]
+fn blob_batches_read_files_up_to_the_output_limit() {
+    let repo = TestRepo::init();
+    let git = adapter_for(&repo);
+    let limit = margin::git::Limits::default().max_output_bytes;
+    let inputs = [b"before".to_vec(), vec![0; limit], b"after".to_vec()];
+    let oids: Vec<String> = inputs
+        .iter()
+        .map(|bytes| {
+            let output = git
+                .run_stdin(Mode::Mutate, ["hash-object", "-w", "--stdin"], bytes)
+                .unwrap();
+            assert!(output.success());
+            support::text(&output.stdout)
+        })
+        .collect();
+    let blobs = git
+        .read_blobs(&oids)
+        .expect("a file at the output limit remains readable");
+    for (oid, bytes) in oids.iter().zip(&inputs) {
+        assert_eq!(&blobs[oid], bytes);
+    }
+    let output = git
+        .run_stdin(
+            Mode::Mutate,
+            ["hash-object", "-w", "--stdin"],
+            &vec![0; limit + 1],
+        )
+        .unwrap();
+    assert!(output.success());
+    let oversized = support::text(&output.stdout);
+    assert!(matches!(
+        git.read_blobs(&[oversized]),
+        Err(GitError::OutputLimit { .. })
+    ));
 }

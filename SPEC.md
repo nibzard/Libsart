@@ -1115,6 +1115,8 @@ Maintain model mutations for draft-approval conflation, accepting incomplete pla
 
 Tests may emit a small test-only trace containing model action names and version/tree/request identities. A trace-conformance check must validate allowed transitions; shared naming alone is not refinement. Protocol changes update model, mapping, executable tests, and error documentation in the same change.
 
+Execution status: the mapping and the trace check exist. `formal/refinement.md` maps every model action to an application operation and independent real Git tests, and holds the reply-code map to the exit classes of 7.5. `MARGIN_MODEL_TRACE=<file>` turns on the test-only trace, `tests/refinement_trace.rs` validates whole traces against the allowed transitions with the independent checker in `tests/support/model.rs`, and `tests/refinement_map.rs` re-derives the action inventory from the TLA+ module so the model, the map, the tests, and the error documentation cannot drift apart silently.
+
 ### 15.8 Formal evidence gate
 
 Before the mutation slice is accepted, run SANY and all positive/negative TLC profiles with a pinned official tools artifact. Record tool/hash, Java version, source/config hashes, bounds, properties, state counts, depth, elapsed time, and outcome. Preserve counterexamples. No state-count or proof claim may appear before execution.

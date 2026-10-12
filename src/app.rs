@@ -213,7 +213,7 @@ use crate::domain::{
     ScopeInput, SettingsUpdate, SettingsValueError, TrailerParseError, TrailerProblem,
 };
 use crate::git::{
-    AttributeAssignment, CommitObject, Git, GitError, IndexEntry, ObjectFormat,
+    AttributeAssignment, CommitObject, Git, GitError, IndexEntry, IndexFlag, ObjectFormat,
     os_string_from_bytes,
 };
 use crate::markdown;
@@ -911,11 +911,29 @@ impl<'a> Identities<'a> {
         review: &Fingerprint,
         groups: &[ChangeGroup],
     ) -> Result<Vec<Fingerprint>, GitError> {
-        groups
+        // Every change identity of one manifest hashes through one batched
+        // process, in manifest order (SPEC 17.5).
+        let inputs: Vec<Vec<u8>> = groups
             .iter()
             .enumerate()
-            .map(|(index, group)| self.change(review, group, index as u64))
-            .collect()
+            .map(|(index, group)| {
+                domain::change_id_input_bytes(&ChangeIdentity {
+                    review_oid: review.oid.clone(),
+                    path: group.path.clone(),
+                    patch_units: group.patch_units.clone(),
+                    group_index: index as u64,
+                })
+            })
+            .collect();
+        Ok(self
+            .git
+            .hash_objects(&inputs)?
+            .into_iter()
+            .map(|oid| Fingerprint {
+                object_format: self.object_format,
+                oid,
+            })
+            .collect())
     }
 
     /// The plan fingerprint of one submitted plan (SPEC 7.3, 8.6).
@@ -1172,6 +1190,28 @@ pub enum PolicyBlocker {
         /// At most [`MAX_LISTED_PATHS`] of those paths.
         paths: Vec<OsString>,
     },
+    /// Scoped index entries are marked assume-unchanged, so Git reports no
+    /// working change for them (SPEC 3.1). Working content can differ from
+    /// the candidate while every Git change report stays clean, and Git's
+    /// own staging honors the flag too, so no normal mutation proceeds
+    /// behind it.
+    AssumeUnchangedEntries {
+        /// How many scoped paths carry the flag.
+        count: usize,
+        /// At most [`MAX_LISTED_PATHS`] of those paths.
+        paths: Vec<OsString>,
+    },
+    /// Scoped index entries are marked skip-worktree — the sparse-checkout
+    /// mechanism — so Git reports no working change for them and promises
+    /// not to touch their working files (SPEC 3.1). Unsaved content can
+    /// hide behind the flag, and a Margin write would fight that promise,
+    /// so no normal mutation proceeds behind it.
+    SkipWorktreeEntries {
+        /// How many scoped paths carry the flag.
+        count: usize,
+        /// At most [`MAX_LISTED_PATHS`] of those paths.
+        paths: Vec<OsString>,
+    },
     /// `core.autocrlf` converts line endings on check-in; the
     /// `identity-v1` profile requires `false` (SPEC 8.8).
     AutoCrlfConversion {
@@ -1302,6 +1342,20 @@ impl fmt::Display for PolicyBlocker {
             PolicyBlocker::StagedChanges { count, paths } => write!(
                 formatter,
                 "the index has {count} staged change(s) against HEAD: {}",
+                listed(*count, paths)
+            ),
+            PolicyBlocker::AssumeUnchangedEntries { count, paths } => write!(
+                formatter,
+                "assume-unchanged is set for {count} scoped path(s): {}; Git then reports no \
+                 working change there, so run git update-index --no-assume-unchanged on each \
+                 path before a Margin write",
+                listed(*count, paths)
+            ),
+            PolicyBlocker::SkipWorktreeEntries { count, paths } => write!(
+                formatter,
+                "skip-worktree is set for {count} scoped path(s): {}; Git then reports no \
+                 working change there, so run git update-index --no-skip-worktree on each path \
+                 before a Margin write",
                 listed(*count, paths)
             ),
             PolicyBlocker::AutoCrlfConversion { value } => write!(
@@ -1488,9 +1542,13 @@ pub fn repository_policy_blockers(git: &Git) -> Result<Vec<PolicyBlocker>, Polic
         blockers.push(PolicyBlocker::NestedRepository { superproject });
     }
 
-    // In-progress Git operations (SPEC 3.1).
-    for (marker, blocker) in OPERATION_MARKERS {
-        if git.git_path(marker)?.exists() {
+    // In-progress Git operations (SPEC 3.1), resolved by one process.
+    let names: Vec<&str> = OPERATION_MARKERS
+        .iter()
+        .map(|(marker, _)| *marker)
+        .collect();
+    for ((_marker, blocker), path) in OPERATION_MARKERS.iter().zip(git.git_paths(&names)?) {
+        if path.exists() {
             blockers.push(blocker.clone());
         }
     }
@@ -1570,6 +1628,46 @@ pub fn storage_policy_blockers(
     Ok(blockers)
 }
 
+/// Inspects the scoped index entries Git hides from its own change
+/// detection (SPEC 3.1, 9.1 step 4): `assume-unchanged` and
+/// `skip-worktree`. A flagged path shows no working change in `git status`
+/// or the diff calls, so unsaved content can differ from the candidate
+/// behind an apparently clean repository, and Git's staging honors the
+/// flag as well, so an attempted capture could silently store the old
+/// bytes. Every scoped flag is one specific blocker before any mutation
+/// (INV-08); the inspection only reads the flags and preserves them
+/// exactly as the user set them.
+pub fn hidden_index_blockers(
+    git: &Git,
+    scope: &ResolvedScope,
+) -> Result<Vec<PolicyBlocker>, PolicyError> {
+    let mut assume_unchanged: Vec<OsString> = Vec::new();
+    let mut skip_worktree: Vec<OsString> = Vec::new();
+    for (path, flag) in git.hidden_index_paths()? {
+        if !scope.paths.contains_key(&path) {
+            continue;
+        }
+        match flag {
+            IndexFlag::AssumeUnchanged => assume_unchanged.push(path),
+            IndexFlag::SkipWorktree => skip_worktree.push(path),
+        }
+    }
+    let mut blockers = Vec::new();
+    if !assume_unchanged.is_empty() {
+        blockers.push(PolicyBlocker::AssumeUnchangedEntries {
+            count: assume_unchanged.len(),
+            paths: list_paths(&assume_unchanged),
+        });
+    }
+    if !skip_worktree.is_empty() {
+        blockers.push(PolicyBlocker::SkipWorktreeEntries {
+            count: skip_worktree.len(),
+            paths: list_paths(&skip_worktree),
+        });
+    }
+    Ok(blockers)
+}
+
 /// The one shared mutation guard (SPEC 9.1 step 4 and 13.6). Every
 /// interface calls this before a normal mutation writes.
 ///
@@ -1591,6 +1689,10 @@ pub fn enforce_mutation_policy(
     if let Some(scope) = scope
         && worktree_usable
     {
+        // Index flags before storage transformations: a flag that hides a
+        // path from Git's own reporting is an index-state refusal, in the
+        // guard order of the report (SPEC 3.1, 9.1 step 4).
+        blockers.extend(hidden_index_blockers(git, scope)?);
         blockers.extend(storage_policy_blockers(git, scope)?);
     }
     Ok(MutationPolicyReport { blockers })
@@ -1644,21 +1746,29 @@ fn staged_byte_blockers(
         .collect();
 
     let mut blockers = Vec::new();
+    // The raw bytes of every present path are hashed by one batched call,
+    // never one process per document (SPEC 17.5). A path whose file cannot
+    // be inspected is the same hard failure it was per path.
+    let mut present: Vec<OsString> = Vec::new();
     for path in paths {
+        match fs::symlink_metadata(repo_root.join(path)) {
+            Ok(_) => present.push(path.clone()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                blockers.push(PolicyBlocker::AbsentWorkingFile { path: path.clone() });
+            }
+            Err(error) => return Err(PolicyError::Io(error)),
+        }
+    }
+    let raw_oids = git.hash_object_paths(&present)?;
+    for (path, raw_oid) in present.iter().zip(raw_oids) {
         let Some(staged_oid) = staged.get(path) else {
+            // The staging probe listed nothing for a path that exists now:
+            // it vanished between the two reads, which is the same absent
+            // working file.
             blockers.push(PolicyBlocker::AbsentWorkingFile { path: path.clone() });
             continue;
         };
-        let bytes = match fs::read(repo_root.join(path)) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                blockers.push(PolicyBlocker::AbsentWorkingFile { path: path.clone() });
-                continue;
-            }
-            Err(error) => return Err(PolicyError::Io(error)),
-        };
-        let raw_oid = git.hash_object(&bytes)?;
-        if &raw_oid != staged_oid {
+        if raw_oid != *staged_oid {
             blockers.push(PolicyBlocker::ByteTransformation { path: path.clone() });
         }
     }
@@ -2320,11 +2430,7 @@ pub fn build_grouped_manifest(
     let identities = Identities::new(git)?;
     let git_version = git.git_version()?;
 
-    let temp_index = reserve_temp_index().map_err(ManifestError::Io)?;
-    let grouped = group_all_files(git, &temp_index, candidate_oid, collected);
-    // The disposable index never outlives the build, whatever the result.
-    let _ = fs::remove_file(&temp_index);
-    let drafts = grouped?;
+    let drafts = group_all_files(git, collected)?;
 
     // Identities arrive only after grouping and validation, from the
     // grouped patch units in manifest order (SPEC 10.2 steps 6-7).
@@ -2347,8 +2453,11 @@ pub fn build_grouped_manifest(
         git_version: git_version.clone(),
         manifest_digest: manifest_digest.oid.clone(),
     })?;
+    // One batched pass derives every change identity in manifest order
+    // (SPEC 8.6, 17.5).
+    let change_ids = identities.changes(&review_id, &ordered)?;
+    let mut change_identity = change_ids.into_iter();
     let mut files = Vec::with_capacity(drafts.len());
-    let mut group_index: u64 = 0;
     for draft in drafts {
         let mut groups = Vec::with_capacity(draft.groups.len());
         for group in draft.groups {
@@ -2361,10 +2470,11 @@ pub fn build_grouped_manifest(
                 reason: group.reason,
                 hunk_indexes: group.hunk_indexes,
                 presentation: group.presentation,
-                change_id: identities.change(&review_id, &group_input, group_index)?,
+                change_id: change_identity
+                    .next()
+                    .expect("one identity per grouped passage"),
                 group: group_input,
             });
-            group_index += 1;
         }
         files.push(GroupedFile {
             path: draft.path,
@@ -2421,26 +2531,259 @@ struct FileDraft {
 /// Groups every collected change, one file at a time.
 fn group_all_files(
     git: &Git,
-    temp_index: &Path,
-    candidate_oid: &str,
     collected: Vec<CollectedChange>,
 ) -> Result<Vec<FileDraft>, ManifestError> {
-    let mut probe = git.clone();
-    probe.set_env_override("GIT_INDEX_FILE", temp_index);
-    collected
-        .into_iter()
-        .map(|change| group_one_file(git, &probe, candidate_oid, change))
-        .collect()
+    // Every changed document's both sides are read through one batched
+    // pass before the grouping starts, so the source read of a
+    // whole-scope comparison never scales one process per document
+    // (SPEC 17.5).
+    let mut wanted: Vec<String> = Vec::new();
+    for change in &collected {
+        for side in [&change.entry.entry_before, &change.entry.entry_after] {
+            if let Some(side) = side
+                && !wanted.contains(&side.blob_oid)
+            {
+                wanted.push(side.blob_oid.clone());
+            }
+        }
+    }
+
+    let blobs = git.read_blobs(&wanted)?;
+
+    // The files are independent: one file's grouping reads its own blobs
+    // and proves its own passages on its own disposable indexes. Workers
+    // claim whole files by order and record the outcome at the file's own
+    // slot, so the assembled result and the first failure are exactly the
+    // sequential ones, sooner (SPEC 17.5: bounded work, not bounded
+    // correctness).
+    let total = collected.len();
+    let queue: std::sync::Mutex<Vec<Option<CollectedChange>>> =
+        std::sync::Mutex::new(collected.into_iter().map(Some).collect());
+    let slots: Vec<std::sync::Mutex<Option<Result<FileDraft, ManifestError>>>> =
+        (0..total).map(|_| std::sync::Mutex::new(None)).collect();
+    let cursor = AtomicU64::new(0);
+    let workers = std::thread::available_parallelism()
+        // Three workers per core: one proof process spends most of its
+        // wall time inflating blobs and writing indexes beside the CPU
+        // work, so the pool overlaps that waiting (SPEC 17.5).
+        .map(|cores| cores.get().saturating_mul(3))
+        .unwrap_or(2)
+        .min(total)
+        .max(1);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                // One worker's whole claim, in three passes: group every
+                // claimed file, prove the light files' passages through one
+                // shared chunk index while the group-heavy files keep their
+                // own nested rounds, then assemble and record in claim
+                // order (SPEC 17.5: the process count of a whole-scope
+                // comparison scales with the rounds, not the groups).
+                let mut claimed: Vec<(usize, CollectedChange)> = Vec::new();
+                while let Some(pair) = claim_next_file(&queue, &cursor) {
+                    claimed.push(pair);
+                }
+                let mut prepared: Vec<(usize, FileDraft, FilePlan<'_>)> = Vec::new();
+                let mut failed = false;
+                for (index, change) in &claimed {
+                    if failed {
+                        continue;
+                    }
+                    match group_one_file_prepare(&blobs, change) {
+                        Ok((draft, plan)) => prepared.push((*index, draft, plan)),
+                        Err(error) => {
+                            *slots[*index].lock().expect("the outcome slot is free") =
+                                Some(Err(error));
+                            failed = true;
+                        }
+                    }
+                }
+
+                // The light files of this claim share one chunk proof; a
+                // file with more groups than the nested-round threshold
+                // keeps its own indexes, because its rounds parallelize
+                // better than they batch.
+                let mut chunk: Vec<ChunkFile<'_>> = Vec::new();
+                let mut chunk_slots: Vec<usize> = Vec::new();
+                for (position, (_index, _draft, plan)) in prepared.iter().enumerate() {
+                    if let FilePlan::Groups {
+                        candidates,
+                        after_entry,
+                        before_entry,
+                        ..
+                    } = plan
+                        && candidates.len() <= PARALLEL_GROUP_ROUNDS
+                        && let Some(after_entry) = after_entry
+                    {
+                        chunk.push(ChunkFile {
+                            path: _draft.path.clone(),
+                            after_entry: after_entry.clone(),
+                            before_shape: staged_shape(before_entry),
+                            groups: candidates,
+                        });
+                        chunk_slots.push(position);
+                    }
+                }
+                let mut group_outcomes: Vec<Option<bool>> = vec![None; prepared.len()];
+                if !chunk.is_empty() {
+                    match prove_chunk(git, &chunk) {
+                        Ok(outcomes) => {
+                            for (at, outcome) in chunk_slots.into_iter().zip(outcomes) {
+                                group_outcomes[at] = Some(outcome);
+                            }
+                        }
+                        Err(error) => {
+                            // The chunk's plumbing failed before any
+                            // verdict: the first light file of the claim
+                            // carries the failure — the file the
+                            // sequential proof would have stopped at —
+                            // and everything this worker still held
+                            // records nothing.
+                            let failed_slot = chunk_slots
+                                .first()
+                                .map(|&at| prepared[at].0)
+                                .or_else(|| prepared.first().map(|(index, _, _)| *index));
+                            if let Some(index) = failed_slot {
+                                *slots[index].lock().expect("the outcome slot is free") =
+                                    Some(Err(error));
+                            }
+                            return;
+                        }
+                    }
+                }
+
+                for (position, (index, draft, plan)) in prepared.into_iter().enumerate() {
+                    let path = draft.path.clone();
+                    let proved = match &plan {
+                        FilePlan::Groups {
+                            candidates,
+                            after_entry,
+                            ..
+                        } if group_outcomes[position].is_none() => {
+                            // The group-heavy file proves itself with its
+                            // own nested rounds; an infrastructure failure
+                            // stops this worker exactly as the sequential
+                            // proof would.
+                            match passages_apply_exactly(
+                                git,
+                                &path,
+                                after_entry,
+                                &plan_before_entry(&plan),
+                                candidates,
+                            ) {
+                                Ok(outcome) => Some(outcome),
+                                Err(error) => {
+                                    *slots[index].lock().expect("the outcome slot is free") =
+                                        Some(Err(error));
+                                    return;
+                                }
+                            }
+                        }
+                        _ => group_outcomes[position],
+                    };
+                    let outcome = group_one_file_assemble(git, &path, draft, plan, proved);
+                    let outcome = match outcome {
+                        Ok(draft) => Ok(draft),
+                        Err(error) => {
+                            *slots[index].lock().expect("the outcome slot is free") =
+                                Some(Err(error));
+                            return;
+                        }
+                    };
+                    *slots[index].lock().expect("the outcome slot is free") = Some(outcome);
+                }
+            });
+        }
+    });
+    let mut drafts = Vec::with_capacity(total);
+    for slot in slots {
+        match slot.into_inner().expect("the workers finished") {
+            Some(Ok(draft)) => drafts.push(draft),
+            Some(Err(error)) => return Err(error),
+            None => {
+                // No worker can leave a slot empty: each claimed file is
+                // answered before the scope ends.
+                unreachable!("every claimed file records an outcome")
+            }
+        }
+    }
+    Ok(drafts)
 }
 
-/// Groups one changed file into safe passages and proves them exact
-/// (SPEC 10.2-10.3).
-fn group_one_file(
-    git: &Git,
-    probe: &Git,
-    candidate_oid: &str,
-    change: CollectedChange,
-) -> Result<FileDraft, ManifestError> {
+/// The baseline entry a plan carries, for the whole-file proofs.
+fn plan_before_entry(plan: &FilePlan<'_>) -> Option<(EntryMode, String)> {
+    match plan {
+        FilePlan::WholeFile { before_entry, .. } | FilePlan::Groups { before_entry, .. } => {
+            before_entry.clone()
+        }
+    }
+}
+
+/// Claims the next unclaimed file with its slot index, in collected order.
+fn claim_next_file(
+    queue: &std::sync::Mutex<Vec<Option<CollectedChange>>>,
+    cursor: &AtomicU64,
+) -> Option<(usize, CollectedChange)> {
+    let index = cursor.fetch_add(1, Ordering::Relaxed) as usize;
+    let mut pending = queue.lock().expect("the queue is short-lived");
+    pending
+        .get_mut(index)
+        .and_then(|slot| slot.take())
+        .map(|change| (index, change))
+}
+
+/// What one changed file still owes after its grouping ran: the proof of
+/// its whole-file unit, or the proof of its passage candidates with the
+/// material a fallback whole-file decision needs when they fail.
+enum FilePlan<'a> {
+    /// The file is one whole-file decision whatever grouped it; the unit
+    /// must still be proven to restore B exactly.
+    WholeFile {
+        /// The candidate entry of the path.
+        after_entry: Option<(EntryMode, String)>,
+        /// The baseline entry of the path.
+        before_entry: Option<(EntryMode, String)>,
+        /// The complete patch bytes of the file.
+        unit: &'a [u8],
+    },
+    /// Passage candidates to prove exact; on failure the file falls back
+    /// to one whole-file decision built from the same patch.
+    Groups {
+        /// The candidate entry of the path.
+        after_entry: Option<(EntryMode, String)>,
+        /// The baseline entry of the path.
+        before_entry: Option<(EntryMode, String)>,
+        /// The grouped passage candidates (SPEC 10.3).
+        candidates: Vec<GroupDraft>,
+        /// The material of the fallback whole-file decision.
+        fallback: WholeFileFallback<'a>,
+    },
+}
+
+/// The material a failed passage grouping needs to enlarge into one
+/// whole-file decision (SPEC 10.3).
+struct WholeFileFallback<'a> {
+    /// The complete parsed patch of the file.
+    patch: &'a domain::SourcePatch,
+    /// The presentation hunks of the patch.
+    hunks: Vec<markdown::HunkLines>,
+    /// The baseline side's text.
+    before: &'a str,
+    /// The candidate side's text.
+    after: &'a str,
+    /// The baseline side's structure.
+    before_structure: markdown::DocumentStructure,
+    /// The candidate side's structure.
+    after_structure: markdown::DocumentStructure,
+}
+
+/// Groups one changed file (SPEC 10.2-10.3) without touching Git: the
+/// grouping reads only the batch-read blobs and the parsed patch, so a
+/// worker can group every file it claimed before any proof process runs.
+fn group_one_file_prepare<'a>(
+    blobs: &'a BTreeMap<String, Vec<u8>>,
+    change: &'a CollectedChange,
+) -> Result<(FileDraft, FilePlan<'a>), ManifestError> {
     let CollectedChange { entry, patch } = change;
     let path = entry.path.clone();
     let before_entry = entry
@@ -2489,21 +2832,39 @@ fn group_one_file(
     };
 
     // Both sides' exact bytes: the source the grouping reads (SPEC 10.2
-    // step 3).
+    // step 3), from the one batch that read every changed document.
     let before_bytes = match &entry.entry_before {
-        Some(before) => Some(git.read_blob(&before.blob_oid)?),
+        Some(before) => {
+            Some(
+                blobs
+                    .get(&before.blob_oid)
+                    .ok_or_else(|| ManifestError::PatchContract {
+                        detail: format!("the before blob of {:?} was not batch-read", path),
+                    })?,
+            )
+        }
         None => None,
     };
     let after_bytes = match &entry.entry_after {
-        Some(after) => Some(git.read_blob(&after.blob_oid)?),
+        Some(after) => {
+            Some(
+                blobs
+                    .get(&after.blob_oid)
+                    .ok_or_else(|| ManifestError::PatchContract {
+                        detail: format!("the after blob of {:?} was not batch-read", path),
+                    })?,
+            )
+        }
         None => None,
     };
-    let before_text = before_bytes
-        .as_deref()
-        .and_then(|bytes| std::str::from_utf8(bytes).ok());
-    let after_text = after_bytes
-        .as_deref()
-        .and_then(|bytes| std::str::from_utf8(bytes).ok());
+    let before_text: Option<&str> = match before_bytes {
+        Some(bytes) => std::str::from_utf8(bytes).ok(),
+        None => None,
+    };
+    let after_text: Option<&str> = match after_bytes {
+        Some(bytes) => std::str::from_utf8(bytes).ok(),
+        None => None,
+    };
 
     // A present side that is not readable UTF-8 makes the content opaque:
     // exact bytes, no alignment (SPEC 10.4).
@@ -2526,7 +2887,11 @@ fn group_one_file(
         // An added or deleted file previews its present side; unreadable
         // content falls back to the exact opaque bytes.
         let presentation = if unreadable {
-            markdown::opaque_presentation(scope, before_bytes.as_deref(), after_bytes.as_deref())
+            markdown::opaque_presentation(
+                scope,
+                before_bytes.map(Vec::as_slice),
+                after_bytes.map(Vec::as_slice),
+            )
         } else {
             let before = before_text.unwrap_or_default();
             let after = after_text.unwrap_or_default();
@@ -2549,10 +2914,14 @@ fn group_one_file(
             presentation,
             unit: patch.bytes.clone(),
         }];
-        // The whole-file unit must restore B exactly, whatever made it one
-        // decision.
-        whole_file_applies_exactly(probe, candidate_oid, &path, &before_entry, &patch.bytes)?;
-        return Ok(draft);
+        return Ok((
+            draft,
+            FilePlan::WholeFile {
+                after_entry,
+                before_entry,
+                unit: patch.bytes.as_slice(),
+            },
+        ));
     }
 
     // Readable text on both sides: group the complete hunks (SPEC 10.3).
@@ -2565,12 +2934,9 @@ fn group_one_file(
 
     match proposal {
         markdown::FileGrouping::WholeFile { reason } => {
-            // The whole-file unit must restore B exactly, whatever made
-            // independence unavailable.
-            whole_file_applies_exactly(probe, candidate_oid, &path, &before_entry, &patch.bytes)?;
             draft.whole_file_reason = Some(reason.clone());
             draft.groups = vec![whole_file_passage(
-                &patch,
+                patch,
                 &hunks,
                 &reason,
                 before,
@@ -2578,6 +2944,14 @@ fn group_one_file(
                 &before_structure,
                 &after_structure,
             )];
+            Ok((
+                draft,
+                FilePlan::WholeFile {
+                    after_entry,
+                    before_entry,
+                    unit: patch.bytes.as_slice(),
+                },
+            ))
         }
         markdown::FileGrouping::Groups { groups } => {
             let header_end = patch
@@ -2611,44 +2985,90 @@ fn group_one_file(
                     }
                 })
                 .collect();
-            // Prove the passages exact before issuing them (SPEC 10.2
-            // step 6); a grouping that cannot be shown safe enlarges to
-            // the whole file.
-            if passages_apply_exactly(
-                probe,
-                candidate_oid,
-                &path,
-                &after_entry,
-                &before_entry,
-                &candidates,
-            )? {
-                draft.groups = candidates;
-            } else {
-                let reason = concat!(
-                    "exact-application fallback: the passages could not be ",
-                    "shown safe, so the whole file is one decision"
-                );
-                whole_file_applies_exactly(
-                    probe,
-                    candidate_oid,
-                    &path,
-                    &before_entry,
-                    &patch.bytes,
-                )?;
-                draft.whole_file_reason = Some(reason.to_string());
-                draft.groups = vec![whole_file_passage(
-                    &patch,
-                    &hunks,
-                    reason,
-                    before,
-                    after,
-                    &before_structure,
-                    &after_structure,
-                )];
-            }
+            Ok((
+                draft,
+                FilePlan::Groups {
+                    after_entry,
+                    before_entry,
+                    candidates,
+                    fallback: WholeFileFallback {
+                        patch,
+                        hunks,
+                        before,
+                        after,
+                        before_structure,
+                        after_structure,
+                    },
+                },
+            ))
         }
     }
-    Ok(draft)
+}
+
+/// Finishes one grouped file once its proof outcome is known: the
+/// whole-file plan proves its unit, and the groups plan issues the
+/// candidates that proved exact or enlarges to the whole file (SPEC 10.2
+/// step 6, 10.3).
+fn group_one_file_assemble(
+    git: &Git,
+    path: &str,
+    draft: FileDraft,
+    plan: FilePlan<'_>,
+    proved: Option<bool>,
+) -> Result<FileDraft, ManifestError> {
+    match plan {
+        FilePlan::WholeFile {
+            after_entry,
+            before_entry,
+            unit,
+        } => {
+            whole_file_applies_exactly(git, path, &after_entry, &before_entry, unit)?;
+            Ok(draft)
+        }
+        FilePlan::Groups {
+            after_entry,
+            before_entry,
+            candidates,
+            fallback,
+        } => {
+            if proved == Some(true) {
+                let mut draft = draft;
+                draft.groups = candidates;
+                return Ok(draft);
+            }
+            let WholeFileFallback {
+                patch,
+                hunks,
+                before,
+                after,
+                before_structure,
+                after_structure,
+            } = fallback;
+            let reason = concat!(
+                "exact-application fallback: the passages could not be ",
+                "shown safe, so the whole file is one decision"
+            );
+            whole_file_applies_exactly(
+                git,
+                path,
+                &after_entry,
+                &before_entry,
+                patch.bytes.as_slice(),
+            )?;
+            let mut draft = draft;
+            draft.whole_file_reason = Some(reason.to_string());
+            draft.groups = vec![whole_file_passage(
+                patch,
+                &hunks,
+                reason,
+                before,
+                after,
+                &before_structure,
+                &after_structure,
+            )];
+            Ok(draft)
+        }
+    }
 }
 
 /// One whole-file group draft from the complete patch.
@@ -2685,8 +3105,7 @@ fn whole_file_passage(
 /// step 6). A `false` result means the grouping cannot be shown safe, not
 /// that Git failed.
 fn passages_apply_exactly(
-    probe: &Git,
-    candidate_oid: &str,
+    git: &Git,
     path: &str,
     after_entry: &Option<(EntryMode, String)>,
     before_entry: &Option<(EntryMode, String)>,
@@ -2694,59 +3113,477 @@ fn passages_apply_exactly(
 ) -> Result<bool, ManifestError> {
     let after = staged_shape(after_entry);
     let before = staged_shape(before_entry);
-    for group in groups {
-        probe.read_tree(candidate_oid)?;
-        if probe.apply_patch_cached(&group.unit, true).is_err() {
-            return Ok(false);
-        }
-        if staged_entry(probe, path)? == after {
-            // A group that changes nothing cannot be a safe decision unit.
-            return Ok(false);
-        }
-        if probe.apply_patch_cached(&group.unit, false).is_err() {
-            return Ok(false);
-        }
-        if staged_entry(probe, path)? != after {
-            return Ok(false);
-        }
+    // Each group's round trip runs on its own disposable index seeded with
+    // the candidate's own entry of this path, because every patch it
+    // applies touches this one path (SPEC 10.2 step 6). The tasks share
+    // nothing, so the rounds of one large file run beside every other
+    // file's work instead of after it (SPEC 17.5).
+    let rounds = prove_group_rounds(git, path, after_entry, groups, &after)?;
+    if !rounds.iter().all(|round| *round) {
+        return Ok(false);
     }
     // The composition: latest position first, so each patch's recorded
-    // line numbers stay valid.
-    probe.read_tree(candidate_oid)?;
-    for group in groups.iter().rev() {
-        if probe.apply_patch_cached(&group.unit, true).is_err() {
+    // line numbers stay valid. One process applies the whole series.
+    let temp_index = reserve_temp_index().map_err(ManifestError::Io)?;
+    let mut probe = git.clone();
+    probe.set_env_override("GIT_INDEX_FILE", &temp_index);
+    let outcome = (|| {
+        seed_probe_entry(&probe, &temp_index, path, after_entry)?;
+        let units: Vec<&[u8]> = groups
+            .iter()
+            .rev()
+            .map(|group| group.unit.as_slice())
+            .collect();
+        if probe.apply_patch_documents_cached(&units, true).is_err() {
             return Ok(false);
         }
+        Ok(staged_entry(&probe, &temp_index, path)? == before)
+    })();
+    // The disposable index never outlives the proof.
+    let _ = fs::remove_file(&temp_index);
+    outcome
+}
+
+/// Below this many groups, one thread proves the file's groups in order;
+/// above it, the groups share threads of their own, because one file can
+/// hold most of a comparison's changes (SPEC 17.5).
+const PARALLEL_GROUP_ROUNDS: usize = 6;
+
+/// Probes the disposable-index plumbing once per proof context
+/// (SPEC 16.6 item 2): the seed itself is written in process, so the
+/// first Git call through the disposable index would otherwise be an
+/// apply, whose failure can also mean plain nonapplicability. Reading
+/// the just-written entry back through Git fails typed when the layer is
+/// broken, and a readback that disagrees with the written entry is a
+/// writer bug, never a verdict about the patches.
+fn validate_probe_plumbing(
+    git: &Git,
+    path: &str,
+    after_entry: &Option<(EntryMode, String)>,
+) -> Result<(), ManifestError> {
+    let temp_index = reserve_temp_index().map_err(ManifestError::Io)?;
+    let mut probe = git.clone();
+    probe.set_env_override("GIT_INDEX_FILE", &temp_index);
+    let outcome = (|| {
+        seed_probe_entry(&probe, &temp_index, path, after_entry)?;
+        let read = probe.staged_entry_of(&OsString::from(path))?;
+        let expected = after_entry
+            .as_ref()
+            .map(|(mode, oid)| (mode.as_str().to_string(), oid.clone()));
+        if read != expected {
+            return Err(ManifestError::Git(GitError::MalformedOutput {
+                command: "ls-files --stage".to_string(),
+                detail: format!(
+                    "the written probe index of {path:?} read back as {read:?}, expected {expected:?}"
+                ),
+            }));
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_file(&temp_index);
+    outcome
+}
+
+/// Proves every group's round trip, each on its own disposable index.
+fn prove_group_rounds(
+    git: &Git,
+    path: &str,
+    after_entry: &Option<(EntryMode, String)>,
+    groups: &[GroupDraft],
+    after: &Option<(String, String)>,
+) -> Result<Vec<bool>, ManifestError> {
+    validate_probe_plumbing(git, path, after_entry)?;
+    let one_round = |group: &GroupDraft| -> Result<bool, ManifestError> {
+        let temp_index = reserve_temp_index().map_err(ManifestError::Io)?;
+        let mut probe = git.clone();
+        probe.set_env_override("GIT_INDEX_FILE", &temp_index);
+        let outcome = (|| {
+            seed_probe_entry(&probe, &temp_index, path, after_entry)?;
+            if probe.apply_patch_cached(&group.unit, true).is_err() {
+                return Ok(false);
+            }
+            if staged_entry(&probe, &temp_index, path)? == *after {
+                // A group that changes nothing cannot be a safe decision
+                // unit.
+                return Ok(false);
+            }
+            if probe.apply_patch_cached(&group.unit, false).is_err() {
+                return Ok(false);
+            }
+            Ok(staged_entry(&probe, &temp_index, path)? == *after)
+        })();
+        let _ = fs::remove_file(&temp_index);
+        outcome
+    };
+    if groups.len() <= PARALLEL_GROUP_ROUNDS {
+        return groups.iter().map(one_round).collect();
     }
-    Ok(staged_entry(probe, path)? == before)
+    // Enough groups share one file that proving them in order would decide
+    // the whole comparison's wait: the rounds run beside each other, and
+    // every answer comes back in group order whatever it is.
+    let threads = groups.len().min(8);
+    let chunk = groups.len().div_ceil(threads);
+    let answers: Vec<std::sync::Mutex<Option<Result<bool, ManifestError>>>> =
+        groups.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for (worker, chunk_of_groups) in groups.chunks(chunk).enumerate() {
+            let answers = &answers;
+            scope.spawn(move || {
+                let base = worker * chunk;
+                for (offset, group) in chunk_of_groups.iter().enumerate() {
+                    *answers[base + offset]
+                        .lock()
+                        .expect("the answer slot is free") = Some(one_round(group));
+                }
+            });
+        }
+    });
+    answers
+        .into_iter()
+        .map(|answer| {
+            answer
+                .into_inner()
+                .expect("the workers finished")
+                .expect("every group answered")
+        })
+        .collect()
+}
+
+/// One file of a batched proof chunk: the parts of a light file's plan
+/// the chunk runner drives.
+struct ChunkFile<'a> {
+    /// The repository-relative path.
+    path: String,
+    /// The candidate entry of the path; a light file always holds one,
+    /// because an added or deleted file is a whole-file decision.
+    after_entry: (EntryMode, String),
+    /// The baseline entry as the index reads it back.
+    before_shape: Option<(String, String)>,
+    /// The passage candidates to prove.
+    groups: &'a [GroupDraft],
+}
+
+/// Proves the passage candidates of several light files through one
+/// shared disposable index (SPEC 10.2 step 6, 17.5).
+///
+/// Patches of different files touch disjoint index entries, so one Git
+/// process carries one round step — every file's reverse application,
+/// then every file's forward application — and the per-file verdicts
+/// read back in process. The groups of one file still run in order,
+/// because group g+1's reverse must meet the candidate entry, not the
+/// entry group g reversed. A batch process that fails retries its
+/// members alone on the shared index, so one nonapplicable group never
+/// condemns the other files of its step, and a file that leaves the
+/// verified candidate state is excluded from later steps with its
+/// verdict already false. The compositions of the fully proven files
+/// batch the same way, each file's units latest position first.
+fn prove_chunk(git: &Git, files: &[ChunkFile<'_>]) -> Result<Vec<bool>, ManifestError> {
+    let mut verdicts = vec![true; files.len()];
+    if files.is_empty() {
+        return Ok(verdicts);
+    }
+    let temp_index = reserve_temp_index().map_err(ManifestError::Io)?;
+    let mut probe = git.clone();
+    probe.set_env_override("GIT_INDEX_FILE", &temp_index);
+    let width = match probe.object_format().map_err(ManifestError::Git)? {
+        ObjectFormat::Sha1 => 20,
+        ObjectFormat::Sha256 => 32,
+    };
+    let outcome = (|| {
+        // One index seeded with every file's candidate entry, in the
+        // path order Git requires.
+        let entries: Vec<(&str, &str, &str)> = files
+            .iter()
+            .map(|file| {
+                (
+                    file.after_entry.0.as_str(),
+                    file.after_entry.1.as_str(),
+                    file.path.as_str(),
+                )
+            })
+            .collect();
+        write_probe_index_entries(&temp_index, width, &entries).map_err(ManifestError::Io)?;
+        // The plumbing probe: the whole seeded index reads back through
+        // one Git listing, so a broken disposable layer fails the chunk
+        // typed and a disagreement names the writer (SPEC 16.6 item 2).
+        let listed = probe.ls_files_stage()?;
+        for file in files {
+            let expected = (
+                file.after_entry.0.as_str().to_string(),
+                file.after_entry.1.clone(),
+            );
+            let read = listed
+                .iter()
+                .find(|entry| {
+                    entry.stage == 0 && entry.path.as_encoded_bytes() == file.path.as_bytes()
+                })
+                .map(|entry| (entry.mode.clone(), entry.oid.clone()));
+            if read.as_ref() != Some(&expected) {
+                return Err(ManifestError::Git(GitError::MalformedOutput {
+                    command: "ls-files --stage".to_string(),
+                    detail: format!(
+                        "the written probe index of {:?} read back as {read:?}, expected {expected:?}",
+                        file.path
+                    ),
+                }));
+            }
+        }
+
+        // The rounds: step r proves the r-th group of every file that
+        // still holds one and still runs.
+        let after_shapes: Vec<Option<(String, String)>> = files
+            .iter()
+            .map(|file| staged_shape(&Some(file.after_entry.clone())))
+            .collect();
+        let mut running = vec![true; files.len()];
+        let deepest = files
+            .iter()
+            .map(|file| file.groups.len())
+            .max()
+            .unwrap_or(0);
+        for round in 0..deepest {
+            let members: Vec<usize> = (0..files.len())
+                .filter(|&at| running[at] && round < files[at].groups.len())
+                .collect();
+            if members.is_empty() {
+                continue;
+            }
+            let reverses: Vec<&[u8]> = members
+                .iter()
+                .map(|&at| files[at].groups[round].unit.as_slice())
+                .collect();
+            if probe.apply_patch_documents_cached(&reverses, true).is_err() {
+                // Git applied nothing: each member retries its whole
+                // round alone, the per-group semantics.
+                for &at in &members {
+                    let group = &files[at].groups[round];
+                    let ok = probe.apply_patch_cached(&group.unit, true).is_ok()
+                        && staged_entry(&probe, &temp_index, &files[at].path)? != after_shapes[at]
+                        && probe.apply_patch_cached(&group.unit, false).is_ok()
+                        && staged_entry(&probe, &temp_index, &files[at].path)? == after_shapes[at];
+                    if !ok {
+                        verdicts[at] = false;
+                        running[at] = false;
+                    }
+                }
+                continue;
+            }
+            for &at in &members {
+                if staged_entry(&probe, &temp_index, &files[at].path)? == after_shapes[at] {
+                    // A group that changes nothing cannot be a safe
+                    // decision unit; the entry it left is still the
+                    // candidate's, so the file simply stops here.
+                    verdicts[at] = false;
+                    running[at] = false;
+                }
+            }
+            let forwards: Vec<usize> = members.into_iter().filter(|&at| running[at]).collect();
+            if forwards.is_empty() {
+                continue;
+            }
+            let units: Vec<&[u8]> = forwards
+                .iter()
+                .map(|&at| files[at].groups[round].unit.as_slice())
+                .collect();
+            if probe.apply_patch_documents_cached(&units, false).is_err() {
+                for &at in &forwards {
+                    let group = &files[at].groups[round];
+                    let ok = probe.apply_patch_cached(&group.unit, false).is_ok()
+                        && staged_entry(&probe, &temp_index, &files[at].path)? == after_shapes[at];
+                    if !ok {
+                        verdicts[at] = false;
+                        running[at] = false;
+                    }
+                }
+                continue;
+            }
+            for &at in &forwards {
+                if staged_entry(&probe, &temp_index, &files[at].path)? != after_shapes[at] {
+                    verdicts[at] = false;
+                    running[at] = false;
+                }
+            }
+        }
+
+        // The compositions of every fully proven file, each file's units
+        // latest position first, in one process over disjoint paths.
+        let composed: Vec<usize> = (0..files.len())
+            .filter(|&at| running[at] && verdicts[at])
+            .collect();
+        if !composed.is_empty() {
+            let mut units: Vec<&[u8]> = Vec::new();
+            for &at in &composed {
+                for group in files[at].groups.iter().rev() {
+                    units.push(group.unit.as_slice());
+                }
+            }
+            if probe.apply_patch_documents_cached(&units, true).is_ok() {
+                for &at in &composed {
+                    if staged_entry(&probe, &temp_index, &files[at].path)? != files[at].before_shape
+                    {
+                        verdicts[at] = false;
+                    }
+                }
+            } else {
+                // Nothing applied: each member's composition retries
+                // alone, still over its own path alone.
+                for &at in &composed {
+                    let alone: Vec<&[u8]> = files[at]
+                        .groups
+                        .iter()
+                        .rev()
+                        .map(|group| group.unit.as_slice())
+                        .collect();
+                    if probe.apply_patch_documents_cached(&alone, true).is_err()
+                        || staged_entry(&probe, &temp_index, &files[at].path)?
+                            != files[at].before_shape
+                    {
+                        verdicts[at] = false;
+                    }
+                }
+            }
+        }
+        Ok(verdicts)
+    })();
+    let _ = fs::remove_file(&temp_index);
+    outcome
+}
+
+/// Seeds the probe index with exactly one entry: the candidate's own entry
+/// of `path`, or an empty index when the candidate holds no entry there
+/// (SPEC 10.2 step 6 — the proofs read only this path).
+///
+/// The index is written in process as a version-2 `DIRC`, because one
+/// proof round must cost its applies, not its seed (SPEC 17.5). Git's own
+/// `apply --cached` still reads and interprets the file; the stat area
+/// stays zero except the mode, and the checksum trailer stays zero, which
+/// this Git accepts on the read path the proofs use — verified against a
+/// real `apply --cached --reverse` round trip on both object formats —
+/// and rewrites with its own valid trailer when it saves.
+fn seed_probe_entry(
+    probe: &Git,
+    temp_index: &Path,
+    path: &str,
+    after_entry: &Option<(EntryMode, String)>,
+) -> Result<(), ManifestError> {
+    let width = match probe.object_format().map_err(ManifestError::Git)? {
+        ObjectFormat::Sha1 => 20,
+        ObjectFormat::Sha256 => 32,
+    };
+    let entry = after_entry.as_ref().map(|(mode, oid)| (mode, oid.as_str()));
+    write_probe_index(temp_index, width, entry, path).map_err(ManifestError::Io)
+}
+
+/// Writes one disposable probe index: a version-2 `DIRC` holding exactly
+/// one stage-zero entry of `path`, or no entries at all.
+fn write_probe_index(
+    index: &Path,
+    oid_width: usize,
+    entry: Option<(&EntryMode, &str)>,
+    path: &str,
+) -> Result<(), io::Error> {
+    let entries = entry
+        .map(|(mode, oid)| vec![(mode.as_str(), oid, path)])
+        .unwrap_or_default();
+    write_probe_index_entries(index, oid_width, &entries)
+}
+
+/// Writes one disposable probe index holding several entries, in the
+/// path order Git's index requires. Every entry is stage zero; see
+/// [`write_probe_index`] for the format decisions.
+fn write_probe_index_entries(
+    index: &Path,
+    oid_width: usize,
+    entries: &[(&str, &str, &str)],
+) -> Result<(), io::Error> {
+    let mut sorted: Vec<&(&str, &str, &str)> = entries.iter().collect();
+    sorted.sort_by(|one, other| one.2.as_bytes().cmp(other.2.as_bytes()));
+    let mut bytes = Vec::with_capacity(12 + entries.len() * (42 + oid_width + 32) + oid_width);
+    bytes.extend_from_slice(b"DIRC");
+    bytes.extend_from_slice(&2u32.to_be_bytes());
+    bytes.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+    for (mode, oid, path) in sorted {
+        // Ten big-endian stat words: everything zero except the mode,
+        // which `apply --cached` reads and change detection ignores.
+        let mut stat = [0u8; 40];
+        let mode_bits = u32::from_str_radix(mode, 8).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "the entry mode is not octal")
+        })?;
+        stat[24..28].copy_from_slice(&mode_bits.to_be_bytes());
+        bytes.extend_from_slice(&stat);
+        let raw = decode_oid_bytes(oid).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the entry object ID is not hex",
+            )
+        })?;
+        bytes.extend_from_slice(&raw);
+        let name = path.as_bytes();
+        // The name length caps at 0x0fff; a longer name reads to its
+        // terminating NUL, exactly as Git's own writer marks it.
+        bytes.extend_from_slice(&(name.len().min(0x0fff) as u16).to_be_bytes());
+        bytes.extend_from_slice(name);
+        // One to eight NUL bytes, so the entry occupies a multiple of
+        // eight bytes of its own.
+        let unpadded = 42 + oid_width + name.len();
+        let padding = (unpadded + 8) / 8 * 8 - unpadded;
+        bytes.extend(std::iter::repeat_n(0u8, padding));
+    }
+    // The checksum trailer stays zero.
+    bytes.extend(std::iter::repeat_n(0u8, oid_width));
+    fs::write(index, bytes)
+}
+
+/// Decodes one full lowercase hex object ID to its raw bytes.
+fn decode_oid_bytes(oid: &str) -> Option<Vec<u8>> {
+    if !oid.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut raw = Vec::with_capacity(oid.len() / 2);
+    let digits = oid.as_bytes();
+    for pair in digits.chunks(2) {
+        let high = (pair[0] as char).to_digit(16)?;
+        let low = (pair[1] as char).to_digit(16)?;
+        raw.push((high * 16 + low) as u8);
+    }
+    Some(raw)
 }
 
 /// Proves one whole-file patch restores B's entry exactly through the
 /// disposable index. A patch that cannot do so disagrees with the tree
 /// entries and breaks the diff contract.
 fn whole_file_applies_exactly(
-    probe: &Git,
-    candidate_oid: &str,
+    git: &Git,
     path: &str,
+    after_entry: &Option<(EntryMode, String)>,
     before_entry: &Option<(EntryMode, String)>,
     patch: &[u8],
 ) -> Result<(), ManifestError> {
-    probe.read_tree(candidate_oid)?;
-    if let Err(error) = probe.apply_patch_cached(patch, true) {
-        return Err(ManifestError::PatchContract {
-            detail: format!(
-                "the complete patch of {path:?} does not reverse-apply onto C: {error}"
-            ),
-        });
-    }
-    if staged_entry(probe, path)? != staged_shape(before_entry) {
-        return Err(ManifestError::PatchContract {
-            detail: format!(
-                "reversing the complete patch of {path:?} does not recompose the B entry"
-            ),
-        });
-    }
-    Ok(())
+    let temp_index = reserve_temp_index().map_err(ManifestError::Io)?;
+    let mut probe = git.clone();
+    probe.set_env_override("GIT_INDEX_FILE", &temp_index);
+    let outcome = (|| {
+        validate_probe_plumbing(git, path, after_entry)?;
+        seed_probe_entry(&probe, &temp_index, path, after_entry)?;
+        if let Err(error) = probe.apply_patch_cached(patch, true) {
+            return Err(ManifestError::PatchContract {
+                detail: format!(
+                    "the complete patch of {path:?} does not reverse-apply onto C: {error}"
+                ),
+            });
+        }
+        if staged_entry(&probe, &temp_index, path)? != staged_shape(before_entry) {
+            return Err(ManifestError::PatchContract {
+                detail: format!(
+                    "reversing the complete patch of {path:?} does not recompose the B entry"
+                ),
+            });
+        }
+        Ok(())
+    })();
+    // The disposable index never outlives the proof.
+    let _ = fs::remove_file(&temp_index);
+    outcome
 }
 
 /// The staged shape of one immutable entry: mode and blob object ID.
@@ -2758,13 +3595,112 @@ fn staged_shape(entry: &Option<(EntryMode, String)>) -> Option<(String, String)>
 
 /// The staged entry of `path` in the probe index: its mode and blob object
 /// ID, or `None` when the path holds no stage-zero entry.
-fn staged_entry(probe: &Git, path: &str) -> Result<Option<(String, String)>, ManifestError> {
-    let wanted = OsString::from(path);
-    let entry = probe
-        .ls_files_stage()?
-        .into_iter()
-        .find(|entry| entry.stage == 0 && entry.path == wanted);
-    Ok(entry.map(|entry| (entry.mode, entry.oid)))
+///
+/// The probe index is Margin's own disposable artifact at a known path, so
+/// the proof reads the file itself instead of paying one Git process per
+/// check: the entry bytes are the documented `DIRC` format every Git writes
+/// the same way, and a file this reader cannot understand — an index
+/// version or extension it does not parse — falls back to the adapter's
+/// `ls-files` read, never to a guess (SPEC 10.2 step 6, 17.5).
+fn staged_entry(
+    probe: &Git,
+    index_path: &Path,
+    path: &str,
+) -> Result<Option<(String, String)>, ManifestError> {
+    // The object width decides the entry layout: a SHA-256 repository
+    // stores 32-byte identifiers where a SHA-1 repository stores 20. The
+    // adapter memoizes the format, so this costs one process per
+    // operation, not per check.
+    let width = match probe.object_format().map_err(ManifestError::from)? {
+        ObjectFormat::Sha1 => 20,
+        ObjectFormat::Sha256 => 32,
+    };
+    match staged_entry_from_index_file(index_path, path, width) {
+        Ok(entry) => Ok(entry),
+        Err(IndexRead::Absent) => Ok(None),
+        Err(IndexRead::Unparsable) => probe
+            .staged_entry_of(&OsString::from(path))
+            .map_err(ManifestError::from),
+    }
+}
+
+/// Why one probe index file could not be read in-process.
+enum IndexRead {
+    /// The file does not exist: no entry can be staged.
+    Absent,
+    /// The bytes are not an index this reader understands.
+    Unparsable,
+}
+
+/// Reads one path's stage-zero entry from a `DIRC` index file of version 2
+/// or 3: the entry's mode and blob object ID, or `None` when the path holds
+/// no entry. The layout is the documented one: a 12-byte header, then per
+/// entry 40 bytes of stat data, the 20-byte object ID, a 2-byte flag word,
+/// two more bytes under version 3's extended flag, the path bytes, and NUL
+/// padding to a multiple of eight.
+fn staged_entry_from_index_file(
+    index_path: &Path,
+    wanted: &str,
+    oid_width: usize,
+) -> Result<Option<(String, String)>, IndexRead> {
+    let bytes = match fs::read(index_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(IndexRead::Absent),
+        Err(_) => return Err(IndexRead::Unparsable),
+    };
+    let read_u32 = |at: usize| -> Option<u32> {
+        let raw = bytes.get(at..at + 4)?;
+        Some(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]))
+    };
+    if &bytes.get(..4).ok_or(IndexRead::Unparsable)? != b"DIRC" {
+        return Err(IndexRead::Unparsable);
+    }
+    let version = read_u32(4).ok_or(IndexRead::Unparsable)?;
+    if version != 2 && version != 3 {
+        // Version 4 compresses paths; this reader does not guess.
+        return Err(IndexRead::Unparsable);
+    }
+    let count = read_u32(8).ok_or(IndexRead::Unparsable)? as usize;
+    let header_base = 40 + oid_width;
+    let mut at = 12usize;
+    for _ in 0..count {
+        let flags = bytes
+            .get(at + header_base..at + header_base + 2)
+            .map(|raw| u16::from_be_bytes([raw[0], raw[1]]))
+            .ok_or(IndexRead::Unparsable)?;
+        let header = if version == 3 && flags & 0x4000 != 0 {
+            at + header_base + 4
+        } else {
+            at + header_base + 2
+        };
+        let Some(rest) = bytes.get(header..) else {
+            return Err(IndexRead::Unparsable);
+        };
+        let path_end = rest
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or(IndexRead::Unparsable)?;
+        let stored = &rest[..path_end];
+        // The entry occupies a multiple of eight bytes counted from its
+        // own start, with at least one NUL after the path — Git pads per
+        // entry, never from the file offset.
+        let fixed = header - at + path_end;
+        let entry_size = (fixed + 8) & !7;
+        if stored != wanted.as_bytes() {
+            at += entry_size;
+            continue;
+        }
+        let mode = read_u32(at + 24).ok_or(IndexRead::Unparsable)?;
+        let sha_raw = bytes
+            .get(at + 40..at + 40 + oid_width)
+            .ok_or(IndexRead::Unparsable)?;
+        let mut hex = String::with_capacity(sha_raw.len() * 2);
+        for byte in sha_raw {
+            hex.push_str(&format!("{byte:02x}"));
+        }
+        return Ok(Some((format!("{mode:06o}"), hex)));
+    }
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -3868,6 +4804,343 @@ impl From<io::Error> for MarkerError {
     }
 }
 
+/// The prefetched, memoized view of one first-parent history walk (SPEC
+/// 8.4-8.7, 17.5).
+///
+/// The walks of SPEC 8.5 (baseline selection), 8.7 (receipt scans), and
+/// 5.5 (timeline) all read the same first-parent ancestry and validate the
+/// markers they pass under the same rules. Reading each fact through one
+/// fresh Git process per commit made a whole-history walk scale one process
+/// per commit, and the rule 6 recursion re-walked the same ancestry per
+/// review, so a page of the timeline cost thousands of processes (SPEC 17.5
+/// forbids process-per-document scaling for the same reason). One
+/// `HistoryWalk` reads the ancestry once — one `rev-list`, one
+/// `cat-file --batch`, one `diff-tree --stdin` — and then answers every
+/// later question from memory.
+///
+/// The walk caches immutable commit facts across operations. Call
+/// [`HistoryWalk::forget_context`] before each new observation to check
+/// shallow history, grafts, and replacement refs again. Context refusals
+/// stay separate from the cached facts about each commit.
+pub struct HistoryWalk {
+    /// The adapter every uncached read falls back to. One clone, shared
+    /// with the creating adapter through the memoized object format, so a
+    /// walk kept alive by a long process adds no repeated reads.
+    git: Git,
+    /// The rule 7 context problem, computed once per walk: shallow
+    /// repositories, grafts, and replacement refs cannot change while one
+    /// operation holds this view. A process failure is not cached, so the
+    /// next question sees it again.
+    context: Option<Option<MarkerInvalid>>,
+    /// The loaded first-parent history and the commit it starts from.
+    history: Option<(String, Vec<String>)>,
+    /// Commit objects, prefetched in one batch and extended per read.
+    commits: HashMap<String, CommitObject>,
+    /// The paths each commit changed against its first parent, prefetched
+    /// in one batch (rule 5).
+    changed: HashMap<String, Vec<OsString>>,
+    /// Scope digests by canonical descriptor input, so one walk hashes each
+    /// distinct descriptor once (rule 2).
+    scope_ids: HashMap<Vec<u8>, String>,
+    /// Marker validation outcomes by commit. Only a decided validation is
+    /// memoized: a process failure stays a failure the caller sees again.
+    markers: HashMap<String, Result<ValidMarker, MarkerInvalid>>,
+}
+
+impl HistoryWalk {
+    /// Starts one empty walk over `git`.
+    pub fn new(git: &Git) -> HistoryWalk {
+        HistoryWalk {
+            git: git.clone(),
+            context: None,
+            history: None,
+            commits: HashMap::new(),
+            changed: HashMap::new(),
+            scope_ids: HashMap::new(),
+            markers: HashMap::new(),
+        }
+    }
+
+    /// The adapter this walk falls back to.
+    pub fn git(&self) -> &Git {
+        &self.git
+    }
+
+    /// Forgets the rule 7 context answer, so the next validation of any
+    /// commit re-reads shallow, graft, and replacement state. A caller
+    /// that keeps one walk across repository inspections refreshes the
+    /// context each time it observes; the content-addressed facts —
+    /// commits, trees, diffs, digests — stay valid because objects never
+    /// change under their identifiers.
+    pub fn forget_context(&mut self) {
+        if matches!(self.context, Some(Some(_))) {
+            // An unsupported context may have changed the ancestry and its
+            // diffs. Reload them when the next observation can validate.
+            self.history = None;
+            self.changed.clear();
+        }
+        self.context = None;
+    }
+
+    /// The rule 7 context problem, computed once per walk.
+    fn context_problem(&mut self) -> Result<Option<MarkerInvalid>, MarkerError> {
+        if let Some(cached) = &self.context {
+            return Ok(cached.clone());
+        }
+        let fresh = context_problem(&self.git);
+        if let Ok(decided) = &fresh {
+            self.context = Some(decided.clone());
+        }
+        fresh
+    }
+
+    /// Ensures the first-parent history of `start` is loaded and returns
+    /// the offset `start` sits at. A start already inside the loaded list
+    /// reuses the list — the parent of any commit in a first-parent list is
+    /// the next entry — so the rule 6 recursion never walks a process
+    /// again.
+    fn history_offset(&mut self, start: &str) -> Result<usize, MarkerError> {
+        if let Some((root, list)) = &self.history {
+            if root == start {
+                return Ok(0);
+            }
+            if let Some(position) = list.iter().position(|commit| commit == start) {
+                return Ok(position);
+            }
+        }
+        let list = self
+            .git
+            .first_parent_history(start)
+            .map_err(MarkerError::Git)?;
+        // The whole list is read through two processes before any commit is
+        // examined, so a walk of any length costs a fixed process count.
+        let commits = self
+            .git
+            .read_commits_batch(&list)
+            .map_err(MarkerError::Git)?;
+        let changed = self
+            .git
+            .first_parent_changed_paths_batch(&list)
+            .map_err(MarkerError::Git)?;
+        self.commits.extend(commits);
+        self.changed.extend(changed);
+        let offset = 0;
+        self.history = Some((start.to_string(), list));
+        Ok(offset)
+    }
+
+    /// How many commits the loaded history holds.
+    fn history_len(&self) -> usize {
+        self.history
+            .as_ref()
+            .map(|(_, list)| list.len())
+            .unwrap_or(0)
+    }
+
+    /// The commit at one offset of the loaded history.
+    fn commit_at(&self, index: usize) -> String {
+        self.history
+            .as_ref()
+            .and_then(|(_, list)| list.get(index).cloned())
+            .expect("the walk only indexes inside the loaded history")
+    }
+
+    /// The loaded history as an owned list, for callers that walk it
+    /// themselves (the timeline).
+    fn own_history(&mut self, start: &str) -> Result<Vec<String>, MarkerError> {
+        self.history_offset(start)?;
+        Ok(self
+            .history
+            .as_ref()
+            .expect("the history was just loaded")
+            .1
+            .clone())
+    }
+
+    /// One commit object, from the prefetch or one fresh read.
+    fn commit_object(&mut self, commit: &str) -> Result<CommitObject, MarkerError> {
+        if let Some(object) = self.commits.get(commit) {
+            return Ok(object.clone());
+        }
+        let object = self.git.read_commit(commit)?;
+        self.commits.insert(commit.to_string(), object.clone());
+        Ok(object)
+    }
+
+    /// The scope digest of one canonical descriptor, hashed once per
+    /// distinct descriptor per walk (rule 2).
+    fn scope_id(&mut self, descriptor: &ScopeDescriptor) -> Result<String, MarkerError> {
+        let input = descriptor.digest_input_bytes();
+        if let Some(cached) = self.scope_ids.get(&input) {
+            return Ok(cached.clone());
+        }
+        let computed = Identities::new(&self.git)
+            .and_then(|identities| identities.scope(descriptor))
+            .map_err(MarkerError::Git)?
+            .id();
+        self.scope_ids.insert(input, computed.clone());
+        Ok(computed)
+    }
+
+    /// The paths `commit` changed against its first parent. A prefetched
+    /// diff answers from memory; a commit outside the loaded walk falls
+    /// back to one two-tree diff, which lists the same paths because a
+    /// marker has exactly one parent (rule 3).
+    fn changed_against_first_parent(
+        &mut self,
+        commit: &str,
+        object: &CommitObject,
+    ) -> Result<Vec<OsString>, MarkerError> {
+        if let Some(paths) = self.changed.get(commit) {
+            return Ok(paths.clone());
+        }
+        let parent = object
+            .parents
+            .first()
+            .expect("the caller checked the commit has a parent");
+        let paths = self
+            .git
+            .changed_between_commits(parent, commit)
+            .map_err(MarkerError::Git)?;
+        self.changed.insert(commit.to_string(), paths.clone());
+        Ok(paths)
+    }
+
+    /// Validates one commit as a Margin marker, memoizing the decision.
+    pub fn validate_marker(&mut self, commit: &str) -> Result<ValidMarker, MarkerError> {
+        // Context belongs to this observation, not to the immutable commit.
+        // Do not cache a context refusal with the commit's structural facts.
+        if let Some(problem) = self.context_problem()? {
+            return Err(MarkerError::Invalid(problem));
+        }
+        if let Some(cached) = self.markers.get(commit) {
+            return cached.clone().map_err(MarkerError::Invalid);
+        }
+        let outcome = self.validate_marker_uncached(commit);
+        match &outcome {
+            Ok(marker) => {
+                self.markers.insert(commit.to_string(), Ok(marker.clone()));
+            }
+            Err(MarkerError::Invalid(problem)) => {
+                self.markers
+                    .insert(commit.to_string(), Err(problem.clone()));
+            }
+            // A process failure is not a decision about the commit: the
+            // next question must see it again.
+            Err(_) => {}
+        }
+        outcome
+    }
+
+    /// The uncached structural validation (SPEC 8.4 rules 1 to 5).
+    fn validate_marker_uncached(&mut self, commit: &str) -> Result<ValidMarker, MarkerError> {
+        let object = self.commit_object(commit)?;
+        let metadata = marker_metadata(&object)?;
+
+        // Rule 2: canonicalization of the recorded descriptor yields the
+        // recorded digest, computed through Git's own hashing (SPEC 8.6).
+        let descriptor: ScopeDescriptor =
+            serde_json::from_str(&metadata.scope_spec).map_err(|_| {
+                MarkerError::Invalid(MarkerInvalid::Trailers(TrailerProblem::InvalidValue {
+                    name: domain::TRAILER_SCOPE_SPEC,
+                    why: "the value is not a scope descriptor",
+                }))
+            })?;
+        let computed = self.scope_id(&descriptor)?;
+        if computed != metadata.scope_digest {
+            return Err(MarkerError::Invalid(MarkerInvalid::ScopeDigestMismatch {
+                trailer: metadata.scope_digest.clone(),
+                computed,
+            }));
+        }
+
+        // Rule 3: exactly one parent equal to the recorded candidate,
+        // except a valid initial root start with `unborn`.
+        let is_root = object.parents.is_empty();
+        match (is_root, metadata.candidate.as_str(), metadata.kind) {
+            (true, domain::CANDIDATE_UNBORN, CommitKind::Start) => {}
+            (true, domain::CANDIDATE_UNBORN, _) => {
+                return Err(MarkerError::Invalid(MarkerInvalid::RootNotStart));
+            }
+            (true, claimed, _) => {
+                return Err(MarkerError::Invalid(MarkerInvalid::CandidateMismatch {
+                    trailer: claimed.to_string(),
+                    parent: None,
+                }));
+            }
+            (false, _, _) => {
+                if object.parents.len() > 1 {
+                    return Err(MarkerError::Invalid(MarkerInvalid::ParentCount {
+                        found: object.parents.len(),
+                    }));
+                }
+                if object.parents[0] != metadata.candidate {
+                    return Err(MarkerError::Invalid(MarkerInvalid::CandidateMismatch {
+                        trailer: metadata.candidate.clone(),
+                        parent: object.parents.first().cloned(),
+                    }));
+                }
+            }
+        }
+
+        // Rule 4: the actual full tree equals the recorded result tree.
+        if object.tree != metadata.result_tree {
+            return Err(MarkerError::Invalid(MarkerInvalid::ResultTreeMismatch {
+                trailer: metadata.result_tree.clone(),
+                actual: object.tree.clone(),
+            }));
+        }
+
+        // Rule 5: no out-of-scope change against the parent; an initial
+        // root start holds only eligible scoped entries.
+        if is_root {
+            start_entry_problem(&self.git, &object.tree, &descriptor)?;
+        } else {
+            self.out_of_scope_problem(commit, &object, &descriptor)?;
+        }
+
+        Ok(ValidMarker {
+            commit: commit.to_string(),
+            kind: metadata.kind,
+            scope: descriptor,
+            scope_digest: metadata.scope_digest,
+            scope_spec: metadata.scope_spec,
+            candidate: metadata.candidate,
+            result_tree: metadata.result_tree,
+            baseline: metadata.baseline,
+            request: metadata.request,
+            plan: metadata.plan,
+            source: metadata.source,
+        })
+    }
+
+    /// Rule 5 for one non-root marker: no path the commit changed against
+    /// its first parent may lie outside the marker's own scope. The
+    /// prefetched per-commit diff lists exactly the paths whose tree entry
+    /// (mode or object ID) differs from the parent's, which is the same set
+    /// two full tree listings derive.
+    fn out_of_scope_problem(
+        &mut self,
+        commit: &str,
+        object: &CommitObject,
+        descriptor: &ScopeDescriptor,
+    ) -> Result<(), MarkerError> {
+        let changed = self.changed_against_first_parent(commit, object)?;
+        let mut outside: Vec<String> = changed
+            .iter()
+            .filter(|path| !descriptor.contains_path(path.as_encoded_bytes()))
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        if !outside.is_empty() {
+            outside.sort();
+            return Err(MarkerError::Invalid(MarkerInvalid::OutOfScopeChange {
+                paths: outside,
+            }));
+        }
+        Ok(())
+    }
+}
+
 /// Validates one commit as a Margin marker (SPEC 8.4 rules 1 to 5 and 7).
 ///
 /// The check needs no adopted scope: the marker carries its own scope, and
@@ -3877,87 +5150,7 @@ impl From<io::Error> for MarkerError {
 /// baseline selected at C, is likewise composed with SPEC 8.5 rather than
 /// decided here.
 pub fn validate_marker(git: &Git, commit: &str) -> Result<ValidMarker, MarkerError> {
-    if let Some(problem) = context_problem(git)? {
-        return Err(MarkerError::Invalid(problem));
-    }
-    let object = git.read_commit(commit)?;
-    let metadata = marker_metadata(&object)?;
-
-    // Rule 2: canonicalization of the recorded descriptor yields the
-    // recorded digest, computed through Git's own hashing (SPEC 8.6).
-    let descriptor: ScopeDescriptor = serde_json::from_str(&metadata.scope_spec).map_err(|_| {
-        MarkerError::Invalid(MarkerInvalid::Trailers(TrailerProblem::InvalidValue {
-            name: domain::TRAILER_SCOPE_SPEC,
-            why: "the value is not a scope descriptor",
-        }))
-    })?;
-    let computed = Identities::new(git)?.scope(&descriptor)?.id();
-    if computed != metadata.scope_digest {
-        return Err(MarkerError::Invalid(MarkerInvalid::ScopeDigestMismatch {
-            trailer: metadata.scope_digest.clone(),
-            computed,
-        }));
-    }
-
-    // Rule 3: exactly one parent equal to the recorded candidate, except a
-    // valid initial root start with `unborn`.
-    let is_root = object.parents.is_empty();
-    match (is_root, metadata.candidate.as_str(), metadata.kind) {
-        (true, domain::CANDIDATE_UNBORN, CommitKind::Start) => {}
-        (true, domain::CANDIDATE_UNBORN, _) => {
-            return Err(MarkerError::Invalid(MarkerInvalid::RootNotStart));
-        }
-        (true, claimed, _) => {
-            return Err(MarkerError::Invalid(MarkerInvalid::CandidateMismatch {
-                trailer: claimed.to_string(),
-                parent: None,
-            }));
-        }
-        (false, _, _) => {
-            if object.parents.len() > 1 {
-                return Err(MarkerError::Invalid(MarkerInvalid::ParentCount {
-                    found: object.parents.len(),
-                }));
-            }
-            if object.parents[0] != metadata.candidate {
-                return Err(MarkerError::Invalid(MarkerInvalid::CandidateMismatch {
-                    trailer: metadata.candidate.clone(),
-                    parent: object.parents.first().cloned(),
-                }));
-            }
-        }
-    }
-
-    // Rule 4: the actual full tree equals the recorded result tree.
-    if object.tree != metadata.result_tree {
-        return Err(MarkerError::Invalid(MarkerInvalid::ResultTreeMismatch {
-            trailer: metadata.result_tree.clone(),
-            actual: object.tree.clone(),
-        }));
-    }
-
-    // Rule 5: no out-of-scope change against the parent; an initial root
-    // start holds only eligible scoped entries.
-    if is_root {
-        start_entry_problem(git, &object.tree, &descriptor)?;
-    } else {
-        let parent_tree = git.read_commit(&object.parents[0])?.tree;
-        out_of_scope_problem(git, &parent_tree, &object.tree, &descriptor)?;
-    }
-
-    Ok(ValidMarker {
-        commit: commit.to_string(),
-        kind: metadata.kind,
-        scope: descriptor,
-        scope_digest: metadata.scope_digest,
-        scope_spec: metadata.scope_spec,
-        candidate: metadata.candidate,
-        result_tree: metadata.result_tree,
-        baseline: metadata.baseline,
-        request: metadata.request,
-        plan: metadata.plan,
-        source: metadata.source,
-    })
+    HistoryWalk::new(git).validate_marker(commit)
 }
 
 /// Extracts the reserved metadata of one raw commit object (rule 1).
@@ -3990,51 +5183,6 @@ fn context_problem(git: &Git) -> Result<Option<MarkerInvalid>, MarkerError> {
         }));
     }
     Ok(None)
-}
-
-/// Checks rule 5 for a non-root marker: the commit changes no out-of-scope
-/// entry relative to its parent.
-fn out_of_scope_problem(
-    git: &Git,
-    parent_tree: &str,
-    commit_tree: &str,
-    descriptor: &ScopeDescriptor,
-) -> Result<(), MarkerError> {
-    let parent = out_of_scope_entries(git, parent_tree, descriptor)?;
-    let current = out_of_scope_entries(git, commit_tree, descriptor)?;
-    let mut changed: Vec<String> = parent
-        .keys()
-        .chain(current.keys())
-        .cloned()
-        .collect::<BTreeSet<String>>()
-        .into_iter()
-        .filter(|path| parent.get(path) != current.get(path))
-        .collect();
-    if !changed.is_empty() {
-        changed.sort();
-        return Err(MarkerError::Invalid(MarkerInvalid::OutOfScopeChange {
-            paths: changed,
-        }));
-    }
-    Ok(())
-}
-
-/// Maps every out-of-scope entry of one tree to its mode and object ID.
-fn out_of_scope_entries(
-    git: &Git,
-    tree: &str,
-    descriptor: &ScopeDescriptor,
-) -> Result<BTreeMap<String, String>, MarkerError> {
-    let mut entries = BTreeMap::new();
-    for entry in git.ls_tree(tree)? {
-        if !descriptor.contains_path(entry.path.as_encoded_bytes()) {
-            entries.insert(
-                entry.path.to_string_lossy().into_owned(),
-                format!("{} {}", entry.mode, entry.oid),
-            );
-        }
-    }
-    Ok(entries)
 }
 
 /// Checks rule 5 for an initial root start: its tree holds only eligible
@@ -4191,93 +5339,314 @@ impl From<io::Error> for BaselineError {
 /// When the required history is unavailable, or no valid matching marker
 /// exists, the result is [`BaselineError::Unavailable`]; the caller never
 /// falls back to an arbitrary initial commit and labels it reviewed.
+/// The walk of [`select_baseline`] against one full scope digest string,
+/// such as the digest a recorded marker carries (SPEC 8.4 rule 2). The
+/// string form is what every comparison inside the walk uses, so receipt
+/// validation reuses the same walk without recomputing an identity.
+impl HistoryWalk {
+    /// The baseline selection walk of SPEC 8.5 from `start`, over the
+    /// prefetched ancestry.
+    fn select_baseline_matching(
+        &mut self,
+        start: &str,
+        scope_id: &str,
+    ) -> Result<ValidMarker, BaselineError> {
+        let offset = self.history_offset(start).map_err(walk_failed)?;
+        let total = self.history_len();
+        let mut index = offset;
+        while index < total {
+            let commit = self.commit_at(index);
+            let marker = match self.validate_marker(&commit) {
+                Ok(marker) => marker,
+                // The context this marker depends on does not exist here, so
+                // no baseline exists either (SPEC 8.4 rule 7, 8.5).
+                Err(MarkerError::Invalid(MarkerInvalid::UnavailableContext { what })) => {
+                    return Err(BaselineError::Unavailable(BaselineUnavailable::Context {
+                        what,
+                    }));
+                }
+                // An invalid or copied marker confers no approval; the walk
+                // passes it (SPEC 8.4).
+                Err(MarkerError::Invalid(_)) => {
+                    index += 1;
+                    continue;
+                }
+                Err(MarkerError::Git(error)) => return Err(BaselineError::Git(error)),
+                Err(MarkerError::Io(error)) => return Err(BaselineError::Io(error)),
+            };
+            if marker.scope_digest != scope_id {
+                if marker.kind == CommitKind::Start {
+                    // A start resets the anchor for its own scope. The walk
+                    // stops here, so the adopted scope needs a new start
+                    // rather than a review below this one (SPEC 8.2, 8.5).
+                    return Err(BaselineError::Unavailable(
+                        BaselineUnavailable::ForeignStart {
+                            commit: marker.commit,
+                            scope_digest: marker.scope_digest,
+                        },
+                    ));
+                }
+                // A non-start marker of another scope is ordinary history
+                // here.
+                index += 1;
+                continue;
+            }
+            match marker.kind {
+                CommitKind::Start => return Ok(marker),
+                CommitKind::Review => {
+                    if self.review_records_its_own_baseline(&marker, &marker.scope_digest)? {
+                        return Ok(marker);
+                    }
+                    // The review claims a baseline that selection at its own
+                    // candidate does not reproduce, so rule 6 fails for it and
+                    // the walk passes it (SPEC 8.4 rule 6).
+                    index += 1;
+                    continue;
+                }
+                // A draft or a restore never anchors the scope (SPEC 9.5).
+                CommitKind::Draft | CommitKind::Restore => {
+                    index += 1;
+                    continue;
+                }
+            }
+        }
+        Err(BaselineError::Unavailable(BaselineUnavailable::Exhausted {
+            walked: total - offset,
+        }))
+    }
+
+    /// Selects the baseline of the adopted scope from `candidate` (SPEC
+    /// 8.5).
+    pub fn select_baseline(
+        &mut self,
+        candidate: &str,
+        scope: &ScopeDigest,
+    ) -> Result<ValidMarker, BaselineError> {
+        self.select_baseline_matching(candidate, &scope.id())
+    }
+
+    /// Checks SPEC 8.4 rule 6 for one review marker: the baseline it
+    /// records is the one Section 8.5 selects at the review's own
+    /// candidate, under the marker's own recorded scope digest.
+    fn review_records_its_own_baseline(
+        &mut self,
+        marker: &ValidMarker,
+        scope_id: &str,
+    ) -> Result<bool, BaselineError> {
+        // Validation already proved the recorded candidate is the single
+        // parent, which is the candidate the review was selected against.
+        let selected = match self.select_baseline_matching(&marker.candidate, scope_id) {
+            Ok(selected) => selected,
+            // The review's own ancestry supplies no anchor to compare with,
+            // so its recorded baseline cannot be reproduced.
+            Err(BaselineError::Unavailable(_)) => return Ok(false),
+            Err(other) => return Err(other),
+        };
+        Ok(marker.baseline.as_deref() == Some(selected.commit.as_str()))
+    }
+
+    /// Scans the complete unfiltered first-parent ancestry of `start` for
+    /// the receipt of one request (SPEC 8.7).
+    pub fn find_receipt(
+        &mut self,
+        start: &str,
+        kind: CommitKind,
+        request_id: &str,
+        fingerprint: &str,
+    ) -> Result<ReceiptLookup, ReceiptScanError> {
+        let offset = self.history_offset(start).map_err(receipt_scan_failed)?;
+        let total = self.history_len();
+        let mut index = offset;
+        while index < total {
+            let commit = self.commit_at(index);
+            let object = self.commit_object(&commit).map_err(receipt_scan_failed)?;
+            let carries_request = domain::parse_trailer_block(&object.message)
+                .map(|trailers| {
+                    trailers
+                        .iter()
+                        .any(|trailer| trailer.token == domain::TRAILER_REQUEST)
+                })
+                .unwrap_or(false);
+            if carries_request {
+                let marker = match self.validate_marker(&commit) {
+                    Ok(marker) => marker,
+                    // The context every marker of this repository depends on
+                    // is unavailable (SPEC 8.4 rule 7), so no receipt can be
+                    // validated and the absence of the request ID cannot be
+                    // established. This is a typed unavailable outcome,
+                    // never silence (SPEC 8.7).
+                    Err(MarkerError::Invalid(MarkerInvalid::UnavailableContext { what })) => {
+                        return Err(ReceiptScanError::UnavailableContext { what });
+                    }
+                    // An invalid or copied marker confers nothing, so it is
+                    // not a receipt; the scan passes it (SPEC 8.4, 8.7).
+                    Err(MarkerError::Invalid(_)) => {
+                        index += 1;
+                        continue;
+                    }
+                    Err(MarkerError::Git(error)) => return Err(ReceiptScanError::Git(error)),
+                    Err(MarkerError::Io(error)) => return Err(ReceiptScanError::Io(error)),
+                };
+                if marker.kind == kind && marker.request.as_deref() == Some(request_id) {
+                    // Rule 6 of SPEC 8.4 for a review receipt: the baseline
+                    // it records is the one Section 8.5 selects at its own
+                    // candidate. The review's ancestry supplying no anchor
+                    // at all fails the rule the same way, so the marker
+                    // stays ordinary history and neither answers nor
+                    // conflicts, whatever fingerprint it records.
+                    if marker.kind == CommitKind::Review {
+                        match self.review_records_its_own_baseline(&marker, &marker.scope_digest) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                index += 1;
+                                continue;
+                            }
+                            Err(BaselineError::Git(error)) => {
+                                return Err(ReceiptScanError::Git(error));
+                            }
+                            Err(BaselineError::Io(error)) => {
+                                return Err(ReceiptScanError::Io(error));
+                            }
+                            Err(BaselineError::Unavailable(_)) => {
+                                index += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    return Ok(if marker.plan.as_deref() == Some(fingerprint) {
+                        ReceiptLookup::Found(Box::new(marker))
+                    } else {
+                        ReceiptLookup::Conflict {
+                            commit: marker.commit.clone(),
+                            recorded: marker.plan.clone(),
+                            requested: fingerprint.to_string(),
+                        }
+                    });
+                }
+            }
+            index += 1;
+        }
+        Ok(ReceiptLookup::Absent)
+    }
+
+    /// Finds the newest valid receipt the first-parent history of `start`
+    /// holds for the adopted scope (SPEC 8.7, 9.7): the answer `doctor`
+    /// gives to whether a request already completed.
+    ///
+    /// The scan is the same walk [`HistoryWalk::find_receipt`] runs — the
+    /// complete unfiltered first-parent ancestry, newest first, with no
+    /// pathspec, no presentation limit, and no early stop — but it matches
+    /// any request, because the recovery inspection holds no request
+    /// identifier of its own. A commit that carries no
+    /// [`domain::TRAILER_REQUEST`] cannot be a receipt; one that does is
+    /// validated whole under every rule of SPEC 8.4, including rule 6 for a
+    /// review, so an invalid or copied marker stays ordinary history and
+    /// the scan passes it. A receipt of another scope stays history too.
+    pub fn find_latest_receipt(
+        &mut self,
+        start: &str,
+        scope_digest: &str,
+    ) -> Result<ReceiptPresence, ReceiptScanError> {
+        let offset = self.history_offset(start).map_err(receipt_scan_failed)?;
+        let total = self.history_len();
+        let mut index = offset;
+        while index < total {
+            let commit = self.commit_at(index);
+            let object = self.commit_object(&commit).map_err(receipt_scan_failed)?;
+            let carries_request = domain::parse_trailer_block(&object.message)
+                .map(|trailers| {
+                    trailers
+                        .iter()
+                        .any(|trailer| trailer.token == domain::TRAILER_REQUEST)
+                })
+                .unwrap_or(false);
+            if carries_request {
+                let marker = match self.validate_marker(&commit) {
+                    Ok(marker) => marker,
+                    // The context every marker of this repository depends on
+                    // is unavailable (SPEC 8.4 rule 7), so no receipt can be
+                    // validated and the absence of a receipt is not
+                    // established. This is one unavailable finding, never a
+                    // quiet `Absent` (SPEC 8.7).
+                    Err(MarkerError::Invalid(MarkerInvalid::UnavailableContext { what })) => {
+                        return Ok(ReceiptPresence::Unavailable { what });
+                    }
+                    // An invalid or copied marker confers nothing, so it is
+                    // not a receipt; the scan passes it (SPEC 8.4, 8.7).
+                    Err(MarkerError::Invalid(_)) => {
+                        index += 1;
+                        continue;
+                    }
+                    Err(MarkerError::Git(error)) => return Err(ReceiptScanError::Git(error)),
+                    Err(MarkerError::Io(error)) => return Err(ReceiptScanError::Io(error)),
+                };
+                if marker.scope_digest != scope_digest {
+                    index += 1;
+                    continue;
+                }
+                // Rule 6 of SPEC 8.4 for a review receipt: the baseline it
+                // records is the one Section 8.5 selects at its own
+                // candidate. A review that fails the rule stays ordinary
+                // history and is no receipt, whatever request it carries.
+                if marker.kind == CommitKind::Review {
+                    match self.review_records_its_own_baseline(&marker, &marker.scope_digest) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            index += 1;
+                            continue;
+                        }
+                        Err(BaselineError::Git(error)) => return Err(ReceiptScanError::Git(error)),
+                        Err(BaselineError::Io(error)) => return Err(ReceiptScanError::Io(error)),
+                        Err(BaselineError::Unavailable(_)) => {
+                            index += 1;
+                            continue;
+                        }
+                    }
+                }
+                return Ok(ReceiptPresence::Present(Box::new(ReceiptFinding {
+                    commit: marker.commit.clone(),
+                    kind: marker.kind,
+                    scope_digest: marker.scope_digest.clone(),
+                    request: marker.request.clone().unwrap_or_default(),
+                    plan: marker.plan.clone(),
+                })));
+            }
+            index += 1;
+        }
+        Ok(ReceiptPresence::Absent)
+    }
+}
+
+/// The baseline error of a history the walk could not read.
+fn walk_failed(error: MarkerError) -> BaselineError {
+    match error {
+        MarkerError::Git(inner) => BaselineError::Git(inner),
+        MarkerError::Io(inner) => BaselineError::Io(inner),
+        MarkerError::Invalid(problem) => {
+            unreachable!("a history read cannot decide a marker: {problem}")
+        }
+    }
+}
+
+/// The receipt-scan error of a history the walk could not read.
+fn receipt_scan_failed(error: MarkerError) -> ReceiptScanError {
+    match error {
+        MarkerError::Git(inner) => ReceiptScanError::Git(inner),
+        MarkerError::Io(inner) => ReceiptScanError::Io(inner),
+        MarkerError::Invalid(problem) => {
+            unreachable!("a history read cannot decide a marker: {problem}")
+        }
+    }
+}
+
+/// Selects the baseline of the adopted scope (SPEC 8.5) through one
+/// prefetched history walk.
 pub fn select_baseline(
     git: &Git,
     candidate: &str,
     scope: &ScopeDigest,
 ) -> Result<ValidMarker, BaselineError> {
-    select_baseline_matching(git, candidate, &scope.id())
-}
-
-/// The walk of [`select_baseline`] against one full scope digest string,
-/// such as the digest a recorded marker carries (SPEC 8.4 rule 2). The
-/// string form is what every comparison inside the walk uses, so receipt
-/// validation reuses the same walk without recomputing an identity.
-fn select_baseline_matching(
-    git: &Git,
-    candidate: &str,
-    scope_id: &str,
-) -> Result<ValidMarker, BaselineError> {
-    let history = git.first_parent_history(candidate)?;
-    for commit in &history {
-        let marker = match validate_marker(git, commit) {
-            Ok(marker) => marker,
-            // The context this marker depends on does not exist here, so
-            // no baseline exists either (SPEC 8.4 rule 7, 8.5).
-            Err(MarkerError::Invalid(MarkerInvalid::UnavailableContext { what })) => {
-                return Err(BaselineError::Unavailable(BaselineUnavailable::Context {
-                    what,
-                }));
-            }
-            // An invalid or copied marker confers no approval; the walk
-            // passes it (SPEC 8.4).
-            Err(MarkerError::Invalid(_)) => continue,
-            Err(MarkerError::Git(error)) => return Err(BaselineError::Git(error)),
-            Err(MarkerError::Io(error)) => return Err(BaselineError::Io(error)),
-        };
-        if marker.scope_digest != scope_id {
-            if marker.kind == CommitKind::Start {
-                // A start resets the anchor for its own scope. The walk
-                // stops here, so the adopted scope needs a new start
-                // rather than a review below this one (SPEC 8.2, 8.5).
-                return Err(BaselineError::Unavailable(
-                    BaselineUnavailable::ForeignStart {
-                        commit: marker.commit,
-                        scope_digest: marker.scope_digest,
-                    },
-                ));
-            }
-            // A non-start marker of another scope is ordinary history here.
-            continue;
-        }
-        match marker.kind {
-            CommitKind::Start => return Ok(marker),
-            CommitKind::Review => {
-                if review_records_its_own_baseline(git, &marker, &marker.scope_digest)? {
-                    return Ok(marker);
-                }
-                // The review claims a baseline that selection at its own
-                // candidate does not reproduce, so rule 6 fails for it and
-                // the walk passes it (SPEC 8.4 rule 6).
-                continue;
-            }
-            // A draft or a restore never anchors the scope (SPEC 9.5).
-            CommitKind::Draft | CommitKind::Restore => continue,
-        }
-    }
-    Err(BaselineError::Unavailable(BaselineUnavailable::Exhausted {
-        walked: history.len(),
-    }))
-}
-
-/// Checks SPEC 8.4 rule 6 for one review marker: the baseline it records is
-/// the one Section 8.5 selects at the review's own candidate, under the
-/// marker's own recorded scope digest.
-fn review_records_its_own_baseline(
-    git: &Git,
-    marker: &ValidMarker,
-    scope_id: &str,
-) -> Result<bool, BaselineError> {
-    // Validation already proved the recorded candidate is the single
-    // parent, which is the candidate the review was selected against.
-    let selected = match select_baseline_matching(git, &marker.candidate, scope_id) {
-        Ok(selected) => selected,
-        // The review's own ancestry supplies no anchor to compare with, so
-        // its recorded baseline cannot be reproduced.
-        Err(BaselineError::Unavailable(_)) => return Ok(false),
-        Err(other) => return Err(other),
-    };
-    Ok(marker.baseline.as_deref() == Some(selected.commit.as_str()))
+    HistoryWalk::new(git).select_baseline(candidate, scope)
 }
 
 // ---------------------------------------------------------------------------
@@ -4415,62 +5784,7 @@ pub fn find_receipt(
     request_id: &str,
     fingerprint: &str,
 ) -> Result<ReceiptLookup, ReceiptScanError> {
-    let history = git.first_parent_history(start)?;
-    for commit in &history {
-        let object = git.read_commit(commit)?;
-        let carries_request = domain::parse_trailer_block(&object.message)
-            .map(|trailers| {
-                trailers
-                    .iter()
-                    .any(|trailer| trailer.token == domain::TRAILER_REQUEST)
-            })
-            .unwrap_or(false);
-        if !carries_request {
-            continue;
-        }
-        let marker = match validate_marker(git, commit) {
-            Ok(marker) => marker,
-            // The context every marker of this repository depends on is
-            // unavailable (SPEC 8.4 rule 7), so no receipt can be validated
-            // and the absence of the request ID cannot be established. This
-            // is a typed unavailable outcome, never silence (SPEC 8.7).
-            Err(MarkerError::Invalid(MarkerInvalid::UnavailableContext { what })) => {
-                return Err(ReceiptScanError::UnavailableContext { what });
-            }
-            // An invalid or copied marker confers nothing, so it is not a
-            // receipt; the scan passes it (SPEC 8.4, 8.7).
-            Err(MarkerError::Invalid(_)) => continue,
-            Err(MarkerError::Git(error)) => return Err(ReceiptScanError::Git(error)),
-            Err(MarkerError::Io(error)) => return Err(ReceiptScanError::Io(error)),
-        };
-        if marker.kind != kind || marker.request.as_deref() != Some(request_id) {
-            continue;
-        }
-        // Rule 6 of SPEC 8.4 for a review receipt: the baseline it records
-        // is the one Section 8.5 selects at its own candidate. The review's
-        // ancestry supplying no anchor at all fails the rule the same way,
-        // so the marker stays ordinary history and neither answers nor
-        // conflicts, whatever fingerprint it records.
-        if marker.kind == CommitKind::Review {
-            match review_records_its_own_baseline(git, &marker, &marker.scope_digest) {
-                Ok(true) => {}
-                Ok(false) => continue,
-                Err(BaselineError::Git(error)) => return Err(ReceiptScanError::Git(error)),
-                Err(BaselineError::Io(error)) => return Err(ReceiptScanError::Io(error)),
-                Err(BaselineError::Unavailable(_)) => continue,
-            }
-        }
-        return Ok(if marker.plan.as_deref() == Some(fingerprint) {
-            ReceiptLookup::Found(Box::new(marker))
-        } else {
-            ReceiptLookup::Conflict {
-                commit: marker.commit.clone(),
-                recorded: marker.plan.clone(),
-                requested: fingerprint.to_string(),
-            }
-        });
-    }
-    Ok(ReceiptLookup::Absent)
+    HistoryWalk::new(git).find_receipt(start, kind, request_id, fingerprint)
 }
 
 /// Finds the newest valid receipt the first-parent history of `start` holds
@@ -4495,58 +5809,7 @@ pub fn find_latest_receipt(
     start: &str,
     scope_digest: &str,
 ) -> Result<ReceiptPresence, ReceiptScanError> {
-    for commit in &git.first_parent_history(start)? {
-        let object = git.read_commit(commit)?;
-        let carries_request = domain::parse_trailer_block(&object.message)
-            .map(|trailers| {
-                trailers
-                    .iter()
-                    .any(|trailer| trailer.token == domain::TRAILER_REQUEST)
-            })
-            .unwrap_or(false);
-        if !carries_request {
-            continue;
-        }
-        let marker = match validate_marker(git, commit) {
-            Ok(marker) => marker,
-            // The context every marker of this repository depends on is
-            // unavailable (SPEC 8.4 rule 7), so no receipt can be validated
-            // and the absence of a receipt is not established. This is one
-            // unavailable finding, never a quiet `Absent` (SPEC 8.7).
-            Err(MarkerError::Invalid(MarkerInvalid::UnavailableContext { what })) => {
-                return Ok(ReceiptPresence::Unavailable { what });
-            }
-            // An invalid or copied marker confers nothing, so it is not a
-            // receipt; the scan passes it (SPEC 8.4, 8.7).
-            Err(MarkerError::Invalid(_)) => continue,
-            Err(MarkerError::Git(error)) => return Err(ReceiptScanError::Git(error)),
-            Err(MarkerError::Io(error)) => return Err(ReceiptScanError::Io(error)),
-        };
-        if marker.scope_digest != scope_digest {
-            continue;
-        }
-        // Rule 6 of SPEC 8.4 for a review receipt: the baseline it records
-        // is the one Section 8.5 selects at its own candidate. A review that
-        // fails the rule stays ordinary history and is no receipt, whatever
-        // request it carries.
-        if marker.kind == CommitKind::Review {
-            match review_records_its_own_baseline(git, &marker, &marker.scope_digest) {
-                Ok(true) => {}
-                Ok(false) => continue,
-                Err(BaselineError::Git(error)) => return Err(ReceiptScanError::Git(error)),
-                Err(BaselineError::Io(error)) => return Err(ReceiptScanError::Io(error)),
-                Err(BaselineError::Unavailable(_)) => continue,
-            }
-        }
-        return Ok(ReceiptPresence::Present(Box::new(ReceiptFinding {
-            commit: marker.commit.clone(),
-            kind: marker.kind,
-            scope_digest: marker.scope_digest.clone(),
-            request: marker.request.clone().unwrap_or_default(),
-            plan: marker.plan.clone(),
-        })));
-    }
-    Ok(ReceiptPresence::Absent)
+    HistoryWalk::new(git).find_latest_receipt(start, scope_digest)
 }
 
 /// The typed refusal when one request ID already names another plan
@@ -4636,11 +5899,11 @@ impl ClassifiedCommit {
 /// stays unfiltered; an empty review commit a path-limited Git log would
 /// hide stays in the timeline (SPEC 8.5).
 fn classify_timeline_commit(
-    git: &Git,
+    walk: &mut HistoryWalk,
     commit: &str,
     path_filter: &[String],
 ) -> Result<ClassifiedCommit, OperationError> {
-    let object = git.read_commit(commit).map_err(OperationError::from)?;
+    let object = walk.commit_object(commit).map_err(history_walk_failed)?;
     let claimed = domain::parse_trailer_block(&object.message)
         .ok()
         .and_then(|trailers| {
@@ -4651,8 +5914,8 @@ fn classify_timeline_commit(
         });
     let (kind, marker, ignored_reason) = match claimed {
         None => (TimelineKind::Ordinary, None, None),
-        Some(_) => match validate_marker(git, commit) {
-            Ok(valid) => match timeline_review_verdict(git, &valid)? {
+        Some(_) => match walk.validate_marker(commit) {
+            Ok(valid) => match timeline_review_verdict(walk, &valid)? {
                 Some(reason) => (TimelineKind::Review, None, Some(reason)),
                 None => (timeline_kind_of(valid.kind), Some(valid), None),
             },
@@ -4670,7 +5933,7 @@ fn classify_timeline_commit(
         None
     } else {
         Some(
-            timeline_changed_paths(git, commit, &object)?
+            timeline_changed_paths(walk.git(), commit, &object)?
                 .iter()
                 .any(|path| passes_filter(path, path_filter)),
         )
@@ -4717,13 +5980,13 @@ fn timeline_kind_of_claimed(message: &[u8]) -> TimelineKind {
 /// own candidate. `Some(reason)` means the review confers nothing and the
 /// entry carries why; a process failure stays a typed operation failure.
 fn timeline_review_verdict(
-    git: &Git,
+    walk: &mut HistoryWalk,
     marker: &ValidMarker,
 ) -> Result<Option<String>, OperationError> {
     if marker.kind != CommitKind::Review {
         return Ok(None);
     }
-    match review_records_its_own_baseline(git, marker, &marker.scope_digest) {
+    match walk.review_records_its_own_baseline(marker, &marker.scope_digest) {
         Ok(true) => Ok(None),
         Ok(false) => Ok(Some(
             "the review records a baseline its own candidate does not select".to_string(),
@@ -4742,6 +6005,19 @@ fn timeline_review_verdict(
 /// execution failure the envelope requires.
 fn history_inspection_failed(error: io::Error) -> OperationError {
     OperationError::new("IO_FAILED", format!("cannot inspect history: {error}"))
+}
+
+/// One process failure of the prefetched history walk, as the typed
+/// execution failure the envelope requires.
+fn history_walk_failed(error: MarkerError) -> OperationError {
+    match error {
+        MarkerError::Git(inner) => OperationError::from(inner),
+        MarkerError::Io(inner) => history_inspection_failed(inner),
+        MarkerError::Invalid(problem) => OperationError::new(
+            problem.public_code(),
+            format!("the history walk rejected a commit: {problem}"),
+        ),
+    }
 }
 
 /// The bounded subject line of one commit message: the first line, capped
@@ -4851,7 +6127,7 @@ struct TimelinePage {
 /// timeline no longer holds — or that belongs to another walk, scope,
 /// policy, filter, or limit — is one `STALE_CURSOR` refusal.
 fn timeline_page(
-    git: &Git,
+    walk: &mut HistoryWalk,
     history: &[String],
     contract: &domain::LogCursorContext,
     start: u64,
@@ -4865,7 +6141,7 @@ fn timeline_page(
         if entries.len() as u64 >= needed {
             break;
         }
-        let classified = classify_timeline_commit(git, commit, &contract.path_filter)?;
+        let classified = classify_timeline_commit(walk, commit, &contract.path_filter)?;
         let collapses = !contract.all_checkpoints
             && classified
                 .marker
@@ -4912,7 +6188,7 @@ fn timeline_page(
         let next = start.saturating_add(limit);
         let mut claimed = contract.clone();
         claimed.offset = next;
-        let digest = Identities::new(git)
+        let digest = Identities::new(walk.git())
             .and_then(|identities| identities.log_cursor(&claimed))
             .map_err(OperationError::from)?;
         Some(format!("{next}-{}", digest.id()))
@@ -5736,32 +7012,58 @@ fn read_setting<T>(
 /// no environment variable is consulted, so the result carries no
 /// environment secrets.
 pub fn read_local_settings(git: &Git) -> Result<LocalSettings, SettingsError> {
+    // One process reads every key (SPEC 17.5); the parse of each value
+    // stays the per-key parse the settings contract defines.
+    let keys = [
+        domain::SETTINGS_KEY_VERSION,
+        domain::SETTINGS_KEY_BRANCH,
+        domain::SETTINGS_KEY_SCOPE,
+        domain::SETTINGS_KEY_AUTO_CHECKPOINT,
+        domain::SETTINGS_KEY_CAPTURE_AFTER_EDIT,
+        domain::SETTINGS_KEY_EDITOR_ARGV,
+    ];
+    let values = git.config_values(&keys).map_err(SettingsError::Git)?;
+    let setting = |key: &'static str| values.get(key).cloned();
     Ok(LocalSettings {
-        version: read_setting(
-            git,
-            domain::SETTINGS_KEY_VERSION,
+        version: parse_stored_setting(
+            setting(domain::SETTINGS_KEY_VERSION),
             domain::parse_setting_version,
         )?,
-        branch: read_setting(
-            git,
-            domain::SETTINGS_KEY_BRANCH,
+        branch: parse_stored_setting(
+            setting(domain::SETTINGS_KEY_BRANCH),
             domain::parse_setting_branch,
         )?,
-        scope: read_setting(git, domain::SETTINGS_KEY_SCOPE, domain::parse_setting_scope)?,
-        auto_checkpoint: read_setting(git, domain::SETTINGS_KEY_AUTO_CHECKPOINT, |raw| {
-            domain::parse_setting_flag(domain::SETTINGS_KEY_AUTO_CHECKPOINT, raw)
-        })?
+        scope: parse_stored_setting(
+            setting(domain::SETTINGS_KEY_SCOPE),
+            domain::parse_setting_scope,
+        )?,
+        auto_checkpoint: parse_stored_setting(
+            setting(domain::SETTINGS_KEY_AUTO_CHECKPOINT),
+            |raw| domain::parse_setting_flag(domain::SETTINGS_KEY_AUTO_CHECKPOINT, raw),
+        )?
         .unwrap_or(false),
-        capture_after_edit: read_setting(git, domain::SETTINGS_KEY_CAPTURE_AFTER_EDIT, |raw| {
-            domain::parse_setting_flag(domain::SETTINGS_KEY_CAPTURE_AFTER_EDIT, raw)
-        })?
+        capture_after_edit: parse_stored_setting(
+            setting(domain::SETTINGS_KEY_CAPTURE_AFTER_EDIT),
+            |raw| domain::parse_setting_flag(domain::SETTINGS_KEY_CAPTURE_AFTER_EDIT, raw),
+        )?
         .unwrap_or(false),
-        editor_argv: read_setting(
-            git,
-            domain::SETTINGS_KEY_EDITOR_ARGV,
+        editor_argv: parse_stored_setting(
+            setting(domain::SETTINGS_KEY_EDITOR_ARGV),
             domain::parse_setting_argv,
         )?,
     })
+}
+
+/// Parses one stored setting value: absent stays absent, a present value
+/// goes through its strict parser (SPEC 8.2).
+fn parse_stored_setting<T>(
+    raw: Option<String>,
+    parse: impl Fn(&str) -> Result<T, SettingsValueError>,
+) -> Result<Option<T>, SettingsError> {
+    match raw {
+        Some(raw) => parse(&raw).map(Some).map_err(SettingsError::Stored),
+        None => Ok(None),
+    }
 }
 
 /// Plans one explicit local-settings update without writing anything
@@ -6011,8 +7313,93 @@ pub struct CheckpointRequest {
     /// The guarded recovery mode that captures inspected staged content
     /// (SPEC 9.7 `--include-staged`).
     pub include_staged: bool,
+    /// The expected `HEAD` commit of the guarded recovery capture (SPEC 9.7
+    /// `--expect-head`); the capture refuses while `HEAD` holds another
+    /// value. Required together with `include_staged`.
+    pub expect_head: Option<String>,
+    /// The expected index tree of the guarded recovery capture (SPEC 9.7
+    /// `--expect-index`): the staged state one recovery inspection reported.
+    pub expect_index: Option<String>,
+    /// The expected scoped working fingerprint of the guarded recovery
+    /// capture (SPEC 9.7 `--expect-working`), the `format:oid` value one
+    /// recovery inspection reports.
+    pub expect_working: Option<String>,
     /// Whether to report the intended effects without committing (SPEC 6.4).
     pub dry_run: bool,
+}
+
+/// The expected state of one guarded recovery capture (SPEC 9.7): the
+/// three fingerprints `checkpoint --include-staged` rechecks at capture
+/// time, validated once so the capture itself compares plain strings.
+struct StagedCaptureExpectations {
+    /// The commit `HEAD` must still hold.
+    head: String,
+    /// The tree the real index must still describe.
+    index_tree: String,
+    /// The `format:oid` fingerprint of the scoped working content.
+    working: String,
+}
+
+/// One proved capture ready for the shared marker writer (SPEC 8.4, 9.2,
+/// 9.7): the ordinary checkpoint and the guarded recovery capture hand
+/// this one bundle to [`Operations::commit_proved_capture`], so both
+/// commit, observe failures, and report effects through the same path.
+struct ProvedCapture {
+    /// The scope input of the request, for the post-failure observation.
+    scope: Option<ScopeInput>,
+    /// The prepared marker map the commit verifies itself against.
+    metadata: CommitMetadata,
+    /// The effective message text.
+    text: String,
+    /// The candidate the capture prepared against.
+    candidate: String,
+    /// The exact paths the capture saves, in path order.
+    paths: Vec<OsString>,
+    /// The intended full tree of the draft.
+    tree: String,
+    /// The scoped working-entry baseline the capture read before its
+    /// first real mutation.
+    working_before: BTreeMap<OsString, Option<WorkingEntry>>,
+}
+
+/// Validates the expected state of one checkpoint request (SPEC 9.7): the
+/// guarded recovery capture carries exactly the three fingerprints a
+/// recovery inspection reports — head, index tree, and scoped working
+/// fingerprint — and an expected state belongs to no ordinary capture.
+///
+/// `Ok(None)` is one ordinary checkpoint; `Ok(Some)` is one guarded
+/// recovery capture; `Err` is invalid input that refuses before any
+/// inspection, with unchanged effects.
+fn recovery_expectations(
+    request: &CheckpointRequest,
+) -> Result<Option<StagedCaptureExpectations>, OperationError> {
+    match (
+        request.include_staged,
+        request.expect_head.as_deref(),
+        request.expect_index.as_deref(),
+        request.expect_working.as_deref(),
+    ) {
+        (false, None, None, None) => Ok(None),
+        (true, Some(head), Some(index_tree), Some(working)) => {
+            Ok(Some(StagedCaptureExpectations {
+                head: head.to_string(),
+                index_tree: index_tree.to_string(),
+                working: working.to_string(),
+            }))
+        }
+        (true, ..) => Err(OperationError::new(
+            "INVALID_ARGUMENT",
+            "the guarded recovery capture needs --expect-head, --expect-index, and \
+             --expect-working together",
+        )
+        .recovery(&["margin", "doctor", "--json"])),
+        (false, ..) => Err(OperationError::new(
+            "INVALID_ARGUMENT",
+            "an expected head, index, or working state belongs to the --include-staged \
+             recovery capture only",
+        )
+        .recovery(&["margin", "doctor", "--json"])),
+    }
 }
 
 /// The request of one review operation (SPEC 6.2, 7.3).
@@ -6957,6 +8344,182 @@ pub type RestoreResult = OperationOutcome<RestoreOutcome>;
 /// The typed result of one recovery inspection.
 pub type RecoveryResult = OperationOutcome<RecoveryInspection>;
 
+// ---------------------------------------------------------------------------
+// The test-only model-action trace (SPEC 15.7)
+// ---------------------------------------------------------------------------
+
+/// The environment variable that turns on the test-only model-action trace:
+/// `MARGIN_MODEL_TRACE=<file>` appends one JSON object per model action an
+/// operation actually takes, with the commit, tree, and request identities
+/// that action carried (SPEC 15.7).
+///
+/// The trace is refinement evidence, never an input. No operation reads it
+/// back, a write that fails is dropped silently, and one record is one
+/// flushed append, so a killed process leaves exactly the actions it
+/// completed. `formal/refinement.md` defines the record set, and
+/// `tests/refinement_trace.rs` validates whole sequences against the
+/// allowed transitions of `formal/MarginReview.tla` with an independent
+/// checker that shares no code with this layer.
+pub const MODEL_TRACE_VARIABLE: &str = "MARGIN_MODEL_TRACE";
+
+/// One open model-action trace file (SPEC 15.7).
+pub struct ModelTrace {
+    /// The file every record appends to.
+    target: PathBuf,
+}
+
+impl ModelTrace {
+    /// Returns the trace the environment selects, or `None` when the
+    /// variable is absent. This is the executable path; an in-process test
+    /// injects its target through [`Operations::with_model_trace`], because
+    /// the shared test process cannot swap the environment per case.
+    pub fn from_env() -> Option<ModelTrace> {
+        std::env::var_os(MODEL_TRACE_VARIABLE).map(|target| ModelTrace {
+            target: PathBuf::from(target),
+        })
+    }
+
+    /// Returns the trace that appends every record to `target`.
+    pub fn to_file(target: impl Into<PathBuf>) -> ModelTrace {
+        ModelTrace {
+            target: target.into(),
+        }
+    }
+
+    /// Appends one record. Tracing never fails an operation, so an
+    /// unwritable target drops the record instead of changing a result.
+    fn record(&self, fields: serde_json::Value) {
+        let mut line = fields.to_string();
+        line.push('\n');
+        let _ = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.target)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
+    }
+
+    /// `Init`: one verified starting marker established the modeled initial
+    /// state (SPEC 15.7).
+    fn initial(&self, head: &str, tree: &str) {
+        self.record(serde_json::json!({
+            "action": "Init",
+            "head": head,
+            "tree": tree,
+        }));
+    }
+
+    /// `Checkpoint(staged)`: one verified draft commit over `parent`.
+    fn checkpoint(&self, include_staged: bool, head: &str, parent: &str, tree: &str) {
+        self.record(serde_json::json!({
+            "action": "Checkpoint",
+            "include_staged": include_staged,
+            "head": head,
+            "parent": parent,
+            "tree": tree,
+        }));
+    }
+
+    /// `Submit` that accepted one complete plan and pinned its comparison:
+    /// the candidate `head`, the baseline, and the groups the application
+    /// will restore, in application order.
+    fn submit_accepted(
+        &self,
+        mode: &str,
+        request: &str,
+        head: &str,
+        baseline: &str,
+        restore: &[String],
+    ) {
+        self.record(serde_json::json!({
+            "action": "Submit",
+            "mode": mode,
+            "outcome": "accepted",
+            "request": request,
+            "head": head,
+            "baseline": baseline,
+            "restore": restore,
+        }));
+    }
+
+    /// `Submit` that answered one already completed request with its
+    /// verified receipt.
+    fn submit_receipt(&self, request: &str, receipt: &str) {
+        self.record(serde_json::json!({
+            "action": "Submit",
+            "outcome": "receipt",
+            "request": request,
+            "receipt": receipt,
+        }));
+    }
+
+    /// `Submit` that refused one reused request identity whose plan differs.
+    fn submit_conflict(&self, request: &str) {
+        self.record(serde_json::json!({
+            "action": "Submit",
+            "outcome": "conflict",
+            "request": request,
+        }));
+    }
+
+    /// `ApplyGroup(p)`: one complete reverse unit applied to the working
+    /// tree while the candidate stayed pinned at `head`.
+    fn apply_group(&self, request: &str, group: &str, head: &str) {
+        self.record(serde_json::json!({
+            "action": "ApplyGroup",
+            "request": request,
+            "group": group,
+            "head": head,
+        }));
+    }
+
+    /// `UpdateIndex`: the applied index verified as the intended tree.
+    fn update_index(&self, request: &str, head: &str, tree: &str) {
+        self.record(serde_json::json!({
+            "action": "UpdateIndex",
+            "request": request,
+            "head": head,
+            "tree": tree,
+        }));
+    }
+
+    /// `Publish`: one verified review commit over `parent`.
+    fn publish(&self, request: &str, head: &str, parent: &str, tree: &str) {
+        self.record(serde_json::json!({
+            "action": "Publish",
+            "request": request,
+            "head": head,
+            "parent": parent,
+            "tree": tree,
+        }));
+    }
+
+    /// `Respond`: one response that names its verified receipt.
+    fn respond(&self, request: &str, receipt: &str) {
+        self.record(serde_json::json!({
+            "action": "Respond",
+            "request": request,
+            "receipt": receipt,
+        }));
+    }
+
+    /// `Fail`: one accepted submission that failed inside its protocol and
+    /// left recoverable state behind.
+    fn fail(&self, request: &str) {
+        self.record(serde_json::json!({
+            "action": "Fail",
+            "request": request,
+        }));
+    }
+
+    /// `InspectRecovery`: one completed read-only recovery inspection.
+    fn inspected_recovery(&self, head: Option<&str>) {
+        self.record(serde_json::json!({
+            "action": "InspectRecovery",
+            "head": head,
+        }));
+    }
+}
+
 /// The shared operation layer (SPEC 13.2, 13.6).
 ///
 /// The CLI serializes these results, the TUI renders them, and a hook
@@ -6967,6 +8530,15 @@ pub type RecoveryResult = OperationOutcome<RecoveryInspection>;
 pub struct Operations<'a> {
     /// The one Git process adapter every operation shares.
     git: &'a Git,
+    /// The one prefetched history walk this process reuses (SPEC 17.5): a
+    /// long-lived surface that observes every two seconds re-derives
+    /// nothing it already proved, while every mutation reloads what it
+    /// needs from the commits it just created. `None` until a walk first
+    /// runs, because building one costs processes an operation that never
+    /// walks should not pay.
+    walk: std::sync::Mutex<Option<HistoryWalk>>,
+    /// The test-only model-action trace of SPEC 15.7, when one is attached.
+    trace: Option<ModelTrace>,
 }
 
 // ---------------------------------------------------------------------------
@@ -7002,7 +8574,37 @@ impl Drop for MutationGuard {
 impl<'a> Operations<'a> {
     /// Builds the operation layer over `git`.
     pub fn new(git: &'a Git) -> Operations<'a> {
-        Operations { git }
+        Operations {
+            git,
+            walk: std::sync::Mutex::new(None),
+            trace: ModelTrace::from_env(),
+        }
+    }
+
+    /// The process's one history walk, created on first use and reused for
+    /// the process's whole life (SPEC 17.5). The context answer is
+    /// forgotten per observation so rule 7 stays fresh; commits, diffs,
+    /// and digests are content-addressed and stay valid.
+    fn history_walk(&self) -> std::sync::MutexGuard<'_, Option<HistoryWalk>> {
+        let mut walk = self.walk.lock().expect("the walk is uncontended");
+        if walk.is_none() {
+            *walk = Some(HistoryWalk::new(self.git));
+        }
+        if let Some(walk) = walk.as_mut() {
+            walk.forget_context();
+        }
+        walk
+    }
+
+    /// Builds the operation layer over `git` with one explicit model-action
+    /// trace (SPEC 15.7), so an in-process test drives the same records the
+    /// environment variable gives the executable.
+    pub fn with_model_trace(git: &'a Git, trace: ModelTrace) -> Operations<'a> {
+        Operations {
+            git,
+            walk: std::sync::Mutex::new(None),
+            trace: Some(trace),
+        }
     }
 
     /// The Git adapter this layer uses; interfaces never spawn Git itself.
@@ -7088,6 +8690,45 @@ impl<'a> Operations<'a> {
         Ok(branch_ref)
     }
 
+    /// The shared mutation inspection with the one index exception of the
+    /// explicit recovery paths (SPEC 9.1 step 4, 9.7): every guard of
+    /// [`Operations::enforce_mutation_guards`] except the staged delta,
+    /// which is the subject both recovery operations run over — an
+    /// exact-plan resume commits the retained result that stays staged
+    /// against its candidate, and a guarded staged capture adopts the
+    /// inspected staged state itself.
+    ///
+    /// The exception admits the blocker, never the staging: each caller
+    /// proves the whole index against its own pinned state, so unrelated
+    /// or partial staged content still refuses there. Conflict entries,
+    /// in-progress Git operations, storage transformations, a detached
+    /// `HEAD`, and a branch other than the adopted one all refuse here as
+    /// they do for every other write.
+    fn enforce_mutation_guards_except_staged(
+        &self,
+        resolved: &ResolvedScope,
+        settings: &LocalSettings,
+    ) -> Result<Option<String>, OperationError> {
+        let report =
+            enforce_mutation_policy(self.git, Some(resolved)).map_err(OperationError::from)?;
+        let blockers: Vec<PolicyBlocker> = report
+            .blockers
+            .into_iter()
+            .filter(|blocker| !matches!(blocker, PolicyBlocker::StagedChanges { .. }))
+            .collect();
+        if !blockers.is_empty() {
+            return Err(OperationError::new(
+                blockers[0].public_code(),
+                blockers_message(&blockers),
+            ));
+        }
+        let branch_ref = self.git.head_symbolic_ref().map_err(OperationError::from)?;
+        if let Some(blocker) = adopted_branch_mismatch(settings, branch_ref.as_deref()) {
+            return Err(adopted_branch_refusal(&blocker));
+        }
+        Ok(branch_ref)
+    }
+
     /// Finds the receipt of one decided request in the history reachable
     /// from the current candidate (SPEC 8.7, 9.1 step 3).
     ///
@@ -7114,18 +8755,21 @@ impl<'a> Operations<'a> {
             Ok(None) => return Ok(ReceiptLookup::Absent),
             Err(error) => return Err(OperationError::from(error)),
         };
-        find_receipt(self.git, &head, kind, request_id, fingerprint).map_err(|error| {
-            OperationError {
-                code: error.public_code(),
-                message: format!(
-                    "the receipt scan did not complete, so the request {request_id} cannot be \
+        let mut walk = self.history_walk();
+        let walk = walk.as_mut().expect("the constructor fills the walk");
+        walk.find_receipt(&head, kind, request_id, fingerprint)
+            .map_err(|error| {
+                OperationError {
+                    code: error.public_code(),
+                    message: format!(
+                        "the receipt scan did not complete, so the request {request_id} cannot be \
                      shown absent and the mutation stays blocked: {error}"
-                ),
-                retryable: error.retryable(),
-                recovery_argv: Vec::new(),
-            }
-            .recovery(&["margin", "status", "--json"])
-        })
+                    ),
+                    retryable: error.retryable(),
+                    recovery_argv: Vec::new(),
+                }
+                .recovery(&["margin", "status", "--json"])
+            })
     }
 
     /// Inspects one workspace (SPEC 13.2 `inspect_workspace`, 4.2, 6.3).
@@ -7191,16 +8835,20 @@ impl<'a> Operations<'a> {
             }
         };
         let baseline = match &head {
-            Some(candidate) => match select_baseline(self.git, candidate, &resolved.digest) {
-                Ok(marker) => BaselineStatus::Anchored(Box::new(marker)),
-                Err(BaselineError::Unavailable(reason)) => BaselineStatus::Unavailable(reason),
-                Err(error) => {
-                    return InspectResult::failure(
-                        OperationError::from(error),
-                        Effects::unchanged(),
-                    );
+            Some(candidate) => {
+                let mut guard = self.history_walk();
+                let walk = guard.as_mut().expect("the constructor fills the walk");
+                match walk.select_baseline(candidate, &resolved.digest) {
+                    Ok(marker) => BaselineStatus::Anchored(Box::new(marker)),
+                    Err(BaselineError::Unavailable(reason)) => BaselineStatus::Unavailable(reason),
+                    Err(error) => {
+                        return InspectResult::failure(
+                            OperationError::from(error),
+                            Effects::unchanged(),
+                        );
+                    }
                 }
-            },
+            }
             None => BaselineStatus::NoCandidate,
         };
 
@@ -7679,6 +9327,9 @@ impl<'a> Operations<'a> {
             }
         };
         effects.observe_commit(CommitEffect::Created, Some(marker.commit.clone()));
+        if let Some(trace) = self.trace.as_ref() {
+            trace.initial(&marker.commit, &marker.result_tree);
+        }
 
         // Persist the settings only after the verified commit (SPEC 8.2); a
         // failure reports the partial success and shows the commit.
@@ -7880,15 +9531,19 @@ impl<'a> Operations<'a> {
     /// the staged changes stay behind with the candidate anchor, so the
     /// next automatic checkpoint stops on that staged state (SPEC 9.2,
     /// 9.1 step 7, 9.6).
+    ///
+    /// One request with `--include-staged` and its three expected
+    /// fingerprints leaves this algorithm for the private
+    /// `capture_staged_recovery`, the guarded recovery capture of SPEC 9.7
+    /// and the one narrow exception to the clean-index rule above.
     pub fn create_checkpoint(&self, request: &CheckpointRequest) -> CheckpointResult {
-        // The guarded recovery capture of SPEC 9.7 arrives with task T036;
-        // the normal algorithm never consumes pre-existing staged
-        // selections.
-        if request.include_staged {
-            return CheckpointResult::failure(
-                operation_pending("staged-content recovery capture"),
-                Effects::unchanged(),
-            );
+        // The guarded recovery capture of SPEC 9.7 is the one narrow path
+        // that adopts inspected staged content; the normal algorithm below
+        // never consumes a pre-existing staged selection.
+        match recovery_expectations(request) {
+            Ok(None) => {}
+            Ok(Some(expectations)) => return self.capture_staged_recovery(request, &expectations),
+            Err(error) => return CheckpointResult::failure(error, Effects::unchanged()),
         }
         let mut effects = Effects::unchanged();
         let failure = |error: OperationError, effects: &Effects| {
@@ -8059,35 +9714,80 @@ impl<'a> Operations<'a> {
         }
         effects.observe_index(ObservedEffect::Changed);
 
-        // Commit through the shared marker writer: the real index tree, the
-        // parent, the result tree, and every reserved trailer are verified
-        // against the prepared map (SPEC 8.4).
+        // Commit through the shared marker writer, then report the observed
+        // working state after the commit: both the ordinary checkpoint and
+        // the guarded recovery capture below share this one path, so both
+        // report effects and failures through the same observation policy
+        // (SPEC 8.4, 9.2).
+        let capture = ProvedCapture {
+            scope: request.scope.clone(),
+            metadata,
+            text: text.to_string(),
+            candidate: candidate.clone(),
+            paths,
+            tree,
+            working_before: working_before.clone(),
+        };
+        let (marker, data) = match self.commit_proved_capture(&mut effects, capture) {
+            Ok(finished) => finished,
+            Err(failed) => {
+                let (error, observed) = *failed;
+                return CheckpointResult::observed_failure(error, observed, effects);
+            }
+        };
+        if let Some(trace) = self.trace.as_ref() {
+            trace.checkpoint(false, &marker.commit, &candidate, &marker.result_tree);
+        }
+        let warnings = self.observe_capture_success(
+            &mut effects,
+            request.scope.as_ref(),
+            &marker.commit,
+            &working_before,
+        );
+        if warnings.is_empty() {
+            CheckpointResult::success(data, effects)
+        } else {
+            CheckpointResult::success_with_warnings(data, warnings, effects)
+        }
+    }
+
+    /// Commits one proved capture through the shared marker writer (SPEC
+    /// 8.4, 9.2, 9.6): the real index tree, the parent, the result tree,
+    /// and every reserved trailer are verified against the prepared map.
+    ///
+    /// A failure inspects what it left and keeps the commit the failure
+    /// itself names: a commit whose observed state does not match the
+    /// prepared map still exists — it stays ordinary history and confers
+    /// no approval. A killed commit process loses the outcome, which is
+    /// never narrowed back to `none`. Every other failure, such as a hook
+    /// rejection or an output limit reached after the commit, reports the
+    /// candidate anchor, the inspected commit when one exists, and the
+    /// exact observed effects.
+    ///
+    /// `capture.working_before` is the scoped working-entry baseline the
+    /// capture read before its first real mutation, the comparison
+    /// [`Operations::observe_capture_failure`] reports against.
+    fn commit_proved_capture(
+        &self,
+        effects: &mut Effects,
+        capture: ProvedCapture,
+    ) -> Result<(ValidMarker, CheckpointOutcome), Box<(OperationError, CheckpointOutcome)>> {
         let observed = |commit: Option<String>| CheckpointOutcome {
             commit,
             changed: true,
-            candidate: candidate.clone(),
-            paths: paths.clone(),
+            candidate: capture.candidate.clone(),
+            paths: capture.paths.clone(),
             dry_run: false,
-            expected_tree: Some(tree.clone()),
+            expected_tree: Some(capture.tree.clone()),
         };
-        let marker = match commit_marker(self.git, &metadata, text) {
+        let marker = match commit_marker(self.git, &capture.metadata, &capture.text) {
             Ok(marker) => marker,
             Err(error) => {
-                // Inspect what the failed capture left, then keep the commit
-                // the failure itself names: a commit whose observed state
-                // does not match the prepared map still exists: it stays
-                // ordinary history and confers no approval (SPEC 9.6). A
-                // killed commit process loses the outcome, which is never
-                // narrowed back to `none` (SPEC 7.1). Every other failure,
-                // such as a hook rejection or an output limit reached after
-                // the commit, reports the candidate anchor, the inspected
-                // commit when one exists, and the exact observed effects
-                // (SPEC 9.2).
                 let inspected = self.observe_capture_failure(
-                    &mut effects,
-                    Some(&candidate),
-                    &working_before,
-                    request.scope.as_ref(),
+                    effects,
+                    Some(&capture.candidate),
+                    &capture.working_before,
+                    capture.scope.as_ref(),
                 );
                 match &error {
                     MarkerCommitError::Verification { commit, .. } => {
@@ -8103,11 +9803,7 @@ impl<'a> Operations<'a> {
                     MarkerCommitError::Git(GitError::Timeout { .. }) => None,
                     _ => inspected,
                 };
-                return CheckpointResult::observed_failure(
-                    OperationError::from(error),
-                    observed(commit),
-                    effects,
-                );
+                return Err(Box::new((OperationError::from(error), observed(commit))));
             }
         };
         effects.observe_commit(CommitEffect::Created, Some(marker.commit.clone()));
@@ -8115,54 +9811,486 @@ impl<'a> Operations<'a> {
             commit: Some(marker.commit.clone()),
             changed: true,
             candidate: marker.commit.clone(),
-            paths,
+            paths: capture.paths,
             dry_run: false,
             expected_tree: Some(marker.result_tree.clone()),
         };
+        Ok((marker, data))
+    }
 
-        // The observed working state after the commit: a writer may have
-        // changed a file after it was staged — or created a scoped path that
-        // did not exist when the scope resolved — so the response reports
-        // the newer uncaptured content instead of calling those bytes saved
-        // (SPEC 9.2).
+    /// The post-success observation of one verified draft commit (SPEC 7.1,
+    /// 9.2, 9.6): the final scoped working state is read from the repository
+    /// and compared with `before`, the baseline the capture read before its
+    /// first real mutation — the same comparison
+    /// [`Operations::observe_capture_failure`] reports against — so a hook
+    /// that changed scoped working bytes after the staging reports `changed`
+    /// working files next to its `DIRTY_SCOPE` warning, and an inspection
+    /// that itself fails reports `unknown`, never a claim of unchanged state.
+    ///
+    /// The warnings of one verified draft commit: a writer — or a hook — may
+    /// have changed a scoped file after the capture read it, or created a
+    /// scoped path that did not exist when the scope resolved, so the
+    /// response reports the newer uncaptured content instead of calling
+    /// those bytes saved. An inspection that fails explains why it could
+    /// not.
+    fn observe_capture_success(
+        &self,
+        effects: &mut Effects,
+        scope: Option<&ScopeInput>,
+        commit: &str,
+        before: &BTreeMap<OsString, Option<WorkingEntry>>,
+    ) -> Vec<Warning> {
         let mut warnings = Vec::new();
         let rescoped = self
-            .context_scope_input(request.scope.as_ref())
+            .context_scope_input(scope)
             .map_err(|error| format!("{}: {}", error.code, error.message))
             .and_then(|input| resolve_scope(self.git, &input).map_err(|error| error.to_string()));
-        match rescoped {
-            Ok(scope) => match scoped_working_changes(self.git, &scope, &marker.commit) {
-                Ok(newer) if !newer.is_empty() => warnings.push(Warning {
-                    code: "DIRTY_SCOPE",
-                    message: format!(
-                        "the draft commit {} saved the staged content, but {} scoped path(s) hold newer uncaptured content: {}",
-                        marker.commit,
-                        newer.len(),
-                        listed_paths(&newer.keys().cloned().collect::<Vec<OsString>>()),
-                    ),
-                }),
-                Ok(_) => {}
-                Err(error) => warnings.push(Warning {
+        let scope = match rescoped {
+            Ok(scope) => scope,
+            Err(detail) => {
+                // The verified commit stands; its final working scope cannot
+                // be inspected, so the working effect is lost with it.
+                effects.observe_working_tree(ObservedEffect::Unknown);
+                warnings.push(Warning {
                     code: "GIT_FAILED",
                     message: format!(
-                        "the draft commit {} verified, but the working state after it could not be inspected: {error}",
-                        marker.commit,
+                        "the draft commit {commit} verified, but the working scope after it \
+                         could not be inspected: {detail}",
                     ),
-                }),
-            },
-            Err(detail) => warnings.push(Warning {
+                });
+                return warnings;
+            }
+        };
+        match scoped_working_changes(self.git, &scope, commit) {
+            Ok(newer) if !newer.is_empty() => warnings.push(Warning {
+                code: "DIRTY_SCOPE",
+                message: format!(
+                    "the draft commit {commit} saved the staged content, but {} scoped \
+                     path(s) hold newer uncaptured content: {}",
+                    newer.len(),
+                    listed_paths(&newer.keys().cloned().collect::<Vec<OsString>>()),
+                ),
+            }),
+            Ok(_) => {}
+            Err(error) => warnings.push(Warning {
                 code: "GIT_FAILED",
                 message: format!(
-                    "the draft commit {} verified, but the working scope after it could not be inspected: {detail}",
-                    marker.commit,
+                    "the draft commit {commit} verified, but the working state after it \
+                     could not be inspected: {error}",
                 ),
             }),
         }
+        // The scoped working content against the baseline the capture read:
+        // the fresh resolution observes a hook-created scoped path too, and
+        // an entry that differs from that baseline is a real working-file
+        // change, never a saved one. Absence and a missing key are the same
+        // working state — a committed deletion leaves the fresh scope
+        // without its path while the baseline holds that path as absent —
+        // so [`present_working_entries`] compares the present entries only.
+        let inspected = scoped_working_state(self.git, &scope);
+        effects.observe_working_tree(match inspected {
+            Ok(after) if present_working_entries(&after) == present_working_entries(before) => {
+                ObservedEffect::Unchanged
+            }
+            Ok(_) => ObservedEffect::Changed,
+            Err(_) => ObservedEffect::Unknown,
+        });
+        warnings
+    }
+
+    /// The guarded recovery capture of staged content (SPEC 9.7): one
+    /// `checkpoint --include-staged --expect-head C --expect-index T
+    /// --expect-working W` request.
+    ///
+    /// An interrupted application can leave its proved result staged
+    /// against the candidate, and the writer who lost the plan captures
+    /// that state as one unreviewed draft instead of guessing prior
+    /// selections. The capture is guarded from every side:
+    ///
+    /// - every guard of the shared mutation inspection except the staged
+    ///   delta itself, which is the subject here: conflict entries,
+    ///   in-progress Git operations, storage transformations, a detached
+    ///   `HEAD`, and a foreign branch refuse as they do for every write,
+    ///   and the whole capture holds the shared mutation lock
+    /// - every staged change must lie in scope, and the scoped index must
+    ///   equal the inspected scoped working content, so the draft saves
+    ///   exactly the bytes a recovery inspection saw
+    /// - all three expected fingerprints must still match — `HEAD` still
+    ///   C, the real index tree still T, the scoped working fingerprint
+    ///   still W — so a state that moved since `doctor` reported it
+    ///   refuses `STALE_STATE` with nothing written
+    ///
+    /// Nothing is staged, unstaged, or restaged: the shared marker writer
+    /// commits the index exactly as it stands, verifies the result tree,
+    /// and appends one ordinary draft commit that confers no approval —
+    /// the baseline a review needs stays whatever the walk selects, and
+    /// the writer opens a fresh review over the new candidate. A dry run
+    /// validates the same way and reports the intended tree without
+    /// writing; the index tree is observed through one disposable copy of
+    /// the index, so even the validation leaves the real index bytes
+    /// alone (SPEC 6.4).
+    fn capture_staged_recovery(
+        &self,
+        request: &CheckpointRequest,
+        expectations: &StagedCaptureExpectations,
+    ) -> CheckpointResult {
+        let mut effects = Effects::unchanged();
+        let failure = |error: OperationError, effects: &Effects| {
+            CheckpointResult::failure(error, effects.clone())
+        };
+        let stale = |detail: String| {
+            OperationError::new("STALE_STATE", detail).recovery(&["margin", "doctor", "--json"])
+        };
+
+        // SPEC 9.1 step 1: the workspace probe, the input, and the one
+        // scope resolver. A recovery capture holds no request receipt to
+        // look up (SPEC 8.7): the three expected fingerprints are the state
+        // it pins, so its retry is one stale-state refusal, not a second
+        // commit.
+        if let Err(error) = require_work_tree(self.git) {
+            return failure(error, &effects);
+        }
+        let settings = match self.effective_settings() {
+            Ok(settings) => settings,
+            Err(error) => return failure(error, &effects),
+        };
+        let input = match scope_input_of(request.scope.as_ref(), &settings) {
+            Some(input) => input,
+            None => return failure(not_initialized(), &effects),
+        };
+        let resolved = match resolve_scope(self.git, &input) {
+            Ok(resolved) => resolved,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        if !resolved.blockers.is_empty() {
+            return failure(scope_blockers_refusal(&resolved.blockers), &effects);
+        }
+        // SPEC 9.1 step 2: the shared mutation lock serializes this capture
+        // with every other Margin write of the repository. A dry run writes
+        // nothing, so it reserves nothing (SPEC 6.4).
+        let _lock = if request.dry_run {
+            None
+        } else {
+            match self.acquire_mutation_lock() {
+                Ok(lock) => Some(lock),
+                Err(error) => return failure(error, &effects),
+            }
+        };
+        // SPEC 9.1 step 4 with the one index exception of SPEC 9.7: every
+        // shared guard except the staged delta, which is the subject of
+        // the capture, then the adopted branch and the author identity.
+        let branch_ref = match self.enforce_mutation_guards_except_staged(&resolved, &settings) {
+            Ok(branch_ref) => branch_ref,
+            Err(error) => return failure(error, &effects),
+        };
+        if let Err(error) = self.git.author_ident() {
+            if matches!(error, GitError::Exit { .. }) {
+                return failure(missing_identity(), &effects);
+            }
+            return failure(OperationError::from(error), &effects);
+        }
+        // The candidate the expected head pins; a draft has exactly one
+        // parent, so only a born branch supplies it (SPEC 8.4 rule 3).
+        let candidate = match self.git.head_commit() {
+            Ok(Some(candidate)) => candidate,
+            Ok(None) => {
+                return failure(
+                    OperationError::new(
+                        "BASELINE_UNAVAILABLE",
+                        "the branch is unborn, so no candidate exists to recover against",
+                    )
+                    .recovery(&["margin", "init", "--json"]),
+                    &effects,
+                );
+            }
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        if candidate != expectations.head {
+            return failure(
+                stale(format!(
+                    "the recovery capture requires HEAD at the expected commit {}, but HEAD \
+                     holds {candidate}",
+                    expectations.head,
+                )),
+                &effects,
+            );
+        }
+
+        // The real index and its tree (SPEC 9.7): the guards refused the
+        // conflict stages, and the tree is observed through one disposable
+        // copy so the validation itself writes nothing.
+        let index = match self.git.ls_files_stage() {
+            Ok(index) => index,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        let index_tree = match self.observed_index_tree() {
+            Ok(tree) => tree,
+            Err(error) => return failure(error, &effects),
+        };
+        if index_tree != expectations.index_tree {
+            return failure(
+                stale(format!(
+                    "the recovery capture requires the index tree {}, but the index holds \
+                     {index_tree}",
+                    expectations.index_tree,
+                )),
+                &effects,
+            );
+        }
+
+        // Every staged change in scope (SPEC 9.7): the capture adopts the
+        // writing it can pin completely, so staged content outside the
+        // scope keeps the ordinary Git inspection guidance of that
+        // section, never a silent partial adoption.
+        let staged: Vec<OsString> = match self.git.staged_against(&candidate) {
+            Ok(staged) => staged,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        let outside: Vec<OsString> = staged
+            .iter()
+            .filter(|path| !resolved.paths.contains_key(*path))
+            .cloned()
+            .collect();
+        if !outside.is_empty() {
+            return failure(
+                OperationError::new(
+                    "STAGED_CHANGES",
+                    format!(
+                        "the recovery capture adopts only staged content inside the writing \
+                         scope; {} staged path(s) lie outside it: {}",
+                        outside.len(),
+                        listed_paths(&outside),
+                    ),
+                )
+                .recovery(&["git", "diff", "--cached", "--name-status"]),
+                &effects,
+            );
+        }
+
+        // The scoped working fingerprint (SPEC 9.7): the inspected content
+        // the capture must still find.
+        let working = match scoped_working_state(self.git, &resolved) {
+            Ok(working) => working,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        let working_fingerprint = match working_content_digest(self.git, &resolved) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => {
+                return failure(
+                    OperationError::new(error.public_code(), error.to_string()),
+                    &effects,
+                );
+            }
+        };
+        if working_fingerprint.id() != expectations.working {
+            return failure(
+                stale(format!(
+                    "the recovery capture requires the scoped working fingerprint {}, but the \
+                     working tree holds {}",
+                    expectations.working,
+                    working_fingerprint.id(),
+                )),
+                &effects,
+            );
+        }
+
+        // The scoped index against the inspected scoped working content
+        // (SPEC 9.7): the draft must save exactly the bytes the inspection
+        // saw, so every scoped path's stage-zero entry — mode and raw
+        // bytes — equals its working entry. A path the writer edited after
+        // staging it, an unstaged edit, or an unstaged deletion each keep
+        // the capture refused: that newer content belongs to the next
+        // ordinary checkpoint, never to a guess about it.
+        let scoped_index: BTreeMap<OsString, (String, String)> = index
+            .iter()
+            .filter(|entry| entry.stage == 0 && resolved.paths.contains_key(&entry.path))
+            .map(|entry| (entry.path.clone(), (entry.mode.clone(), entry.oid.clone())))
+            .collect();
+        let differing: Vec<OsString> = working
+            .iter()
+            .filter(|(path, entry)| match (entry, scoped_index.get(*path)) {
+                (Some(working_entry), Some((mode, oid))) => {
+                    *mode != working_entry.mode.as_str() || *oid != working_entry.oid
+                }
+                (None, None) => false,
+                _ => true,
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        if !differing.is_empty() {
+            return failure(
+                OperationError::new(
+                    "DIRTY_SCOPE",
+                    format!(
+                        "the scoped index does not match the scoped working content, so the \
+                         recovery capture cannot save exactly one inspected state: {} path(s) \
+                         hold staged and working entries that differ ({})",
+                        differing.len(),
+                        listed_paths(&differing),
+                    ),
+                )
+                .recovery(&["margin", "doctor", "--json"]),
+                &effects,
+            );
+        }
+
+        // Unchanged content is the explicit no-op, never a failure: with
+        // every fingerprint matching and the scoped index equal to the
+        // scoped working content, an empty staged delta means the candidate
+        // already holds that exact state (SPEC 9.2).
+        if staged.is_empty() {
+            return CheckpointResult::success(
+                CheckpointOutcome {
+                    commit: None,
+                    changed: false,
+                    candidate,
+                    paths: Vec::new(),
+                    dry_run: request.dry_run,
+                    expected_tree: None,
+                },
+                effects,
+            );
+        }
+
+        // The prepared marker map (SPEC 8.3): the index tree exactly as it
+        // stands is the intended result, and no staging intervenes. An
+        // invalid explicit message refuses before anything is committed,
+        // so a bad message can never change this state (SPEC 7.3).
+        let metadata = CommitMetadata {
+            kind: CommitKind::Draft,
+            scope_digest: resolved.digest.id(),
+            scope_spec: String::from_utf8(resolved.descriptor.canonical_bytes())
+                .expect("the canonical descriptor is UTF-8 JSON"),
+            candidate: candidate.clone(),
+            result_tree: index_tree.clone(),
+            baseline: None,
+            request: None,
+            plan: None,
+            source: None,
+        };
+        let text = request.message.as_deref().unwrap_or("");
+        if let Err(problem) = metadata.commit_message(text) {
+            return failure(
+                OperationError::new(problem.public_code(), problem.to_string()),
+                &effects,
+            );
+        }
+
+        // A dry run reports the intended capture and writes nothing
+        // (SPEC 6.4).
+        if request.dry_run {
+            return CheckpointResult::success(
+                CheckpointOutcome {
+                    commit: None,
+                    changed: true,
+                    candidate,
+                    paths: staged,
+                    dry_run: true,
+                    expected_tree: Some(index_tree),
+                },
+                effects,
+            );
+        }
+
+        // The precondition recheck immediately before the one real
+        // mutation (SPEC 9.1 step 6, 9.7).
+        if let Err(error) = self.recheck_staged_capture_preconditions(
+            &input,
+            &resolved,
+            &settings,
+            &branch_ref,
+            &candidate,
+            &index_tree,
+        ) {
+            return failure(error, &effects);
+        }
+
+        // Commit the index exactly as it stands: the staged state becomes
+        // one unreviewed draft, and the post-commit inspection reports any
+        // newer uncaptured content a concurrent writer or hook created.
+        let capture = ProvedCapture {
+            scope: request.scope.clone(),
+            metadata,
+            text: text.to_string(),
+            candidate: candidate.clone(),
+            paths: staged,
+            tree: index_tree,
+            working_before: working.clone(),
+        };
+        let (marker, data) = match self.commit_proved_capture(&mut effects, capture) {
+            Ok(finished) => finished,
+            Err(failed) => {
+                let (error, observed) = *failed;
+                return CheckpointResult::observed_failure(error, observed, effects);
+            }
+        };
+        if let Some(trace) = self.trace.as_ref() {
+            trace.checkpoint(true, &marker.commit, &candidate, &marker.result_tree);
+        }
+        effects.observe_index(ObservedEffect::Changed);
+        let warnings = self.observe_capture_success(
+            &mut effects,
+            request.scope.as_ref(),
+            &marker.commit,
+            &working,
+        );
         if warnings.is_empty() {
             CheckpointResult::success(data, effects)
         } else {
             CheckpointResult::success_with_warnings(data, warnings, effects)
         }
+    }
+
+    /// The precondition recheck of one guarded recovery capture immediately
+    /// before its one real mutation (SPEC 9.1 step 6, 9.7): the scope with
+    /// its path-safety rules and its fresh path set, the shared guards with
+    /// their index exception, the branch, `HEAD`, and the real index tree
+    /// are read again and compared with the state the capture validated
+    /// against.
+    ///
+    /// The scoped working content is deliberately absent from this recheck:
+    /// the commit reads the index alone, so newer working bytes cannot
+    /// corrupt the captured state, and the post-commit inspection reports
+    /// them as newer uncaptured content instead (SPEC 9.2). The shared
+    /// marker writer verifies the real index tree once more inside the
+    /// commit itself.
+    fn recheck_staged_capture_preconditions(
+        &self,
+        input: &ScopeInput,
+        resolved: &ResolvedScope,
+        settings: &LocalSettings,
+        branch_at_guard: &Option<String>,
+        candidate: &str,
+        index_tree: &str,
+    ) -> Result<(), OperationError> {
+        // Path safety and the scope's path set (SPEC 14.3).
+        let fresh = resolve_scope(self.git, input).map_err(OperationError::from)?;
+        if !fresh.blockers.is_empty() {
+            return Err(scope_blockers_refusal(&fresh.blockers));
+        }
+        if fresh.paths != resolved.paths {
+            return Err(scope_paths_moved("scope", &fresh.paths, &resolved.paths));
+        }
+        let branch = self.enforce_mutation_guards_except_staged(&fresh, settings)?;
+        if branch != *branch_at_guard {
+            return Err(branch_moved_refusal(branch_at_guard, &branch));
+        }
+        let fresh_head = self.git.head_commit().map_err(OperationError::from)?;
+        if fresh_head.as_deref() != Some(candidate) {
+            return Err(stale_state_refusal(format!(
+                "HEAD changed from {candidate} to {} while the recovery capture was prepared; \
+                 nothing was committed",
+                fresh_head.as_deref().unwrap_or("an unborn branch"),
+            )));
+        }
+        let fresh_tree = self.observed_index_tree()?;
+        if fresh_tree != index_tree {
+            return Err(stale_state_refusal(format!(
+                "the index tree changed from {index_tree} to {fresh_tree} while the recovery \
+                 capture was prepared; nothing was committed",
+            )));
+        }
+        Ok(())
     }
 
     /// The precondition recheck of one checkpoint immediately before the
@@ -8332,6 +10460,42 @@ impl<'a> Operations<'a> {
             Ok(true) => ObservedEffect::Changed,
             Err(_) => ObservedEffect::Unknown,
         }
+    }
+
+    /// The tree the real index describes, observed without touching one
+    /// real index byte (SPEC 6.4, 9.7): the index file is copied to one
+    /// disposable path and `write-tree` runs against the copy, so the
+    /// recovery inspection, the guarded recovery capture, and its dry run
+    /// read the same tree while the real index keeps its bytes, cache
+    /// included. A missing index file is the empty index Git itself reads,
+    /// so the disposable copy is seeded empty in that case, never created
+    /// by one write against the real one.
+    ///
+    /// The copy never outlives the call, and no ref, working file, or
+    /// stored blob changes: only the disposable copy and the tree object
+    /// `write-tree` stores, which is the temporary Git object SPEC 6.4
+    /// allows a read-only computation to create.
+    fn observed_index_tree(&self) -> Result<String, OperationError> {
+        let source = self.git.git_path("index").map_err(PolicyError::from)?;
+        let temp = reserve_temp_index().map_err(PolicyError::Io)?;
+        let tree = (|| {
+            let mut probe = self.git.clone();
+            probe.set_env_override("GIT_INDEX_FILE", &temp);
+            match fs::metadata(&source) {
+                Ok(_) => fs::copy(&source, &temp)
+                    .map(|_| ())
+                    .map_err(PolicyError::Io)?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    probe.read_tree_empty().map_err(PolicyError::from)?
+                }
+                Err(error) => return Err(PolicyError::Io(error)),
+            }
+            probe.write_tree().map_err(PolicyError::from)
+        })();
+        // The disposable index never outlives the observation, on success
+        // or failure.
+        let _ = fs::remove_file(&temp);
+        tree.map_err(OperationError::from)
     }
 
     /// Inspects what a failed capture actually left behind (SPEC 9.1 step 7,
@@ -8709,11 +10873,13 @@ impl<'a> Operations<'a> {
             },
             None => 0,
         };
-        let history = match self.git.first_parent_history(&head) {
+        let mut guard = self.history_walk();
+        let walk = guard.as_mut().expect("the constructor fills the walk");
+        let history = match walk.own_history(&head) {
             Ok(history) => history,
-            Err(error) => return failure(OperationError::from(error)),
+            Err(error) => return failure(history_walk_failed(error)),
         };
-        let page = match timeline_page(self.git, &history, &contract, start, limit) {
+        let page = match timeline_page(walk, &history, &contract, start, limit) {
             Ok(page) => page,
             Err(error) => return failure(error),
         };
@@ -9077,11 +11243,17 @@ impl<'a> Operations<'a> {
         match self.lookup_request_receipt(CommitKind::Review, &plan.request_id, &fingerprint.id()) {
             Ok(ReceiptLookup::Found(receipt)) => {
                 effects.observe_commit(CommitEffect::ExistingReceipt, Some(receipt.commit.clone()));
+                if let Some(trace) = self.trace.as_ref() {
+                    trace.submit_receipt(&plan.request_id, &receipt.commit);
+                }
                 return self.existing_receipt_decision(&receipt, &plan, false, effects);
             }
             Ok(ReceiptLookup::Conflict {
                 commit, recorded, ..
             }) => {
+                if let Some(trace) = self.trace.as_ref() {
+                    trace.submit_conflict(&plan.request_id);
+                }
                 return failure(
                     request_id_conflict(&plan.request_id, &commit, &recorded),
                     &effects,
@@ -9214,6 +11386,24 @@ impl<'a> Operations<'a> {
             return failure(error, &effects);
         }
 
+        // The plan is accepted and pinned: the modeled protocol begins here
+        // (SPEC 15.7 `Submit`), with the identities the conformance check
+        // validates — the candidate, the baseline, and the groups the
+        // application restores, in the one order the proof applies them.
+        if let Some(trace) = self.trace.as_ref() {
+            let restore: Vec<String> = selected_reverse_units(&manifest, &decided)
+                .into_iter()
+                .map(|(_, change_id, _)| change_id.id())
+                .collect();
+            trace.submit_accepted(
+                "apply",
+                &plan.request_id,
+                &manifest.candidate_oid,
+                &manifest.baseline_oid,
+                &restore,
+            );
+        }
+
         // The decision data every return path below reports, from the
         // prepared context alone: the preview tree, the decided groups, and
         // the scoped result the decision approves.
@@ -9250,9 +11440,16 @@ impl<'a> Operations<'a> {
         // A failure at that boundary leaves real state behind, so the state
         // is inspected and reported instead of being called a rollback.
         if !plan.restore.is_empty() {
-            if let Err(error) =
-                self.apply_selected_review(&resolved, &manifest, &decided, &intended)
-            {
+            if let Err(error) = self.apply_selected_review(
+                &resolved,
+                &manifest,
+                &decided,
+                &intended,
+                &plan.request_id,
+            ) {
+                if let Some(trace) = self.trace.as_ref() {
+                    trace.fail(&plan.request_id);
+                }
                 let inspected = self.observe_capture_failure(
                     &mut effects,
                     Some(&manifest.candidate_oid),
@@ -9288,6 +11485,9 @@ impl<'a> Operations<'a> {
                 // ordinary history and confers no approval, while a killed
                 // commit process loses the outcome, which is never
                 // narrowed back to `none` (SPEC 9.6, 7.1).
+                if let Some(trace) = self.trace.as_ref() {
+                    trace.fail(&plan.request_id);
+                }
                 let inspected = self.observe_capture_failure(
                     &mut effects,
                     Some(&manifest.candidate_oid),
@@ -9316,6 +11516,14 @@ impl<'a> Operations<'a> {
             }
         };
         effects.observe_commit(CommitEffect::Created, Some(marker.commit.clone()));
+        if let Some(trace) = self.trace.as_ref() {
+            trace.publish(
+                &plan.request_id,
+                &marker.commit,
+                &manifest.candidate_oid,
+                &marker.result_tree,
+            );
+        }
 
         // The observed state after the verified commit (SPEC 9.1 step 7,
         // 9.2): a hook or a concurrent writer may have changed scoped
@@ -9329,6 +11537,9 @@ impl<'a> Operations<'a> {
             &intended.tree,
             &mut effects,
         );
+        if let Some(trace) = self.trace.as_ref() {
+            trace.respond(&plan.request_id, &marker.commit);
+        }
         let data = observed(
             Some(marker.commit.clone()),
             &restored,
@@ -9369,6 +11580,7 @@ impl<'a> Operations<'a> {
         manifest: &GroupedManifest,
         decided: &BTreeSet<&str>,
         intended: &IntendedReview,
+        request: &str,
     ) -> Result<(), OperationError> {
         let expected_delta: BTreeSet<OsString> =
             intended.paths.iter().map(OsString::from).collect();
@@ -9401,6 +11613,9 @@ impl<'a> Operations<'a> {
                         change_id.id()
                     ),
                 ));
+            }
+            if let Some(trace) = self.trace.as_ref() {
+                trace.apply_group(request, &change_id.id(), &manifest.candidate_oid);
             }
         }
 
@@ -9460,6 +11675,9 @@ impl<'a> Operations<'a> {
                     listed_paths(&moved),
                 ),
             ));
+        }
+        if let Some(trace) = self.trace.as_ref() {
+            trace.update_index(request, &manifest.candidate_oid, &intended.tree);
         }
         Ok(())
     }
@@ -9561,19 +11779,576 @@ impl<'a> Operations<'a> {
 
     /// Resumes one retained review plan (SPEC 13.2 `resume_review`, 9.7).
     ///
-    /// The guards run first and refuse without writing, and a document the
-    /// strict parser refuses never reads as a missing feature. The resume
-    /// algorithm arrives with task T035; until then a clean workspace with
-    /// a well-formed plan fails with `OPERATION_UNAVAILABLE` and unchanged
-    /// effects.
-    pub fn resume_review(&self, request: &ReviewRequest) -> ReviewResult {
-        if let Err(error) = self.mutation_context(request.scope.as_ref()) {
-            return ReviewResult::failure(error, Effects::unchanged());
+    /// The retained-plan recovery path of SPEC 9.7: the writer still holds
+    /// the plan, and the repository may still hold the result one
+    /// interrupted application proved — the index at the intended tree T,
+    /// the scoped working bytes at the reviewed result R, and the
+    /// candidate C still at `HEAD`. The resume recomputes T from the plan
+    /// alone, through the same disposable-index proof the dry run and the
+    /// application share, and compares that proved result against the
+    /// repository. It commits only when every dimension matches: `HEAD`
+    /// still C, the real index exactly T, the scoped working content
+    /// exactly R, no staged delta outside the restored passages, the
+    /// adopted branch, the scope, and the plan's decisions over the
+    /// recomputed manifest. An unmatched partial state refuses before the
+    /// commit; the resume never reapplies a patch and never approves state
+    /// it did not prove.
+    ///
+    /// This is newly validated explicit approval, not automatic crash
+    /// recovery. The shared sequence of SPEC 9.1 still runs: the workspace
+    /// probe and the strict parse, the mutation lock — the resume commits —
+    /// and the receipt lookup of SPEC 8.7 before any present-day stale
+    /// check, so a resume of a request that already completed returns its
+    /// verified receipt instead of a refusal or a second commit, while a
+    /// reused request ID under another fingerprint conflicts. The mutation
+    /// guards carry the one index exception of SPEC 9.7: the retained
+    /// result stays staged against C, so the staged-changes blocker alone
+    /// does not refuse here, every other blocker still does, and the
+    /// retained-state inspection proves the whole index tree against the
+    /// recomputed T instead of trusting the blocker's own path list.
+    ///
+    /// A keep-all plan holds the candidate's own tree as T, so its exact
+    /// retained state is the clean workspace, and resuming it is one
+    /// explicitly validated empty review commit (SPEC 9.4). A dry run
+    /// reports the same verification without the commit (SPEC 6.4).
+    pub fn resume_review(&self, request: &ReviewRequest) -> ReviewDecisionResult {
+        let mut effects = Effects::unchanged();
+        let failure = |error: OperationError, effects: &Effects| {
+            ReviewDecisionResult::failure(error, effects.clone())
+        };
+
+        // SPEC 9.1 steps 1 and 3: the workspace probe and the strict parse
+        // and canonicalization of the input, before any present-day
+        // eligibility inspection.
+        if let Err(error) = require_work_tree(self.git) {
+            return failure(error, &effects);
         }
-        if let Err(problem) = ReviewPlan::parse(&request.plan) {
-            return ReviewResult::failure(problem.into(), Effects::unchanged());
+        let plan = match ReviewPlan::parse(&request.plan) {
+            Ok(plan) => plan,
+            Err(problem) => return failure(problem.into(), &effects),
+        };
+        let fingerprint = match Identities::new(self.git)
+            .and_then(|identities| identities.plan(&plan.identity()))
+        {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+
+        // SPEC 9.1 step 2: the shared mutation lock serializes the commit
+        // the resume may create with every other Margin write of the
+        // repository. A dry run reserves neither the branch nor the
+        // working files (SPEC 6.4), so it takes no lock.
+        let _lock = if request.dry_run {
+            None
+        } else {
+            match self.acquire_mutation_lock() {
+                Ok(lock) => Some(lock),
+                Err(error) => return failure(error, &effects),
+            }
+        };
+
+        // SPEC 8.7, 9.7: the receipt lookup precedes every stale-state
+        // check below, so a resume of a request that already completed
+        // returns its verified receipt instead of a refusal or a second
+        // commit. A dry run reports the matched receipt the way the
+        // validation does: as data, with the effects of an operation that
+        // wrote nothing (SPEC 6.4).
+        match self.lookup_request_receipt(CommitKind::Review, &plan.request_id, &fingerprint.id()) {
+            Ok(ReceiptLookup::Found(receipt)) => {
+                if !request.dry_run {
+                    effects.observe_commit(
+                        CommitEffect::ExistingReceipt,
+                        Some(receipt.commit.clone()),
+                    );
+                    if let Some(trace) = self.trace.as_ref() {
+                        trace.submit_receipt(&plan.request_id, &receipt.commit);
+                    }
+                }
+                return self.existing_receipt_decision(&receipt, &plan, request.dry_run, effects);
+            }
+            Ok(ReceiptLookup::Conflict {
+                commit, recorded, ..
+            }) => {
+                if !request.dry_run
+                    && let Some(trace) = self.trace.as_ref()
+                {
+                    trace.submit_conflict(&plan.request_id);
+                }
+                return failure(
+                    request_id_conflict(&plan.request_id, &commit, &recorded),
+                    &effects,
+                );
+            }
+            Ok(ReceiptLookup::Absent) => {}
+            Err(error) => return failure(error, &effects),
         }
-        ReviewResult::failure(operation_pending("review resumption"), Effects::unchanged())
+
+        // SPEC 9.7 requires the current `HEAD` to still equal the candidate
+        // C the plan pins, so that dimension refuses first, with both object
+        // IDs named, before the pinned comparison recomputes anything.
+        let fresh_head = match self.git.head_commit() {
+            Ok(head) => head,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        if fresh_head.as_deref() != Some(plan.candidate_oid.as_str()) {
+            return failure(
+                OperationError::new(
+                    "STALE_REVIEW",
+                    format!(
+                        "the resume requires HEAD at the candidate {} of the retained plan, but \
+                         HEAD holds {}",
+                        plan.candidate_oid,
+                        fresh_head.as_deref().unwrap_or("an unborn branch"),
+                    ),
+                )
+                .recovery(&["margin", "doctor", "--json"]),
+                &effects,
+            );
+        }
+
+        // The pinned comparison and the plan's coverage of it (SPEC 7.3,
+        // 9.3): recomputed from the history the plan pins, so the intended
+        // tree below is the plan's own proved result, never an observation
+        // of whatever the workspace holds.
+        let pinned = match self.validated_plan(request.scope.as_ref(), &plan) {
+            Ok(pinned) => pinned,
+            Err(error) => return failure(error, &effects),
+        };
+        let PinnedReview {
+            resolved,
+            branch_ref,
+            manifest,
+            candidate_scope_digest,
+        } = pinned;
+
+        // SPEC 9.1 step 4 with the one index exception of SPEC 9.7: the
+        // repository and storage policy in guard order, then the adopted
+        // branch, then the author identity Margin never writes itself.
+        let settings = match self.effective_settings() {
+            Ok(settings) => settings,
+            Err(error) => return failure(error, &effects),
+        };
+        let input = match scope_input_of(request.scope.as_ref(), &settings) {
+            Some(input) => input,
+            None => return failure(not_initialized(), &effects),
+        };
+        let branch_at_guard = match self.enforce_resume_guards(&resolved, &settings) {
+            Ok(branch_ref) => branch_ref,
+            Err(error) => return failure(error, &effects),
+        };
+        if let Err(error) = self.git.author_ident() {
+            if matches!(error, GitError::Exit { .. }) {
+                return failure(missing_identity(), &effects);
+            }
+            return failure(OperationError::from(error), &effects);
+        }
+
+        // The recomputed intended tree T (SPEC 9.3, 9.7): one disposable
+        // index seeded from C reverse-applies the plan's selected complete
+        // units. The real index and the working files are never touched,
+        // so the resume never reapplies a patch.
+        let decided: BTreeSet<&str> = plan.restore.iter().map(String::as_str).collect();
+        let intended = match intended_review_tree(self.git, &manifest, &decided) {
+            Ok(intended) => intended,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+        let result_scope_digest = match scoped_content_digest(self.git, &intended.tree, &resolved) {
+            Ok(digest) => digest,
+            Err(error) => {
+                return failure(
+                    OperationError::new(error.public_code(), error.to_string()),
+                    &effects,
+                );
+            }
+        };
+        let restored: Vec<String> = manifest
+            .groups()
+            .filter(|group| decided.contains(group.change_id.id().as_str()))
+            .map(|group| group.change_id.id())
+            .collect();
+        let kept = manifest.groups().count() - restored.len();
+
+        // The retained-state inspection of SPEC 9.7: every dimension the
+        // resume commits against, proved against the recomputed result.
+        if let Err(error) =
+            self.verify_retained_review_state(&resolved, &manifest.candidate_oid, &intended)
+        {
+            return failure(error, &effects);
+        }
+
+        // The prepared marker map (SPEC 8.3), exactly the map the
+        // interrupted application would have committed: C as the candidate
+        // and parent, B as the baseline, T as the result tree, and the
+        // request and plan fingerprint as the receipt. An invalid effective
+        // message refuses before anything is committed (SPEC 7.3).
+        let metadata = CommitMetadata {
+            kind: CommitKind::Review,
+            scope_digest: resolved.digest.id(),
+            scope_spec: String::from_utf8(resolved.descriptor.canonical_bytes())
+                .expect("the canonical descriptor is UTF-8 JSON"),
+            candidate: manifest.candidate_oid.clone(),
+            result_tree: intended.tree.clone(),
+            baseline: Some(manifest.baseline_oid.clone()),
+            request: Some(plan.request_id.clone()),
+            plan: Some(fingerprint.id()),
+            source: None,
+        };
+        if let Err(problem) = metadata.commit_message(&plan.message) {
+            return failure(
+                OperationError::new(problem.public_code(), problem.to_string()),
+                &effects,
+            );
+        }
+
+        // The decision data every return path below reports, from the
+        // prepared context alone: the recomputed tree, the decided groups,
+        // and the scoped result the decision approves.
+        let observed = |commit: Option<String>, dry_run: bool| ReviewDecision {
+            request_id: plan.request_id.clone(),
+            review_id: manifest.review_id.id(),
+            branch_ref: branch_ref.clone(),
+            scope_id: resolved.digest.id(),
+            baseline_oid: manifest.baseline_oid.clone(),
+            candidate_oid: manifest.candidate_oid.clone(),
+            candidate_scope_digest: candidate_scope_digest.id(),
+            kept: Some(kept),
+            restored: restored.clone(),
+            paths: intended.paths.clone(),
+            expected_tree: intended.tree.clone(),
+            result_scope_digest: result_scope_digest.id(),
+            message: plan.message.clone(),
+            dry_run,
+            commit,
+            existing_receipt: None,
+        };
+
+        // A dry run is the verification half alone (SPEC 6.4): the retained
+        // state the inspection just proved, reported without the commit.
+        if request.dry_run {
+            return ReviewDecisionResult::success(observed(None, true), Effects::unchanged());
+        }
+
+        // The working-entry baseline for post-failure observation (SPEC 9.1
+        // step 7), read before the commit: the resume rewrites nothing, so
+        // this equals R the inspection proved.
+        let working_before = match scoped_working_state(self.git, &resolved) {
+            Ok(before) => before,
+            Err(error) => return failure(OperationError::from(error), &effects),
+        };
+
+        // The precondition recheck immediately before the only real
+        // mutation of the resume (SPEC 9.1 step 6): the scope, the branch,
+        // the candidate, and the retained result must all still hold when
+        // the commit starts.
+        if let Err(error) = self.recheck_resume_preconditions(
+            &input,
+            &resolved,
+            &settings,
+            &branch_at_guard,
+            &manifest.candidate_oid,
+            &intended,
+        ) {
+            return failure(error, &effects);
+        }
+
+        // The retained plan is accepted and pinned: the modeled protocol
+        // restarts at its commit phase, because the retained result already
+        // passed the application this resume never repeats (SPEC 15.7
+        // `Submit` in resume mode).
+        if let Some(trace) = self.trace.as_ref() {
+            trace.submit_accepted(
+                "resume",
+                &plan.request_id,
+                &manifest.candidate_oid,
+                &manifest.baseline_oid,
+                &restored,
+            );
+        }
+
+        // The one real mutation of the resume (SPEC 9.7): a normal review
+        // commit over the already validated index — no application, no
+        // restaging from the working tree, no `commit --only`. The shared
+        // marker writer compares the real index tree with T and verifies
+        // the actual parent, tree, and every reserved trailer against the
+        // prepared map before the baseline may advance (SPEC 8.4).
+        let marker = match commit_marker(self.git, &metadata, &plan.message) {
+            Ok(marker) => marker,
+            Err(error) => {
+                // Inspect what the failed commit left, then keep the commit
+                // the failure itself names: a commit whose observed state
+                // does not match the prepared map still exists as ordinary
+                // history and confers no approval, while a killed commit
+                // process loses the outcome, which is never narrowed back
+                // to `none` (SPEC 9.6, 7.1). The retained state itself
+                // stays behind for the next explicit recovery.
+                if let Some(trace) = self.trace.as_ref() {
+                    trace.fail(&plan.request_id);
+                }
+                let inspected = self.observe_resume_failure(
+                    &mut effects,
+                    &manifest.candidate_oid,
+                    &intended.tree,
+                    &working_before,
+                    request.scope.as_ref(),
+                );
+                match &error {
+                    MarkerCommitError::Verification { commit, .. } => {
+                        effects.observe_commit(CommitEffect::Created, Some(commit.clone()));
+                    }
+                    MarkerCommitError::Git(GitError::Timeout { .. }) => {
+                        effects.observe_commit(CommitEffect::Unknown, None);
+                    }
+                    _ => {}
+                }
+                let commit = match &error {
+                    MarkerCommitError::Verification { commit, .. } => Some(commit.clone()),
+                    MarkerCommitError::Git(GitError::Timeout { .. }) => None,
+                    _ => inspected,
+                };
+                return ReviewDecisionResult::observed_failure(
+                    OperationError::from(error),
+                    observed(commit, false),
+                    effects,
+                );
+            }
+        };
+        effects.observe_commit(CommitEffect::Created, Some(marker.commit.clone()));
+        if let Some(trace) = self.trace.as_ref() {
+            trace.publish(
+                &plan.request_id,
+                &marker.commit,
+                &manifest.candidate_oid,
+                &marker.result_tree,
+            );
+        }
+
+        // The observed state after the verified commit (SPEC 9.1 step 7,
+        // 9.2): a hook or a concurrent writer may have changed scoped
+        // working bytes or staged entries after the commit the markers
+        // proved. The response reports that newer content as observed, and
+        // never as reviewed, while the verified commit stands.
+        let warnings = self.observe_receipt_completion(
+            request.scope.as_ref(),
+            "review",
+            &marker.commit,
+            &intended.tree,
+            &mut effects,
+        );
+        if let Some(trace) = self.trace.as_ref() {
+            trace.respond(&plan.request_id, &marker.commit);
+        }
+        let data = observed(Some(marker.commit.clone()), false);
+        if warnings.is_empty() {
+            ReviewDecisionResult::success(data, effects)
+        } else {
+            ReviewDecisionResult::success_with_warnings(data, warnings, effects)
+        }
+    }
+
+    /// The shared mutation inspection of the resume (SPEC 9.1 step 4, 9.7):
+    /// every guard of [`Operations::enforce_mutation_guards`] with the one
+    /// explicit index exception of SPEC 9.7 — an exact-plan resume runs
+    /// over the retained result, which stays staged against the candidate.
+    ///
+    /// The exception admits the blocker, never the staging: the
+    /// retained-state inspection proves the whole index tree against the
+    /// recomputed T, so unrelated or partial staged content still refuses
+    /// there. Conflict entries, in-progress Git operations, storage
+    /// transformations, a detached `HEAD`, and a branch other than the
+    /// adopted one all refuse here as they do for every other write.
+    fn enforce_resume_guards(
+        &self,
+        resolved: &ResolvedScope,
+        settings: &LocalSettings,
+    ) -> Result<Option<String>, OperationError> {
+        self.enforce_mutation_guards_except_staged(resolved, settings)
+    }
+
+    /// Proves the retained state of one resumed plan against the recomputed
+    /// intended result (SPEC 9.7): `HEAD` still the candidate C, the staged
+    /// delta exactly the restored passages, the real index tree exactly T,
+    /// and the scoped working content exactly R.
+    ///
+    /// Every mismatch refuses before the commit with one typed stale
+    /// refusal that names the dimension and the observed value, because the
+    /// resume approves only the plan's own proved result: a partial
+    /// application, a later writer, a moved candidate, or unrelated staged
+    /// content each keep the decision unmade, and the recovery inspection
+    /// of `doctor` remains the path that explains the observed state
+    /// (SPEC 9.6, 9.7).
+    fn verify_retained_review_state(
+        &self,
+        resolved: &ResolvedScope,
+        candidate: &str,
+        intended: &IntendedReview,
+    ) -> Result<(), OperationError> {
+        let retained = |dimension: String| {
+            OperationError::new("STALE_REVIEW", dimension).recovery(&["margin", "doctor", "--json"])
+        };
+
+        // The candidate the prepared map names must still be `HEAD`.
+        let fresh_head = self.git.head_commit().map_err(OperationError::from)?;
+        if fresh_head.as_deref() != Some(candidate) {
+            return Err(retained(format!(
+                "the resume requires HEAD at the candidate {candidate} of the retained plan, but \
+                 HEAD holds {}",
+                fresh_head.as_deref().unwrap_or("an unborn branch"),
+            )));
+        }
+
+        // No unrelated staged delta (SPEC 9.7): the staged paths are exactly
+        // the restored passages the plan rewrites.
+        let staged: BTreeSet<OsString> = self
+            .git
+            .staged_against(candidate)
+            .map_err(OperationError::from)?
+            .into_iter()
+            .collect();
+        let expected: BTreeSet<OsString> = intended.paths.iter().map(OsString::from).collect();
+        if staged != expected {
+            let unexpected: Vec<OsString> = staged.difference(&expected).cloned().collect();
+            let missing: Vec<OsString> = expected.difference(&staged).cloned().collect();
+            return Err(retained(format!(
+                "the staged delta disagrees with the retained plan: {} path(s) staged outside \
+                 its restored passages ({}), {} restored path(s) staged nothing ({})",
+                unexpected.len(),
+                listed_paths(&unexpected),
+                missing.len(),
+                listed_paths(&missing),
+            )));
+        }
+
+        // The real index is exactly T (SPEC 9.7): conflict entries stop the
+        // inspection as one observed mismatch, never a fallback that could
+        // read the state as absent.
+        if self
+            .git
+            .ls_files_stage()
+            .map_err(OperationError::from)?
+            .iter()
+            .any(|entry| entry.stage > 0)
+        {
+            return Err(retained(
+                "the index holds conflict entries, so it cannot equal the intended result tree \
+                 of the retained plan"
+                    .to_string(),
+            ));
+        }
+        let index_tree = self.git.write_tree().map_err(OperationError::from)?;
+        if index_tree != intended.tree {
+            return Err(retained(format!(
+                "the index holds the tree {index_tree} instead of the intended result tree {} of \
+                 the retained plan",
+                intended.tree,
+            )));
+        }
+
+        // The scoped working content is exactly R (SPEC 9.7): the same
+        // comparison the application verifies after the real apply, read
+        // from the immutable entries of T alone.
+        let working = scoped_working_state(self.git, resolved).map_err(OperationError::from)?;
+        let expected_working = intended_working_state(self.git, resolved, &intended.tree)
+            .map_err(OperationError::from)?;
+        if working != expected_working {
+            let mut moved: Vec<OsString> = working
+                .keys()
+                .chain(expected_working.keys())
+                .filter(|path| working.get(*path) != expected_working.get(*path))
+                .cloned()
+                .collect();
+            moved.sort();
+            return Err(retained(format!(
+                "the scoped working content does not equal the reviewed result of the retained \
+                 plan: {} path(s) differ ({})",
+                moved.len(),
+                listed_paths(&moved),
+            )));
+        }
+        Ok(())
+    }
+
+    /// The precondition recheck immediately before the resume's one real
+    /// mutation (SPEC 9.1 step 6, 9.7): the scope, the branch, the
+    /// candidate, and the retained result must all still hold when the
+    /// commit starts.
+    fn recheck_resume_preconditions(
+        &self,
+        input: &ScopeInput,
+        resolved: &ResolvedScope,
+        settings: &LocalSettings,
+        branch_at_guard: &Option<String>,
+        candidate: &str,
+        intended: &IntendedReview,
+    ) -> Result<(), OperationError> {
+        // Path safety and the scope's path set (SPEC 14.3): a scoped path
+        // that became a symlink, a nested repository, or one more eligible
+        // untracked file all change what the one resolver returns.
+        let fresh = resolve_scope(self.git, input).map_err(OperationError::from)?;
+        if !fresh.blockers.is_empty() {
+            return Err(scope_blockers_refusal(&fresh.blockers));
+        }
+        if fresh.paths != resolved.paths {
+            return Err(scope_paths_moved("scope", &fresh.paths, &resolved.paths));
+        }
+        // The shared policy guards once more — the index exception of the
+        // resume included — and the branch the guards observed.
+        let branch = self.enforce_resume_guards(&fresh, settings)?;
+        if branch != *branch_at_guard {
+            return Err(branch_moved_refusal(branch_at_guard, &branch));
+        }
+        // The retained state itself, proved once more against the
+        // recomputed result.
+        self.verify_retained_review_state(&fresh, candidate, intended)
+    }
+
+    /// Inspects the workspace after the resume's commit failed (SPEC 9.7,
+    /// 9.6): the resume itself staged nothing and rewrote nothing, so the
+    /// retained result is what the inspection compares — the index against
+    /// the recomputed T, the scoped working bytes against the baseline the
+    /// inspection read before the commit — and the head names any commit a
+    /// failed process still created. The refusal that follows reports this
+    /// observed state and never claims a rollback (SPEC 9.6): the retained
+    /// result stays exactly where it was for the next explicit resume.
+    fn observe_resume_failure(
+        &self,
+        effects: &mut Effects,
+        candidate: &str,
+        intended_tree: &str,
+        before: &BTreeMap<OsString, Option<WorkingEntry>>,
+        scope: Option<&ScopeInput>,
+    ) -> Option<String> {
+        // The branch head first: it names the commit the response reports.
+        let mut observed = None;
+        match self.git.head_commit() {
+            Ok(Some(head)) if head != candidate => {
+                effects.observe_commit(CommitEffect::Created, Some(head.clone()));
+                observed = Some(head);
+            }
+            // The head the resume started from still stands.
+            Ok(_) => effects.observe_commit(CommitEffect::None, None),
+            Err(_) => effects.observe_commit(CommitEffect::Unknown, None),
+        }
+
+        // The retained index: the resume stages nothing, so the index
+        // stayed exactly T unless a concurrent writer staged something new.
+        effects.observe_index(match self.git.write_tree() {
+            Ok(tree) if tree == intended_tree => ObservedEffect::Unchanged,
+            Ok(_) => ObservedEffect::Changed,
+            Err(_) => ObservedEffect::Unknown,
+        });
+
+        // The scoped working content: unchanged while it still equals the
+        // baseline the inspection read, which equals R the resume proved.
+        let inspected = self
+            .context_scope_input(scope)
+            .and_then(|input| resolve_scope(self.git, &input).map_err(OperationError::from))
+            .and_then(|fresh| scoped_working_state(self.git, &fresh).map_err(OperationError::from));
+        effects.observe_working_tree(match inspected {
+            Ok(after) if &after == before => ObservedEffect::Unchanged,
+            Ok(_) => ObservedEffect::Changed,
+            Err(_) => ObservedEffect::Unknown,
+        });
+        observed
     }
 
     /// Validates one already parsed plan against the pinned comparison the
@@ -9627,7 +12402,9 @@ impl<'a> Operations<'a> {
             }
             Err(error) => return Err(error.into()),
         };
-        let baseline = match select_baseline(self.git, &head, &resolved.digest) {
+        let mut guard = self.history_walk();
+        let walk = guard.as_mut().expect("the constructor fills the walk");
+        let baseline = match walk.select_baseline(&head, &resolved.digest) {
             Ok(marker) => marker,
             Err(BaselineError::Unavailable(reason)) => {
                 return Err(
@@ -10161,7 +12938,9 @@ impl<'a> Operations<'a> {
         // The baseline the restoration leaves unchanged (SPEC 9.5): the one
         // walk of SPEC 8.5 answers, and no anchor is a reportable state, not
         // a failure — a restoration approves nothing.
-        let baseline_oid = match select_baseline(self.git, &candidate_oid, &resolved.digest) {
+        let mut guard = self.history_walk();
+        let walk = guard.as_mut().expect("the constructor fills the walk");
+        let baseline_oid = match walk.select_baseline(&candidate_oid, &resolved.digest) {
             Ok(marker) => Some(marker.commit),
             Err(BaselineError::Unavailable(_)) => None,
             Err(error) => return Err(error.into()),
@@ -10401,8 +13180,10 @@ impl<'a> Operations<'a> {
         // The baseline the completed request left unchanged (SPEC 9.5),
         // answered through the one walk under the recorded scope digest. No
         // anchor is a reportable state, not a failure.
+        let mut guard = self.history_walk();
+        let walk = guard.as_mut().expect("the constructor fills the walk");
         let baseline_oid =
-            match select_baseline_matching(self.git, &receipt.candidate, &receipt.scope_digest) {
+            match walk.select_baseline_matching(&receipt.candidate, &receipt.scope_digest) {
                 Ok(marker) => Some(marker.commit),
                 Err(BaselineError::Unavailable(_)) => None,
                 Err(error) => return failure(error.into()),
@@ -10437,9 +13218,12 @@ impl<'a> Operations<'a> {
     /// the baseline through the one walk, the working fingerprint through the
     /// one content digest of SPEC 8.6, and the receipt through the same scan
     /// [`find_receipt`] runs, so no interface judges recovery state on its
-    /// own (SPEC 13.6). The index tree comes from `git write-tree` in query
-    /// mode — it stores one tree object, touches no ref, no index entry, and
-    /// no working file, and stays `None` while conflict stages stop it.
+    /// own (SPEC 13.6). The index tree comes from one disposable copy of
+    /// the real index through [`Operations::observed_index_tree`]: plain
+    /// `git write-tree` rewrites the index it addresses to store the
+    /// computed tree cache, optional locks off or not, so the query reads
+    /// the same tree without changing one real index byte, and the tree
+    /// stays `None` while conflict stages stop the computation.
     ///
     /// Blockers and unavailable anchors are observations the data carries,
     /// not failures of the query, because `doctor` is exactly the command a
@@ -10462,11 +13246,15 @@ impl<'a> Operations<'a> {
             Err(error) => return failure(OperationError::from(error)),
         };
         let baseline = match &head {
-            Some(candidate) => match select_baseline(self.git, candidate, &resolved.digest) {
-                Ok(marker) => BaselineStatus::Anchored(Box::new(marker)),
-                Err(BaselineError::Unavailable(reason)) => BaselineStatus::Unavailable(reason),
-                Err(error) => return failure(OperationError::from(error)),
-            },
+            Some(candidate) => {
+                let mut guard = self.history_walk();
+                let walk = guard.as_mut().expect("the constructor fills the walk");
+                match walk.select_baseline(candidate, &resolved.digest) {
+                    Ok(marker) => BaselineStatus::Anchored(Box::new(marker)),
+                    Err(BaselineError::Unavailable(reason)) => BaselineStatus::Unavailable(reason),
+                    Err(error) => return failure(OperationError::from(error)),
+                }
+            }
             None => BaselineStatus::NoCandidate,
         };
 
@@ -10480,9 +13268,9 @@ impl<'a> Operations<'a> {
         let index_tree = if index.iter().any(|entry| entry.stage > 0) {
             None
         } else {
-            match self.git.write_tree() {
+            match self.observed_index_tree() {
                 Ok(tree) => Some(tree),
-                Err(error) => return failure(OperationError::from(error)),
+                Err(error) => return failure(error),
             }
         };
 
@@ -10511,7 +13299,9 @@ impl<'a> Operations<'a> {
         // holds the durable record of one completed request.
         let receipt = match &head {
             Some(candidate) => {
-                match find_latest_receipt(self.git, candidate, &resolved.digest.id()) {
+                let mut guard = self.history_walk();
+                let walk = guard.as_mut().expect("the constructor fills the walk");
+                match walk.find_latest_receipt(candidate, &resolved.digest.id()) {
                     Ok(presence) => presence,
                     Err(error) => {
                         return failure(
@@ -10545,6 +13335,9 @@ impl<'a> Operations<'a> {
             scoped_working_digest.as_ref(),
         );
 
+        if let Some(trace) = self.trace.as_ref() {
+            trace.inspected_recovery(head.as_deref());
+        }
         RecoveryResult::success(
             RecoveryInspection {
                 object_format,
@@ -10580,18 +13373,6 @@ impl<'a> Operations<'a> {
     /// lock instead — step 1, the lock, then
     /// [`Operations::enforce_mutation_guards`] — so the same guards run in
     /// the same order under the serialization the lock provides.
-    fn mutation_context(
-        &self,
-        scope: Option<&ScopeInput>,
-    ) -> Result<ResolvedScope, OperationError> {
-        require_work_tree(self.git)?;
-        let settings = self.effective_settings()?;
-        let input = scope_input_of(scope, &settings).ok_or_else(not_initialized)?;
-        let resolved = resolve_scope(self.git, &input).map_err(OperationError::from)?;
-        self.enforce_mutation_guards(&resolved, &settings)?;
-        Ok(resolved)
-    }
-
     /// The context one query shares: the workspace probe and the one scope
     /// resolver. Queries observe blockers as data; they never enforce
     /// mutation policy as a refusal.
@@ -10799,23 +13580,36 @@ struct WorkingEntry {
 /// The inexpensive path asks Git which paths differ — the index against the
 /// candidate through `diff-index`, the working tree against the index
 /// through `diff-files` — so the index stat cache answers for every
-/// unchanged file without reading its content (SPEC 6.3). Untracked and
-/// deleted scoped paths join the flagged set directly. Each flagged path
-/// is then compared exactly against the candidate's tree entry, because a
-/// working file can match the candidate while it differs from the index,
-/// and vice versa. A path Git did not flag matches the candidate: its
-/// index entry equals the candidate's entry and its working bytes equal
-/// the index entry. The raw bytes of every flagged present path are hashed
-/// by batched processes, never one process per document (SPEC 17.5).
+/// unchanged file without reading its content (SPEC 6.3). Untracked,
+/// deleted, and flag-hidden scoped paths join the flagged set directly:
+/// `assume-unchanged` and `skip-worktree` suppress a path in both diff
+/// calls, so the flags themselves flag the path (SPEC 3.1). Each flagged
+/// path is then compared exactly against the candidate's tree entry,
+/// because a working file can match the candidate while it differs from
+/// the index, and vice versa. A path Git did not flag matches the
+/// candidate: its index entry equals the candidate's entry and its working
+/// bytes equal the index entry. The raw bytes of every flagged present
+/// path are hashed by batched processes, never one process per document
+/// (SPEC 17.5).
 fn scoped_working_changes(
     git: &Git,
     scope: &ResolvedScope,
     candidate: &str,
 ) -> Result<BTreeMap<OsString, Option<WorkingEntry>>, PolicyError> {
+    // A path hidden by assume-unchanged or skip-worktree never appears in
+    // either diff list, whatever its working content holds, so those paths
+    // join the flagged set directly and the comparison below reads their
+    // bytes against the candidate entry (SPEC 3.1).
+    let hidden: BTreeSet<OsString> = git
+        .hidden_index_paths()?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
     let flagged: BTreeSet<OsString> = git
         .staged_against(candidate)?
         .into_iter()
         .chain(git.changed_against_index()?)
+        .chain(hidden)
         .collect();
     let candidate_entries: BTreeMap<OsString, (String, String)> = git
         .ls_tree(candidate)?
@@ -10990,6 +13784,21 @@ fn working_baseline(
         baseline.insert(path.clone(), entry);
     }
     Ok(baseline)
+}
+
+/// The present working entries of one scoped state, keyed by path: absence
+/// (`None`) and a path missing from the state map are the same working
+/// state, because a committed deletion leaves the freshly resolved scope
+/// without its path while the baseline holds that path as absent. Two
+/// states describe the same working tree exactly when their present entries
+/// match.
+fn present_working_entries(
+    state: &BTreeMap<OsString, Option<WorkingEntry>>,
+) -> BTreeMap<&OsString, &WorkingEntry> {
+    state
+        .iter()
+        .filter_map(|(path, entry)| entry.as_ref().map(|entry| (path, entry)))
+        .collect()
 }
 
 /// The uncaptured paths of a workspace with no candidate (SPEC 4.2): no
@@ -11461,22 +14270,6 @@ fn scope_blockers_message(blockers: &[ScopeBlocker]) -> String {
 /// silently (SPEC 3.2 rule 5).
 fn scope_blockers_refusal(blockers: &[ScopeBlocker]) -> OperationError {
     OperationError::new("UNSUPPORTED_REPOSITORY", scope_blockers_message(blockers))
-}
-
-/// The typed failure for an operation whose algorithm a later task of the
-/// plan provides: T017, T020, T023 through T027, T030 through T035.
-///
-/// The refusal is honest about this build: nothing was written, every
-/// observed effect stays unchanged, and no approval is conferred. The code
-/// belongs to the SPEC 7.5 exit class of an unmet operational
-/// precondition. Each arriving task replaces one refusal with its real
-/// algorithm. The interface layer shares this one refusal, so no command
-/// invents its own vocabulary for a missing algorithm.
-pub(crate) fn operation_pending(what: &str) -> OperationError {
-    OperationError::new(
-        "OPERATION_UNAVAILABLE",
-        format!("this build of Margin does not provide {what} yet; nothing was written"),
-    )
 }
 
 /// One bounded message for a policy refusal: every blocker in guard

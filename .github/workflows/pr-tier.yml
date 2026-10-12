@@ -1,0 +1,109 @@
+name: PR tier
+
+# The pull-request tier of SPEC 18.3. Every behavior change runs these
+# deterministic gates: format/lints, the declared Rust support, the
+# unit/CLI/real-Git suites with the C0 corpus, TUI buffers, and the
+# schema/example checks, 256 generated property cases, and the four small
+# TLC safety, liveness, control, and negative profiles. Shared-runner
+# timing here is smoke evidence only; performance claims come from the
+# registered-runner tier (SPEC 17).
+#
+# Every job keeps its log, environment record, and timing line under
+# ci/artifacts/ and uploads them when it fails, so a failed run retains
+# its seeds, traces, and Git states (SPEC 18.4). The gates themselves
+# live in ci/run-tier.sh, which also runs locally.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-tier-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lints:
+    name: Format and lints
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Format check and clippy
+        run: ci/run-tier.sh lints pr
+      - name: Retain the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-lints-failure
+          path: ci/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  msrv:
+    name: Declared Rust support
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the declared minimum Rust version
+        run: ci/run-tier.sh msrv pr
+      - name: Retain the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-msrv-failure
+          path: ci/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  tests:
+    name: Unit, CLI, real-Git, C0, TUI, schema, 256 property cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned tmux
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libevent-dev ncurses-dev bison
+          ci/install-tmux.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Deterministic test gate
+        run: ci/run-tier.sh tests pr
+      - name: Retain the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-tests-failure
+          path: ci/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  formal:
+    name: SANY and the four small TLC profiles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Formal profile gate
+        run: ci/run-tier.sh formal pr
+      - name: Retain the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-formal-failure
+          path: ci/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore

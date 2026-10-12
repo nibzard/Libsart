@@ -48,7 +48,7 @@ fn scope_input(include: &[&str], exclude: &[&str], suffixes: &[&str]) -> ScopeIn
 /// The resolved writing scope used throughout this suite.
 fn scope(repo: &TestRepo) -> margin::app::ResolvedScope {
     resolve_scope(
-        &adapter_for(&repo),
+        &adapter_for(repo),
         &scope_input(&["content/"], &[], &[".md"]),
     )
     .unwrap_or_else(|error| panic!("the scope must resolve: {error}"))
@@ -77,7 +77,7 @@ fn metadata(
 
 /// The plan fingerprint of one deterministic plan identity.
 fn plan_id(repo: &TestRepo, operation: &str, request: &str, message: &str) -> String {
-    let adapter = adapter_for(&repo);
+    let adapter = adapter_for(repo);
     let scope = scope(repo);
     let baseline = support::text(&repo.git_ok(["rev-parse", "HEAD"]));
     Identities::new(&adapter)
@@ -85,7 +85,7 @@ fn plan_id(repo: &TestRepo, operation: &str, request: &str, message: &str) -> St
         .plan(&PlanIdentity {
             operation: operation.to_string(),
             request_id: request.to_string(),
-            review_id: format!("sha1:{}", &"0".repeat(40)),
+            review_id: format!("sha1:{}", "0".repeat(40)),
             branch_ref: "refs/heads/main".to_string(),
             scope_id: scope.digest.oid,
             baseline_oid: baseline.clone(),
@@ -106,7 +106,7 @@ fn valid(repo: &TestRepo, commit: &str) -> margin::app::ValidMarker {
 
 /// The finding of one invalid commit, or panics when it validates.
 fn invalid(repo: &TestRepo, commit: &str) -> MarkerInvalid {
-    match validate_marker(&adapter_for(&repo), commit) {
+    match validate_marker(&adapter_for(repo), commit) {
         Err(MarkerError::Invalid(problem)) => problem,
         Err(other) => panic!("the marker must be inspectable: {other}"),
         Ok(marker) => panic!("the marker {commit} unexpectedly validates: {marker:?}"),
@@ -432,7 +432,7 @@ fn copied_trailer_counts_and_values_stay_invalid() {
         .collect::<Vec<&str>>()
         .join("\n")
         + "\n";
-    let forged = forge(&repo, &tree, &[&parent], &message.as_bytes());
+    let forged = forge(&repo, &tree, &[&parent], message.as_bytes());
     assert_eq!(
         invalid(&repo, &forged),
         MarkerInvalid::Trailers(domain::TrailerProblem::Missing {
@@ -780,4 +780,40 @@ fn shallow_history_and_grafts_and_replacements_never_validate() {
             what: "replacement objects",
         }
     );
+}
+
+#[test]
+fn cached_marker_validation_tracks_context_changes() {
+    let repo = seeded_repo();
+    let parent = support::text(&repo.git_ok(["rev-parse", "HEAD"]));
+    let tree = support::text(&repo.git_ok(["write-tree"]));
+    let prepared = metadata(&repo, CommitKind::Draft, &parent, &tree);
+    let commit = forge(
+        &repo,
+        &tree,
+        &[&parent],
+        &prepared.commit_message("draft").unwrap(),
+    );
+    let git = adapter_for(&repo);
+    let mut walk = margin::app::HistoryWalk::new(&git);
+    assert!(walk.validate_marker(&commit).is_ok());
+    let grafts = repo.path().join(".git/info/grafts");
+    fs::write(&grafts, "# changed context\n").unwrap();
+    walk.forget_context();
+    assert!(matches!(
+        walk.validate_marker(&commit),
+        Err(MarkerError::Invalid(MarkerInvalid::UnavailableContext {
+            what: "grafted history"
+        }))
+    ));
+    let mut initially_blocked = margin::app::HistoryWalk::new(&git);
+    assert!(initially_blocked.validate_marker(&commit).is_err());
+    fs::remove_file(grafts).unwrap();
+    for current in [&mut walk, &mut initially_blocked] {
+        current.forget_context();
+        assert!(
+            current.validate_marker(&commit).is_ok(),
+            "a context refusal must not persist after context returns"
+        );
+    }
 }

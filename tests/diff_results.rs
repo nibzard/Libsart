@@ -15,6 +15,8 @@
 //!   identity is `UNKNOWN_CHANGE`
 //! - `--working` previews exactly the tree one checkpoint would create,
 //!   moves no ref, index, or working file, and stays non-actionable
+//! - `--working` still previews an edit that assume-unchanged hides from
+//!   Git's own change reports, and the preview preserves the flag
 //! - a scope with no candidate or no anchor reports the typed precondition
 //!   failure, never a fabricated comparison
 
@@ -596,6 +598,62 @@ fn working_previews_are_non_actionable_and_write_nothing() {
 }
 
 #[test]
+fn working_previews_see_content_hidden_by_index_flags() {
+    // The preview of SPEC 6.2 `--working` must carry an edit that
+    // assume-unchanged hides from every Git change report, because the
+    // preview tree is what one checkpoint would stage (T061, SPEC 4.2).
+    let repo = TestRepo::init();
+    reparagraph(&repo, "notes/a.md", "Original a.");
+    let baseline = init_margin(&repo);
+    reparagraph(&repo, "notes/a.md", "Working a.");
+    repo.git_ok(["update-index", "--assume-unchanged", "--", "notes/a.md"]);
+    assert_eq!(
+        text(&repo.git_ok(["status", "--porcelain"])),
+        "",
+        "stock Git reports no change behind the flag"
+    );
+    let before = support::oracle::snapshot(&repo);
+
+    let preview = data_of(repo.env(), repo.path(), &["diff", "--working", "--json"]);
+    assert_eq!(preview["working"], true);
+    assert_eq!(preview["actionable"], false, "a preview never approves");
+    let changes = preview["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 1, "the hidden working change shows");
+    assert_eq!(changes[0]["path"], "notes/a.md");
+    assert_eq!(changes[0]["kind"], "modified");
+    assert_eq!(preview["baseline_oid"], baseline);
+
+    // The preview tree stores the exact working bytes, proved by stock Git
+    // itself.
+    let candidate = preview["candidate_oid"].as_str().unwrap();
+    let working_oid = text(&repo.git_ok(["hash-object", "notes/a.md"]));
+    let record = String::from_utf8_lossy(&repo.git_ok([
+        "ls-tree",
+        "-r",
+        "-z",
+        candidate,
+        "--",
+        "notes/a.md",
+    ]))
+    .to_string();
+    assert!(
+        record
+            .split('\t')
+            .next()
+            .is_some_and(|meta| meta.contains(&working_oid)),
+        "the preview tree stores the hidden working bytes: {record:?}"
+    );
+
+    // The preview observes only: the flag and the edit survive it.
+    before.assert_unchanged(&support::oracle::snapshot(&repo), "a flagged preview");
+    assert_eq!(
+        text(&repo.git_ok(["ls-files", "-v", "--", "notes/a.md"])),
+        "h notes/a.md",
+        "the preview preserves the user's flag"
+    );
+}
+
+#[test]
 fn diff_needs_a_scope_and_an_anchor() {
     // No stored scope: the typed uninitialized state, never a comparison.
     let repo = TestRepo::init();
@@ -682,4 +740,18 @@ fn the_operation_layer_serves_the_same_pages() {
         "the pages differ"
     );
     assert_eq!(outcome.effects, margin::app::Effects::unchanged());
+}
+
+#[test]
+fn a_large_opaque_checkpoint_remains_reviewable() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"Original.\n");
+    init_margin(&repo);
+    repo.write_file("notes/large.md", &vec![0; 13 * 1024 * 1024]);
+    let captured = margin(repo.env(), repo.path(), &["checkpoint", "--json"]);
+    let envelope = envelope_of(&captured, "large checkpoint");
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    let data = data_of(repo.env(), repo.path(), &["diff", "--json"]);
+    assert_eq!(data["scope_totals"]["files"], 1);
+    assert_eq!(data["scope_totals"]["groups"], 1);
 }

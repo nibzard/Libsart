@@ -17,7 +17,9 @@
 //!   apply followed by a commit rejection retains the staged result, and
 //!   working bytes that change after the apply refuse before the commit —
 //!   each reports the observed state with recovery guidance and never
-//!   claims a rollback
+//!   claims a rollback; the retained result of a rejected commit then
+//!   recovers through the guarded staged capture of SPEC 9.7 as one
+//!   unreviewed draft the next review decides again
 //! - a hook that succeeds but edits scoped files leaves the verified
 //!   commit standing while the response reports the newer content, and a
 //!   hook that rewrites the reserved trailers leaves an ordinary commit
@@ -28,6 +30,10 @@
 //!   conflicts
 //! - the guards refuse typed and unchanged: uncaptured scoped bytes, a
 //!   staged entry, a foreign branch, and a moved candidate
+//! - an assume-unchanged flag cannot hide uncaptured bytes from a review:
+//!   the specific index-flag blocker refuses both phases before any
+//!   mutation, and the cleared flag leaves the ordinary `DIRTY_SCOPE`
+//!   refusal over the same bytes
 //! - the precondition recheck of SPEC 9.1 step 6 refuses before the commit
 //!   when a concurrent writer moves `HEAD`, the index, or the scoped bytes
 //!   while the application is prepared, and the shared mutation lock
@@ -49,9 +55,10 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use margin::app::{
-    BaselineStatus, ChangeDetail, CommitEffect, DiffRequest, Effects, Identities, InitRequest,
-    InspectRequest, ObservedEffect, OperationOutcome, Operations, RepositoryEffect, ReviewDecision,
-    ReviewOutcome, ReviewRequest, validate_marker,
+    BaselineStatus, ChangeDetail, CheckpointRequest, CommitEffect, DiffRequest, Effects,
+    Identities, InitRequest, InspectRequest, ObservedEffect, OperationOutcome, Operations,
+    RecoveryRequest, RepositoryEffect, ReviewDecision, ReviewOutcome, ReviewRequest,
+    validate_marker,
 };
 use margin::domain::{ReviewPlan, ReviewState, ScopeInput};
 use margin::git::Git;
@@ -604,6 +611,85 @@ fn a_dry_run_request_reports_and_writes_nothing() {
     );
     let (review, _) = workspace_state(&fixture.repo);
     assert_eq!(review, ReviewState::Pending, "nothing was approved");
+}
+
+/// The reported defect of task T061: an edit behind `assume-unchanged` is
+/// invisible to Git's change reports, so a review used to reach its commit
+/// over hidden unsaved content. The shared guards refuse the specific
+/// index flag before any mutation, and with the flag cleared the ordinary
+/// dirty-content guard sees the same bytes and refuses `DIRTY_SCOPE`
+/// (SPEC 3.1, 9.3, 9.4).
+#[test]
+fn an_index_flag_cannot_hide_dirty_content_from_a_review() {
+    let fixture = fixture(RepoOptions::new());
+    let pinned = pinned_review_of(&fixture.repo, &fixture.start);
+    let plan = plan_document(&pinned, "review-keep-all-01", &[], None);
+    // Uncaptured working content Git itself reports as clean.
+    fixture
+        .repo
+        .write_file("doc-a.md", document("hidden passage", "").as_bytes());
+    fixture
+        .repo
+        .git_ok(["update-index", "--assume-unchanged", "--", "doc-a.md"]);
+    assert_eq!(
+        text(&fixture.repo.git_ok(["status", "--porcelain"])),
+        "",
+        "stock Git reports no change behind the flag"
+    );
+    let before = oracle::snapshot(&fixture.repo);
+
+    for (what, dry_run) in [("a dry run", true), ("an application", false)] {
+        let outcome = apply_dry(&fixture.repo, &plan, dry_run);
+        assert_refusal(&outcome, "UNSUPPORTED_REPOSITORY", what);
+        let message = outcome.error.as_ref().unwrap().message.clone();
+        assert!(
+            message.contains("assume-unchanged") && message.contains("doc-a.md"),
+            "the diagnosis names the flag and the path: {message}"
+        );
+    }
+    // The refusals wrote nothing and hid nothing: the candidate, the index,
+    // the hidden bytes, and the flag all survive.
+    assert_eq!(
+        oracle::head_oid(&fixture.repo).as_deref(),
+        Some(fixture.candidate.as_str()),
+        "no review commit appeared"
+    );
+    assert_eq!(
+        text(
+            &fixture
+                .repo
+                .git_ok(["diff-index", "--cached", "--name-only", "HEAD"])
+        ),
+        "",
+        "the refusals staged nothing"
+    );
+    assert_eq!(
+        fixture.repo.read_file("doc-a.md"),
+        document("hidden passage", "").as_bytes(),
+        "the hidden edit stays on disk"
+    );
+    assert_eq!(
+        text(&fixture.repo.git_ok(["ls-files", "-v", "--", "doc-a.md"])),
+        "h doc-a.md",
+        "the user's flag survives both refusals"
+    );
+    before.assert_unchanged(&oracle::snapshot(&fixture.repo), "a flagged review");
+    let (review, _) = workspace_state(&fixture.repo);
+    assert_eq!(review, ReviewState::Pending, "nothing was approved");
+
+    // With the flag cleared, the same dirty content refuses through the
+    // ordinary dirty-content guard: the hidden state became visible
+    // (SPEC 9.3).
+    fixture
+        .repo
+        .git_ok(["update-index", "--no-assume-unchanged", "--", "doc-a.md"]);
+    let outcome = apply(&fixture.repo, &plan);
+    assert_refusal(&outcome, "DIRTY_SCOPE", "a review over visible dirt");
+    assert!(
+        outcome.error.as_ref().unwrap().message.contains("doc-a.md"),
+        "the refusal names the dirty path: {:?}",
+        outcome.error
+    );
 }
 
 /// The reported defect of task T060: complete one keep-all review, replace
@@ -1194,6 +1280,110 @@ fn a_rejected_commit_after_the_apply_reports_the_retained_result() {
     }
 }
 
+/// The retained state of one interrupted review recovers through the
+/// guarded staged capture (SPEC 9.7, task T036): after the writer clears
+/// the failing hook, the capture over the inspected state saves the
+/// retained result as one unreviewed draft, and the next review compares
+/// against that draft — the restored passage returns as one new change to
+/// decide again, with no guess about the lost selections.
+#[test]
+fn the_retained_result_of_a_rejected_review_recovers_as_one_draft() {
+    let fixture = fixture(RepoOptions::new());
+    let pinned = pinned_review_of(&fixture.repo, &fixture.start);
+    let plan = plan_document(&pinned, "review-restore-01", &[group_of(&pinned, 0)], None);
+
+    let outcome = apply_with_boundary_writer(
+        &fixture.repo,
+        &plan,
+        Boundary::Commit,
+        "printf '#!/bin/sh\\nexit 1\\n' > .git/hooks/pre-commit \
+         && chmod +x .git/hooks/pre-commit",
+    );
+    assert!(!outcome.ok(), "a rejected commit must fail");
+    let intended = outcome.data.as_ref().expect("the observed state");
+
+    // The writer clears the failing hook and inspects the retained state.
+    fs::remove_file(fixture.repo.path().join(".git/hooks/pre-commit")).unwrap();
+    let git = adapter_for(&fixture.repo);
+    let operations = Operations::new(&git);
+    let doctor = operations.inspect_recovery(&RecoveryRequest {
+        scope: Some(scope()),
+    });
+    assert!(
+        doctor.ok(),
+        "the recovery inspection succeeds: {:?}",
+        doctor.error
+    );
+    let report = doctor.data.as_ref().expect("the recovery report");
+    assert_eq!(report.head.as_deref(), Some(fixture.candidate.as_str()));
+    assert_eq!(
+        report.index_tree.as_deref(),
+        Some(intended.expected_tree.as_str())
+    );
+    assert_eq!(report.staged_paths.total, 1);
+
+    // The guarded capture saves exactly that state as one unreviewed draft.
+    let capture = operations.create_checkpoint(&CheckpointRequest {
+        scope: Some(scope()),
+        message: Some("recover the retained review result".to_string()),
+        include_staged: true,
+        expect_head: report.head.clone(),
+        expect_index: report.index_tree.clone(),
+        expect_working: report
+            .scoped_working_digest
+            .as_ref()
+            .map(|digest| digest.id()),
+        dry_run: false,
+    });
+    assert!(
+        capture.ok(),
+        "the recovery capture commits: {:?}",
+        capture.error
+    );
+    let data = capture.data.as_ref().expect("the draft");
+    let draft = data.commit.as_deref().expect("the draft commit");
+    assert_eq!(data.paths, vec![OsString::from("doc-a.md")]);
+    assert_eq!(
+        oracle::commit_tree(&fixture.repo, draft),
+        intended.expected_tree
+    );
+    assert_eq!(
+        oracle::head_oid(&fixture.repo).as_deref(),
+        Some(draft),
+        "the draft is the new candidate"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&fixture.repo.git_ok(["status", "--porcelain"])),
+        "",
+        "the workspace is clean: the retained state is saved"
+    );
+
+    // The decision stays unmade and the next review starts over: the
+    // baseline still anchors at the start marker, and the comparison over
+    // the draft carries the restored passage as one group to decide again.
+    let (review, baseline) = workspace_state(&fixture.repo);
+    assert_eq!(review, ReviewState::Pending);
+    match baseline {
+        BaselineStatus::Anchored(marker) => assert_eq!(marker.commit, fixture.start),
+        other => panic!("the draft confers no approval: {other:?}"),
+    }
+    let next = operations.build_review(&DiffRequest {
+        scope: Some(scope()),
+        path_filter: Vec::new(),
+        change: None,
+        cursor: None,
+        limit: None,
+        working: false,
+    });
+    assert!(next.ok(), "the fresh review builds: {:?}", next.error);
+    let pinned_next = next.data.as_ref().unwrap();
+    assert_eq!(pinned_next.candidate_oid, draft);
+    assert_eq!(
+        pinned_next.scope_totals.groups, 1,
+        "the restored passage is one new change to decide again"
+    );
+}
+
 /// Working bytes that change between the apply and the commit refuse the
 /// commit: the index holds the preview tree, the writer's change stays in
 /// the working file, and the response reports the retained state (SPEC 9.4
@@ -1212,7 +1402,7 @@ fn working_bytes_that_change_after_the_apply_refuse_before_the_commit() {
     );
     assert!(!outcome.ok(), "moved working bytes must refuse the commit");
     let error = outcome.error.unwrap();
-    assert_eq!(error.code, "PARTIAL_MUTATION");
+    assert_eq!(error.code, "PARTIAL_MUTATION", "{error:?}");
     assert!(
         error.message.contains("doc-a.md"),
         "the refusal names the path: {}",

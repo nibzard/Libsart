@@ -9,10 +9,17 @@
 //!   Margin parser
 //! - the execution leaves refs, the index, and every working byte
 //!   unchanged: `oracle::snapshot` proves the equality before and after,
-//!   the observation the SPEC 15.7 `InspectRecovery` row requires
+//!   the observation the SPEC 15.7 `InspectRecovery` row requires, and the
+//!   raw index bytes prove the query changed no index byte a tree ID alone
+//!   cannot see — the tree oracle computes from one disposable index copy,
+//!   so no oracle prepares the index cache first (task T062)
 //! - staged content receives the bounded recovery argv of SPEC 9.7: argv
 //!   arrays assembled from the report's own observations, never a shell
-//!   script; a workspace with nothing staged receives none
+//!   script; a workspace with nothing staged receives none, and the
+//!   suggested capture argv runs verbatim through the installed
+//!   executable: it commits the inspected state as one unreviewed draft,
+//!   consumes the staging, keeps the baseline, and refuses the moved
+//!   state on its identical retry (task T036)
 //! - a completed review and a completed restoration each leave the receipt
 //!   history holds, and the report names it with its request identifier
 //! - unresolved conflicts stop the index tree without stopping the query,
@@ -123,6 +130,18 @@ fn initialize(repo: &TestRepo) -> String {
 fn doctor(repo: &TestRepo) -> OperationOutcome<RecoveryInspection> {
     let git = adapter_for(repo);
     Operations::new(&git).inspect_recovery(&RecoveryRequest { scope: None })
+}
+
+/// Asserts that the raw bytes of the real index survived one doctor query
+/// exactly (SPEC 16.3, task T062): `git write-tree` on the real index
+/// rewrites its cached-tree extension even under `GIT_OPTIONAL_LOCKS=0`, so
+/// a staged fixture captured before any `write-tree` ran makes this
+/// comparison bite.
+fn assert_index_bytes_unchanged(repo: &TestRepo, before: &[u8], context: &str) {
+    assert!(
+        oracle::index_bytes(repo) == before,
+        "{context}: the real index changed its own bytes"
+    );
 }
 
 /// The pinned comparison of the fixture, for plans a review needs.
@@ -279,6 +298,7 @@ fn envelope_of(output: &Output, what: &str) -> Value {
 fn doctor_reports_recovery_state_without_writing() {
     let fixture = fixture(RepoOptions::new());
     let before = oracle::snapshot(&fixture.repo);
+    let index_bytes = oracle::index_bytes(&fixture.repo);
 
     let outcome = doctor(&fixture.repo);
     assert!(
@@ -341,6 +361,60 @@ fn doctor_reports_recovery_state_without_writing() {
     );
 
     before.assert_unchanged(&oracle::snapshot(&fixture.repo), "the doctor query");
+    assert_index_bytes_unchanged(&fixture.repo, &index_bytes, "the doctor query");
+}
+
+/// The report observes the real index tree without changing one real index
+/// byte (task T062, SPEC 16.3): the bytes are captured immediately after
+/// the staging wrote them — before any oracle or query could run
+/// `write-tree` and prepare the cached tree — and both the operation layer
+/// and the installed executable must leave them exactly as they were,
+/// while the reported tree still answers the stock-Git oracle.
+#[test]
+fn doctor_reports_the_index_tree_without_touching_the_index() {
+    let fixture = fixture(RepoOptions::new());
+    fixture.repo.write_file("doc-a.md", b"staged revision\n");
+    fixture.repo.git_ok(["add", "--", "doc-a.md"]);
+
+    // Immediately after the staging: the index cache is still unprepared,
+    // so one careless inspection would rewrite the file.
+    let staged = oracle::index_bytes(&fixture.repo);
+    let before = oracle::snapshot(&fixture.repo);
+
+    let outcome = doctor(&fixture.repo);
+    assert!(
+        outcome.ok(),
+        "the recovery inspection succeeds: {:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.effects, Effects::unchanged());
+    let data = outcome.data.as_ref().unwrap();
+    assert_eq!(
+        data.index_tree.as_deref(),
+        oracle::index_tree(&fixture.repo).as_deref(),
+        "the reported tree answers the read-only stock-Git oracle"
+    );
+    assert_eq!(data.staged_paths.total, 1, "the staged edit is observed");
+
+    before.assert_unchanged(&oracle::snapshot(&fixture.repo), "the doctor query");
+    assert_index_bytes_unchanged(&fixture.repo, &staged, "the doctor query");
+
+    // The installed executable holds the same contract in machine mode.
+    let json = margin(
+        fixture.repo.env(),
+        fixture.repo.path(),
+        &["doctor", "--json"],
+    );
+    assert_eq!(json.status.code(), Some(0));
+    assert_index_bytes_unchanged(&fixture.repo, &staged, "the doctor executable");
+
+    // The fixture stays honest: stock `write-tree` on the real index still
+    // rewrites the bytes, so this regression cannot pass vacuously.
+    fixture.repo.git_ok(["write-tree"]);
+    assert!(
+        oracle::index_bytes(&fixture.repo) != staged,
+        "stock write-tree rewrites the unprepared index, so the fixture proves the contract"
+    );
 }
 
 /// The staged delta carries its bounded path list, and the recovery argv is
@@ -353,6 +427,9 @@ fn doctor_reports_staged_paths_and_safe_recovery_argv() {
     fixture.repo.write_file("doc-a.md", b"staged revision\n");
     fixture.repo.write_file("doc-b.md", b"a second document\n");
     fixture.repo.git_ok(["add", "--", "doc-a.md", "doc-b.md"]);
+    // The staged index cache is still unprepared here, before any oracle or
+    // query runs.
+    let staged = oracle::index_bytes(&fixture.repo);
     fixture
         .repo
         .write_file("doc-a.md", b"staged revision\nand more\n");
@@ -420,6 +497,120 @@ fn doctor_reports_staged_paths_and_safe_recovery_argv() {
     }
 
     before.assert_unchanged(&oracle::snapshot(&fixture.repo), "the doctor query");
+    assert_index_bytes_unchanged(&fixture.repo, &staged, "the doctor query");
+}
+
+/// The suggested recovery argv is executable exactly as printed: the
+/// writer whose application left its proved result staged runs the capture
+/// command the report assembles, and that command commits the inspected
+/// state as one unreviewed draft — the visible preview and the capture it
+/// previews are one contract (SPEC 9.7, task T036).
+#[test]
+fn the_suggested_recovery_argv_captures_the_staged_state() {
+    let fixture = fixture(RepoOptions::new());
+    // The retained state of one interrupted application: the staged edit
+    // and the working bytes are equal, exactly as a failed apply left both.
+    fixture.repo.write_file(
+        "doc-a.md",
+        b"revised passage\nsecond revised passage\nnew closing\n",
+    );
+    fixture.repo.git_ok(["add", "--", "doc-a.md"]);
+    let staged = oracle::index_bytes(&fixture.repo);
+
+    let outcome = doctor(&fixture.repo);
+    assert!(
+        outcome.ok(),
+        "the recovery inspection succeeds: {:?}",
+        outcome.error
+    );
+    let data = outcome.data.as_ref().unwrap();
+    assert_eq!(data.staged_paths.total, 1);
+    assert_index_bytes_unchanged(&fixture.repo, &staged, "the doctor query");
+    let index_tree = data.index_tree.clone().expect("the inspected index tree");
+    let argv = &data.recovery_argv[0];
+    assert_eq!(argv.first().map(String::as_str), Some("margin"));
+
+    // The executable runs the argv the report printed, verbatim.
+    let args: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+    let output = margin(fixture.repo.env(), fixture.repo.path(), &args);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the suggested capture succeeds: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = envelope_of(&output, "the suggested recovery capture");
+    assert_eq!(envelope["command"], "checkpoint");
+    assert_eq!(envelope["ok"], true);
+    assert_eq!(envelope["data"]["created"], true);
+    assert_eq!(envelope["data"]["changed"], true);
+    assert_eq!(envelope["effects"]["commit"], "created");
+    assert_eq!(envelope["effects"]["index"], "changed");
+    assert_eq!(envelope["effects"]["working_tree"], "unchanged");
+    let commit = envelope["data"]["commit"]
+        .as_str()
+        .expect("the draft commit")
+        .to_string();
+
+    // The commit is the inspected state exactly, proven with stock Git:
+    // the tree is the reported index tree, the staging is consumed, and
+    // the working bytes never moved (SPEC 9.7).
+    assert_eq!(
+        oracle::head_oid(&fixture.repo).as_deref(),
+        Some(commit.as_str())
+    );
+    assert_eq!(oracle::commit_tree(&fixture.repo, &commit), index_tree);
+    assert_eq!(
+        text(
+            &fixture
+                .repo
+                .git_ok(["diff-index", "--cached", "--name-only", "HEAD"])
+        ),
+        "",
+        "the staging is consumed"
+    );
+    assert_eq!(
+        fixture.repo.read_file("doc-a.md"),
+        b"revised passage\nsecond revised passage\nnew closing\n",
+        "no working byte moved"
+    );
+
+    // The draft confers no approval and the report reflects the new
+    // candidate: nothing is staged anymore, and the baseline a fresh
+    // review needs still anchors at the start marker.
+    let consumed = oracle::index_bytes(&fixture.repo);
+    let after = doctor(&fixture.repo);
+    assert!(
+        after.ok(),
+        "the recovery inspection after the capture: {:?}",
+        after.error
+    );
+    let report = after.data.as_ref().unwrap();
+    assert_eq!(report.staged_paths.total, 0);
+    assert_eq!(report.recovery_argv, Vec::<Vec<String>>::new());
+    match &report.baseline {
+        BaselineStatus::Anchored(marker) => assert_eq!(marker.commit, fixture.start),
+        other => panic!("the draft confers no approval: {other:?}"),
+    }
+    assert_index_bytes_unchanged(
+        &fixture.repo,
+        &consumed,
+        "the doctor query after the capture",
+    );
+
+    // The identical argv on the moved state is one stale-context refusal:
+    // the fingerprints pin one capture, and `doctor` reports the new state
+    // to inspect next (SPEC 9.7).
+    let retry = margin(fixture.repo.env(), fixture.repo.path(), &args);
+    assert_eq!(retry.status.code(), Some(3), "the repeated capture refuses");
+    let envelope = envelope_of(&retry, "the repeated recovery capture");
+    assert_eq!(envelope["ok"], false);
+    assert_eq!(envelope["error"]["code"], "STALE_STATE");
+    assert_eq!(envelope["effects"]["commit"], "none");
+    assert_eq!(
+        oracle::head_oid(&fixture.repo).as_deref(),
+        Some(commit.as_str())
+    );
 }
 
 /// A completed review leaves the receipt history holds; the report names
@@ -445,6 +636,7 @@ fn doctor_reports_the_receipt_of_a_completed_review() {
         .expect("the application commits");
 
     let before = oracle::snapshot(&fixture.repo);
+    let index_bytes = oracle::index_bytes(&fixture.repo);
     let outcome = doctor(&fixture.repo);
     assert!(
         outcome.ok(),
@@ -477,6 +669,7 @@ fn doctor_reports_the_receipt_of_a_completed_review() {
     assert!(data.recovery_argv.is_empty());
 
     before.assert_unchanged(&oracle::snapshot(&fixture.repo), "the doctor query");
+    assert_index_bytes_unchanged(&fixture.repo, &index_bytes, "the doctor query");
 }
 
 /// A completed restoration leaves a receipt of its own kind while the
@@ -504,6 +697,7 @@ fn doctor_reports_the_receipt_of_a_completed_restoration() {
         .clone()
         .expect("the restoration commits");
 
+    let index_bytes = oracle::index_bytes(&fixture.repo);
     let outcome = doctor(&fixture.repo);
     assert!(
         outcome.ok(),
@@ -528,6 +722,7 @@ fn doctor_reports_the_receipt_of_a_completed_restoration() {
         other => panic!("the baseline must keep the start: {other:?}"),
     }
     assert_eq!(outcome.effects, Effects::unchanged());
+    assert_index_bytes_unchanged(&fixture.repo, &index_bytes, "the doctor query");
 }
 
 /// Unresolved conflict stages stop `write-tree`, and the report carries
@@ -553,6 +748,7 @@ fn doctor_reports_no_index_tree_while_conflicts_stop_it() {
     );
 
     let before = oracle::snapshot(&fixture.repo);
+    let conflicted = oracle::index_bytes(&fixture.repo);
     let outcome = doctor(&fixture.repo);
     assert!(
         outcome.ok(),
@@ -565,6 +761,7 @@ fn doctor_reports_no_index_tree_while_conflicts_stop_it() {
     assert!(data.head.is_some());
 
     before.assert_unchanged(&oracle::snapshot(&fixture.repo), "the doctor query");
+    assert_index_bytes_unchanged(&fixture.repo, &conflicted, "the doctor query");
 }
 
 /// A history context no marker may depend on stops the receipt scan, and
@@ -595,6 +792,7 @@ fn doctor_reports_an_unknown_receipt_when_replacements_stop_validation() {
         .git_ok(["replace", "--", &review, &fixture.start]);
 
     let before = oracle::snapshot(&fixture.repo);
+    let index_bytes = oracle::index_bytes(&fixture.repo);
     let outcome = doctor(&fixture.repo);
     assert!(
         outcome.ok(),
@@ -615,6 +813,7 @@ fn doctor_reports_an_unknown_receipt_when_replacements_stop_validation() {
     }
 
     before.assert_unchanged(&oracle::snapshot(&fixture.repo), "the doctor query");
+    assert_index_bytes_unchanged(&fixture.repo, &index_bytes, "the doctor query");
 }
 
 /// Outside a repository and inside one without an adopted scope the query
@@ -661,6 +860,7 @@ fn doctor_keeps_reporting_under_a_detached_head() {
     fixture.repo.git_ok(["switch", "--quiet", "--detach"]);
 
     let before = oracle::snapshot(&fixture.repo);
+    let index_bytes = oracle::index_bytes(&fixture.repo);
     let outcome = doctor(&fixture.repo);
     assert!(
         outcome.ok(),
@@ -677,6 +877,7 @@ fn doctor_keeps_reporting_under_a_detached_head() {
     assert!(matches!(data.receipt, margin::app::ReceiptPresence::Absent));
 
     before.assert_unchanged(&oracle::snapshot(&fixture.repo), "the doctor query");
+    assert_index_bytes_unchanged(&fixture.repo, &index_bytes, "the doctor query");
 }
 
 /// The installed executable reports the inspection in both modes, and
@@ -686,6 +887,7 @@ fn the_executable_reports_doctor_in_both_modes() {
     let fixture = fixture(RepoOptions::new());
     let head = oracle::head_oid(&fixture.repo).unwrap();
     let before = oracle::snapshot(&fixture.repo);
+    let index_bytes = oracle::index_bytes(&fixture.repo);
 
     let json = margin(
         fixture.repo.env(),
@@ -724,6 +926,7 @@ fn the_executable_reports_doctor_in_both_modes() {
     assert!(line.contains("receipt=absent"));
 
     before.assert_unchanged(&oracle::snapshot(&fixture.repo), "both doctor modes");
+    assert_index_bytes_unchanged(&fixture.repo, &index_bytes, "both doctor modes");
 }
 
 // The plan fingerprint of one plan document, through the shared identities

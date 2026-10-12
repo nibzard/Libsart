@@ -168,16 +168,25 @@ fn fixture_identity_and_dates_are_deterministic() {
         "HEAD",
     ]))
     .expect("the commit header is UTF-8");
+    // Git spells the UTC offset of a strict ISO date `+00:00` through the
+    // 2.4x releases and `Z` by 2.56; both name the same fixed fixture
+    // instant, which is what determinism requires.
+    let utc_spellings = ["2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00Z"];
     let expected = [
         env::FIXTURE_USER_NAME,
         env::FIXTURE_USER_EMAIL,
         env::FIXTURE_USER_NAME,
         env::FIXTURE_USER_EMAIL,
-        "2026-01-01T00:00:00+00:00",
-        "2026-01-01T00:00:00+00:00",
     ];
     let lines: Vec<&str> = header.lines().collect();
-    assert_eq!(lines, expected.to_vec());
+    assert_eq!(lines.len(), 6, "six header lines: {header}");
+    assert_eq!(&lines[..4], &expected[..]);
+    for date in &lines[4..] {
+        assert!(
+            utc_spellings.contains(date),
+            "the fixture date {date} is not the fixed instant"
+        );
+    }
 }
 
 #[test]

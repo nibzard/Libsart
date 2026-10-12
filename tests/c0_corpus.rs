@@ -601,7 +601,7 @@ fn check_fixture(
 
     // Recorded source changes.
     let patch = canonical_patch(repo, before, after, fixture.path);
-    let parsed = parse_patch(&patch, &fixture.id);
+    let parsed = parse_patch(&patch, fixture.id);
     if parsed.path != fixture.path.as_bytes() {
         return Err(format!(
             "the canonical patch names {:?}, not {:?}",
