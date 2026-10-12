@@ -38,6 +38,11 @@ const DIRTY_DOCUMENTS: usize = 2;
 const FIXTURE_USER_NAME: &str = "Margin Bench Fixture";
 const FIXTURE_USER_EMAIL: &str = "margin-bench@example.invalid";
 
+/// How many diff pages the untimed context probe follows before giving
+/// up. The default page holds 50 groups and no corpus of the suite holds
+/// more than a few hundred, so this cap only catches a broken cursor.
+const MAX_CONTEXT_PAGES: usize = 64;
+
 /// What one reset prepared for the timed run that follows.
 pub enum Prepared {
     /// The repository alone is the workload.
@@ -288,8 +293,23 @@ impl Fixture {
     pub fn reset_for(&self, metric: &str, iteration: usize) -> Result<Prepared, String> {
         self.reset_to_candidate()?;
         match metric {
-            "P-HELP" | "P-STATUS" | "P-DIFF" | "P-HISTORY" => {
+            "P-HELP" | "P-STATUS" | "P-HISTORY" => {
                 self.assert_reviewable()?;
+                Ok(Prepared::Repository)
+            }
+            "P-DIFF" => {
+                self.assert_reviewable()?;
+                // The manifest cache is disposable product state keyed by
+                // the pinned comparison (SPEC 13.3). Removing it here keeps
+                // this metric measuring the full derivation its budget
+                // covers: the untimed context probe of P-APPLY below
+                // derives the same comparison once and would otherwise
+                // warm every timed diff.
+                let cache = self.repo.join(".git/margin/manifest-cache");
+                if cache.exists() {
+                    fs::remove_dir_all(&cache)
+                        .map_err(|error| format!("cannot clear the manifest cache: {error}"))?;
+                }
                 Ok(Prepared::Repository)
             }
             "P-CHECKPOINT" => {
@@ -377,34 +397,68 @@ impl Fixture {
         Ok(path)
     }
 
-    /// The pinned review context of the fixture, from one untimed
+    /// The pinned review context of the fixture, from one untimed paged
     /// `margin diff` through `executable`.
+    ///
+    /// The plan universe is every group of the pinned comparison, so the
+    /// probe follows `next_cursor` until the diff reports `complete` and
+    /// returns the merged changes list. One first page would silently
+    /// narrow the selective review the oracle then verifies against its
+    /// own independently derived result tree.
     fn review_context_via(&self, executable: &Path) -> Result<Value, String> {
-        let mut command = std::process::Command::new(executable);
-        command
-            .args(["diff", "--json"])
-            .current_dir(&self.repo)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        for (key, _) in std::env::vars_os() {
-            let scrubs = key.as_encoded_bytes().starts_with(b"GIT_") || key == "EMAIL";
-            if scrubs {
-                command.env_remove(&key);
+        let mut merged: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for page in 0..MAX_CONTEXT_PAGES {
+            let mut command = std::process::Command::new(executable);
+            command.args(["diff", "--json"]);
+            if let Some(cursor) = &cursor {
+                command.args(["--cursor", cursor]);
+            }
+            command
+                .current_dir(&self.repo)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            for (key, _) in std::env::vars_os() {
+                let scrubs = key.as_encoded_bytes().starts_with(b"GIT_") || key == "EMAIL";
+                if scrubs {
+                    command.env_remove(&key);
+                }
+            }
+            command.envs(&self.vars);
+            let output = command
+                .output()
+                .map_err(|error| format!("cannot run the untimed diff probe: {error}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "the untimed diff probe failed on page {}: {}",
+                    page + 1,
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            let data = super::oracle::envelope(&output.stdout, &output.stderr)?;
+            merged.extend(
+                data["changes"]
+                    .as_array()
+                    .ok_or("the diff context lists no changes")?
+                    .iter()
+                    .cloned(),
+            );
+            if data["complete"].as_bool().unwrap_or(false) {
+                let mut complete = data;
+                complete["changes"] = Value::Array(merged);
+                return Ok(complete);
+            }
+            cursor = data["next_cursor"].as_str().map(str::to_string);
+            if cursor.is_none() {
+                return Err(
+                    "the diff page is incomplete but carries no cursor to continue it".to_string(),
+                );
             }
         }
-        command.envs(&self.vars);
-        let output = command
-            .output()
-            .map_err(|error| format!("cannot run the untimed diff probe: {error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "the untimed diff probe failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        let data = super::oracle::envelope(&output.stdout, &output.stderr)?;
-        Ok(data)
+        Err(format!(
+            "the diff never reported a complete manifest within {MAX_CONTEXT_PAGES} pages"
+        ))
     }
 
     /// The cached pinned context, derived once per fixture.
