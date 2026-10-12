@@ -144,6 +144,15 @@ pub struct Sampling {
     pub cache_method: String,
     /// The policy sentence for block randomization.
     pub order_rule: String,
+    /// Counted navigation events per P-KEY session; zero for every other
+    /// metric. The event script itself is deterministic, so the count
+    /// names it exactly.
+    #[serde(default)]
+    pub events_per_session: usize,
+    /// The length of one P-CPU idle window in seconds; zero for every
+    /// other metric.
+    #[serde(default)]
+    pub window_seconds: u64,
 }
 
 impl Sampling {
@@ -158,6 +167,8 @@ impl Sampling {
             boundary: "wall time from before process creation through exit and full response delivery".to_string(),
             cache_method: "warm filesystem caches, fresh process per run".to_string(),
             order_rule: "one recorded-seed coin flip per block decides baseline/candidate order".to_string(),
+            events_per_session: 0,
+            window_seconds: 0,
         }
     }
 
@@ -177,11 +188,18 @@ pub struct Statistics {
     pub median_ms: f64,
     /// Nearest-rank p95 in milliseconds.
     pub p95_ms: f64,
+    /// Nearest-rank p99 in milliseconds, when the event series is large
+    /// enough that a p99 is evidence (P-KEY; SPEC 17.7.5). Absent on
+    /// every small series, which must not borrow one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p99_ms: Option<f64>,
     /// Smallest counted sample.
     pub min_ms: f64,
     /// Largest counted sample.
     pub max_ms: f64,
-    /// The percentile method sentence.
+    /// The percentile method sentence. It names the unit: milliseconds
+    /// for the latency metrics, and the resource metric's own quantity
+    /// when `elapsed_ms` of the samples carries MiB or a percentage.
     pub method: String,
 }
 
@@ -398,6 +416,28 @@ pub fn budget_sentence(metric_id: &str, corpus: &str) -> Option<String> {
         .map(|budget: Budget| budget.describe())
 }
 
+/// The p99 budget of a latency metric, in milliseconds, when the metric
+/// carries one. Only P-KEY does (SPEC 17.4); a p99 belongs to the larger
+/// event series, so no small CLI series borrows one.
+pub fn budget_p99_ms(metric_id: &str, corpus: &str) -> Option<u64> {
+    match metric::by_id(metric_id)?.budget(corpus)? {
+        Budget::P95P99Ms(_, p99) => Some(p99),
+        _ => None,
+    }
+}
+
+/// The ceiling of a resource metric, in the metric's own unit: percent of
+/// one core for P-CPU, MiB for the memory metrics. The gate is the
+/// maximum counted sample against this number — a resource ceiling is not
+/// a percentile, and treating it as one would hide a single wild run.
+pub fn resource_ceiling(metric_id: &str, corpus: &str) -> Option<f64> {
+    match metric::by_id(metric_id)?.budget(corpus)? {
+        Budget::IdleCpuPercent(percent) => Some(percent),
+        Budget::PeakMemoryMiB(mib) => Some(mib as f64),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,6 +481,34 @@ mod tests {
         let record = ResultRecord::not_measured("P-RSS", "C2");
         assert_eq!(record.budget_p95_ms, None);
         assert_eq!(record.status, Status::NotMeasured);
+    }
+
+    #[test]
+    fn the_resource_ceilings_and_the_p99_budget_read_cleanly() {
+        assert_eq!(resource_ceiling("P-RSS", "C1"), Some(64.0));
+        assert_eq!(resource_ceiling("P-TREE-MEM", "C2"), Some(256.0));
+        assert_eq!(resource_ceiling("P-CPU", "C1"), Some(1.0));
+        assert_eq!(resource_ceiling("P-CPU", "C2"), Some(2.0));
+        assert_eq!(resource_ceiling("P-STATUS", "C1"), None, "a latency metric has no ceiling");
+        assert_eq!(resource_ceiling("P-RSS", "C3"), None, "C3 carries no budget");
+        assert_eq!(budget_p99_ms("P-KEY", "C1"), Some(100));
+        assert_eq!(budget_p99_ms("P-KEY", "C2"), Some(100));
+        assert_eq!(budget_p99_ms("P-STATUS", "C1"), None, "only P-KEY gates a p99");
+    }
+
+    #[test]
+    fn an_old_statistics_block_and_sampling_parse_without_the_new_fields() {
+        let statistics: Statistics = serde_json::from_str(
+            r#"{"sample_count":4,"median_ms":10.0,"p95_ms":12.0,"min_ms":9.0,"max_ms":13.0,"method":"nearest-rank; all samples retained including slow ones"}"#,
+        )
+        .expect("a pre-p99 statistics block parses");
+        assert_eq!(statistics.p99_ms, None);
+        let sampling: Sampling = serde_json::from_str(
+            r#"{"warmups":5,"blocks":20,"runs_per_block":5,"order_seed":1,"boundary":"b","cache_method":"warm","order_rule":"r"}"#,
+        )
+        .expect("a pre-knob sampling block parses");
+        assert_eq!(sampling.events_per_session, 0);
+        assert_eq!(sampling.window_seconds, 0);
     }
 
     #[test]

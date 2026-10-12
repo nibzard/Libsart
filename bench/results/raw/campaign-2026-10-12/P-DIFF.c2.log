@@ -1,0 +1,3 @@
+benchrun: P-DIFF on C2 — failed (100 counted samples, median 878.3 ms, p95 1433.1 ms, budget 500 ms)
+benchrun: oracle failed, raw samples /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/raw/P-DIFF.C2/2026-10-12T011406Z/samples.jsonl
+benchrun: record /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/P-DIFF.C2.json

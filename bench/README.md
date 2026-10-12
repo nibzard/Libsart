@@ -169,7 +169,9 @@ check establishes fixture validity, not product correctness.
 | `perf/samples.rs` | Raw paired samples: JSON Lines, warmups and slow runs retained |
 | `perf/stats.rs` | Nearest-rank median/p95 and the 10,000-resample paired bootstrap |
 | `perf/record.rs` | The SPEC 17.8 result record and its statuses |
-| `perf/runner.rs` | The SPEC 17.7 run loop and the block invalidation rule |
+| `perf/pty.rs` | The pseudo-terminal driver of the P-OPEN, P-KEY, and P-REFRESH sessions |
+| `perf/resource.rs` | The P-CPU, P-RSS, and P-TREE-MEM samplers over `/proc` |
+| `perf/runner.rs` | The SPEC 17.7 run loop, the PTY and resource dispatch, and the block invalidation rule |
 | `perf/hash.rs` | Self-contained SHA-256 for executable, lock, and manifest hashes |
 
 The workflow:
@@ -229,9 +231,73 @@ What the harness guarantees:
   measurement refuses and the records stay `not_measured`.
 
 The PTY metrics (P-OPEN, P-KEY, P-REFRESH) and the resource metrics
-(P-CPU, P-RSS, P-TREE-MEM) are in the registry with their budgets but
-have no sampler in this harness yet; their records stay `not_measured`
-and the `run` command refuses them explicitly.
+(P-CPU, P-RSS, P-TREE-MEM) have samplers of their own:
+
+- **The session shape.** Every measured session runs the surface on a
+  fresh 120-column, 40-row `xterm-256color` pseudo-terminal, with the
+  fixture repository as the working directory and `--reduced-updates`
+  on, so bytes arriving at the master mean the surface answered. The
+  driver calls only the POSIX terminal set through the C library the
+  standard library already links; no dependency enters the tree, and a
+  session that ignores its limits is killed, never left hanging.
+- **The PTY boundaries (17.4).** P-OPEN runs from immediately before
+  the spawn until the first frame that shows identity, content, save
+  state, and actions. P-KEY runs from immediately before one key's
+  bytes are written until the first answering byte, and every event of
+  the deterministic `j`/`k` script is one sample row. P-REFRESH runs
+  from an external edit's write returning until the arrival notice
+  flushes.
+- **The resource statistics (17.4, 17.5).** P-RSS reads the parent's
+  `VmHWM`; P-TREE-MEM samples the concurrent process-tree sum of
+  `VmRSS` every 20 ms; P-CPU accumulates `utime+stime` over the tree
+  across one idle window. Every session drives the same fixed
+  open/review/history sequence, and each record's `memory_definition`
+  states what was summed, from where, in which unit.
+- **Their gates.** A latency budget reads the nearest-rank p95, P-KEY
+  adds its p99 once the event series is large enough to carry one, and
+  a resource ceiling reads the maximum counted sample, never a
+  percentile. A resource record keeps its base latency fields empty;
+  its numbers live in `details.statistics` with a method sentence that
+  names the unit.
+
+Paired comparison stays a CLI-only shape: the SPEC 17.7 regression
+gate is defined over paired fresh-process blocks, and a PTY or
+resource pairing would need its own design. The `run` command refuses
+a paired plan for these metrics explicitly; measure one side with
+`--executable`.
+
+```sh
+# A PTY metric: the sampler drives the real surface on a real terminal.
+cargo run --example benchrun -- run --metric P-KEY --corpus c1 \
+    --executable target/release/margin
+
+# The resource metrics pin their own policy knobs: P-CPU takes two
+# five-minute idle windows by default, the memory metrics take one
+# warmup and 4 blocks of 3 runs, and P-KEY takes 100 events per session.
+cargo run --example benchrun -- run --metric P-TREE-MEM --corpus c1 \
+    --executable target/release/margin
+cargo run --example benchrun -- run --metric P-CPU --corpus c1 \
+    --executable target/release/margin --window-seconds 300
+```
+
+Two drivers sit above the single-metric commands:
+
+- **`bench/campaign.sh CORPORA_ROOT EXECUTABLE LOGDIR`** runs every
+  primary metric against C1 and C2 at full scale under the SPEC 17.7
+  policy, one invocation per metric, and prints the verdict table at
+  the end. It refuses to start unless the one-minute load average sits
+  under `LOAD_LIMIT` (default 3.0), because a loaded runner measures
+  the load, not the code; each progress line records the load at that
+  metric's start.
+- **`bench/stress-exercise.sh CORPUS_ROOT EXECUTABLE OUTPUT_DIR`**
+  drives the C3 stress shape of SPEC 17.5 against one full-scale C3
+  corpus: the ordinary commands with their wall time, exit, and
+  bounded stdout size retained per observation, the pathological
+  documents derived from the manifest the same way the generator
+  places them, and a final `git status --porcelain` proving the reads
+  touched nothing. C3 carries no latency budget, so the exercise
+  records behavior — bounded output, no panic, no approval of omitted
+  data — never speed.
 
 ## Holdout set
 

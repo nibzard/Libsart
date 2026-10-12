@@ -33,7 +33,16 @@ pub struct Sample {
     /// statistics but retained here.
     pub warmup: bool,
     /// Measured wall time in milliseconds.
+    ///
+    /// The resource metrics store their own quantity here — MiB or a
+    /// percentage of one core — and say so in `unit`, because a raw
+    /// number without its unit is not evidence.
     pub elapsed_ms: f64,
+    /// The unit of `elapsed_ms`: absent means milliseconds; the resource
+    /// samplers set `MiB` or `percent-of-one-core`. Absent on every old
+    /// latency stream, so they parse unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
     /// The child's exit code, or -1 for a signal.
     pub exit_code: i32,
     /// Complete response size on standard output.
@@ -104,6 +113,7 @@ mod tests {
             order_index,
             warmup: order_index < 2,
             elapsed_ms: 120.0 + order_index as f64,
+            unit: None,
             exit_code: 0,
             stdout_bytes: 4096,
             stderr_bytes: 0,
@@ -136,5 +146,25 @@ mod tests {
         assert!(read[0].warmup && !read[0].counted());
         assert!(read[6].counted());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_latency_stream_without_a_unit_still_parses() {
+        // A stream written before the unit field existed carries no
+        // `unit` key; it must read back as milliseconds.
+        let line = r#"{"schema_version":1,"metric":"P-STATUS","corpus":"C1","version":"single","block":0,"run_in_block":0,"order_index":0,"warmup":false,"elapsed_ms":42.5,"exit_code":0,"stdout_bytes":10,"stderr_bytes":0,"oracle":"passed","oracle_failures":[],"cache_method":"warm","invalidated":false,"invalidation_reason":null,"at":"2026-10-11T00:00:00Z"}"#;
+        let sample: Sample = serde_json::from_str(line).expect("the old stream parses");
+        assert_eq!(sample.unit, None);
+        assert_eq!(sample.elapsed_ms, 42.5);
+    }
+
+    #[test]
+    fn a_resource_sample_carries_its_unit() {
+        let mut own = sample(0, 0);
+        own.unit = Some("MiB".to_string());
+        let text = serde_json::to_string(&own).expect("the resource sample serializes");
+        assert!(text.contains(r#""unit":"MiB""#), "{text}");
+        let back: Sample = serde_json::from_str(&text).expect("it reads back");
+        assert_eq!(back.unit.as_deref(), Some("MiB"));
     }
 }

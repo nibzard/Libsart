@@ -191,7 +191,7 @@ pub fn launch(
              without redirection",
         ));
     }
-    let mut shell = Shell::open(root, operations, options);
+    let mut shell = Shell::open_for_launch(root, operations, options);
     let mut guard = TerminalGuard::enter().map_err(|error| {
         LaunchError::new(format!(
             "the terminal cannot enter its interactive modes: {error}"
@@ -281,6 +281,13 @@ fn drive(
         }
         if shell.should_quit() {
             return Ok(());
+        }
+        // The deferred comparison and timeline load right after the first
+        // drawn frame (SPEC 17.4): keys that arrive meanwhile wait in the
+        // terminal buffer and are answered by the next pass, and the load
+        // raises the redraw flag itself.
+        if drawn_once && shell.load_pending_background() {
+            continue;
         }
         if let Some(handoff) = shell.take_editor_request() {
             // The terminal hands itself to the child editor and takes

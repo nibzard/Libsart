@@ -25,9 +25,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// How long to sleep between exit polls of a running child.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
@@ -485,6 +485,11 @@ pub struct Git {
     own_overrides: BTreeMap<OsString, OsString>,
     working_dir: Option<PathBuf>,
     limits: Limits,
+    /// The object format, once read. The format of one repository cannot
+    /// change while this process runs, and clones of the adapter share the
+    /// answer, so the identity work of one operation reads it once
+    /// (SPEC 17.5).
+    object_format: Arc<OnceLock<ObjectFormat>>,
 }
 
 impl Default for Git {
@@ -507,6 +512,7 @@ impl Git {
             own_overrides: BTreeMap::new(),
             working_dir: None,
             limits: Limits::default(),
+            object_format: Arc::new(OnceLock::new()),
         }
     }
 
@@ -704,6 +710,9 @@ impl Git {
 
     /// Returns the object format of the repository.
     pub fn object_format(&self) -> Result<ObjectFormat, GitError> {
+        if let Some(cached) = self.object_format.get() {
+            return Ok(*cached);
+        }
         let stdout = self.run_ok(Mode::Query, ["rev-parse", "--show-object-format"])?;
         let raw = String::from_utf8(strip_trailing_newline(&stdout).to_vec()).map_err(|error| {
             GitError::MalformedOutput {
@@ -711,10 +720,12 @@ impl Git {
                 detail: error.to_string(),
             }
         })?;
-        ObjectFormat::parse(&raw).ok_or_else(|| GitError::MalformedOutput {
+        let format = ObjectFormat::parse(&raw).ok_or_else(|| GitError::MalformedOutput {
             command: "rev-parse --show-object-format".to_string(),
             detail: format!("unknown object format {raw:?}"),
-        })
+        })?;
+        let _ = self.object_format.set(format);
+        Ok(format)
     }
 
     /// Resolves `revision` to exactly one commit object ID.
@@ -923,6 +934,48 @@ impl Git {
         })
     }
 
+    /// Returns the paths of several repository metadata files through one
+    /// `git rev-parse` process with one repeated `--git-path` flag per
+    /// name, in the order the names were given (SPEC 17.5: a repository
+    /// inspection does not scale one process per probe).
+    ///
+    /// The names follow Git's per-worktree metadata layout, exactly as
+    /// [`Git::git_path`] resolves them. An empty list runs no process at
+    /// all (SPEC 14.1).
+    pub fn git_paths(&self, names: &[&str]) -> Result<Vec<PathBuf>, GitError> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut argv: Vec<OsString> = vec!["rev-parse".into()];
+        for name in names {
+            argv.push("--git-path".into());
+            argv.push(OsString::from(*name));
+        }
+        let stdout = self.run_ok(Mode::Query, argv)?;
+        let lines = stdout.split(|byte| *byte == b'\n').collect::<Vec<_>>();
+        if lines.len() != names.len() + 1 || !lines.last().expect("nonempty").is_empty() {
+            return Err(GitError::MalformedOutput {
+                command: "rev-parse --git-path".to_string(),
+                detail: format!("expected {} path line(s), got another shape", names.len()),
+            });
+        }
+        let mut paths = Vec::with_capacity(names.len());
+        for (name, line) in names.iter().zip(lines) {
+            if line.is_empty() {
+                return Err(GitError::MalformedOutput {
+                    command: "rev-parse --git-path".to_string(),
+                    detail: format!("no path for the metadata file {name:?}"),
+                });
+            }
+            let path = PathBuf::from(os_string_from_bytes(line.to_vec()));
+            paths.push(match (&self.working_dir, path.is_absolute()) {
+                (Some(root), false) => root.join(path),
+                _ => path,
+            });
+        }
+        Ok(paths)
+    }
+
     /// Says whether the repository is bare and has no working tree.
     pub fn is_bare_repository(&self) -> Result<bool, GitError> {
         self.rev_parse_boolean("--is-bare-repository")
@@ -1100,6 +1153,53 @@ impl Git {
         let output = self.run(Mode::Query, argv.clone())?;
         Ok(optional_success(&argv, output)?
             .map(|stdout| String::from_utf8_lossy(strip_trailing_newline(&stdout)).into_owned()))
+    }
+
+    /// Returns the effective values of several configuration keys through
+    /// one `git config --list -z` process (SPEC 17.5: reading the settings
+    /// does not scale one process per key).
+    ///
+    /// The list holds every entry of every scope in Git's own precedence
+    /// order, NUL-delimited as `key\nvalue`, so the last entry of a key is
+    /// the value `git config --get` would answer — the same value, through
+    /// one process instead of one per key. Keys match case-insensitively,
+    /// because the list prints lowercase while `--get` accepts any case. A
+    /// key the configuration never sets holds no entry in the result.
+    pub fn config_values(&self, keys: &[&str]) -> Result<BTreeMap<String, String>, GitError> {
+        if keys.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let argv: Vec<OsString> = ["config", "--list", "--null"]
+            .iter()
+            .map(|argument| OsString::from(*argument))
+            .collect();
+        let stdout = self.run_ok(Mode::Query, argv)?;
+        let mut effective: BTreeMap<String, String> = BTreeMap::new();
+        for record in stdout.split(|byte| *byte == 0) {
+            if record.is_empty() {
+                continue;
+            }
+            let (key, value) = match record.iter().position(|byte| *byte == b'\n') {
+                Some(split) => (&record[..split], &record[split + 1..]),
+                None => (record, &record[..0]),
+            };
+            // The list prints every key in lowercase; Git matches
+            // configuration keys case-insensitively, so the lookup
+            // lowercases the asked-for key the same way.
+            effective.insert(
+                String::from_utf8_lossy(key).to_lowercase(),
+                String::from_utf8_lossy(value).into_owned(),
+            );
+        }
+        Ok(keys
+            .iter()
+            .filter_map(|key| {
+                effective
+                    .get(&key.to_lowercase())
+                    .cloned()
+                    .map(|value| (key.to_string(), value))
+            })
+            .collect())
     }
 
     /// Returns every configuration entry whose key matches `pattern`, from
@@ -1372,6 +1472,269 @@ impl Git {
         Ok(())
     }
 
+    /// The stage-zero entry of one path, from
+    /// `git ls-files --stage -z -- <path>`: its mode and blob object ID,
+    /// or `None` when the index holds no entry for the path. One probe
+    /// read of one path never lists the whole index (SPEC 17.5).
+    pub fn staged_entry_of(&self, path: &OsStr) -> Result<Option<(String, String)>, GitError> {
+        let argv: Vec<OsString> = ["ls-files", "--stage", "-z", "--"]
+            .iter()
+            .map(|argument| OsString::from(*argument))
+            .chain([path.to_os_string()])
+            .collect();
+        let stdout = self.run_ok(Mode::Query, argv)?;
+        Ok(split_nul(&stdout)
+            .filter_map(parse_ls_files_record)
+            .find(|entry| entry.stage == 0)
+            .map(|entry| (entry.mode, entry.oid)))
+    }
+
+    /// Reads many blob objects through chunked `git cat-file --batch`
+    /// processes (SPEC 17.5: a whole-scope comparison never scales one
+    /// process per document).
+    ///
+    /// One `--batch-check` pass reads every size first, so the content
+    /// passes stay under the capture limit whatever the blobs hold: chunks
+    /// of at most [`Self::BLOB_BATCH_BYTES`] are read whole, and a single
+    /// blob above the bound is refused as one typed failure rather than
+    /// read partly. Replacement objects stay disabled, exactly as
+    /// [`Git::read_blob`] disables them. Every object ID must be a
+    /// validated canonical object ID from this adapter, never a user
+    /// string (SPEC 14.1). An empty list runs no process at all
+    /// (SPEC 14.1).
+    pub fn read_blobs(
+        &self,
+        oids: &[String],
+    ) -> Result<BTreeMap<String, Vec<u8>>, GitError> {
+        if oids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let malformed = |detail: String| GitError::MalformedOutput {
+            command: "cat-file --batch".to_string(),
+            detail,
+        };
+        let mut input = Vec::new();
+        for oid in oids {
+            input.extend_from_slice(oid.as_bytes());
+            input.push(b'\n');
+        }
+        let check_argv: Vec<OsString> = [
+            "--no-replace-objects",
+            "cat-file",
+            "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+        ]
+        .iter()
+        .map(|argument| OsString::from(*argument))
+        .collect();
+        let check = self.run_stdin(Mode::Query, check_argv.clone(), &input)?;
+        let check = require_success(&check_argv, check)?;
+        let mut sizes: BTreeMap<String, u64> = BTreeMap::new();
+        for line in check.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let text = String::from_utf8_lossy(line).into_owned();
+            let mut fields = text.split(' ');
+            let oid = fields.next();
+            let kind = fields.next();
+            let size = fields.next();
+            let (Some(oid), Some(kind), Some(size)) = (oid, kind, size) else {
+                // A missing object answers two fields: its ID and the
+                // word `missing`, with no size.
+                if oid.is_some() && kind == Some("missing") && size.is_none() {
+                    return Err(missing_object_failure(&check_argv, &text));
+                }
+                return Err(malformed(format!("not a batch-check line: {text}")));
+            };
+            if kind != "blob" {
+                return Err(malformed(format!("object {oid} is a {kind}, not a blob")));
+            }
+            let size = size
+                .parse::<u64>()
+                .map_err(|_| malformed(format!("not a byte size: {size}")))?;
+            sizes.insert(oid.to_string(), size);
+        }
+        if sizes.len() != oids.len() {
+            return Err(malformed(format!(
+                "expected {} object(s), the batch-check answered {}",
+                oids.len(),
+                sizes.len()
+            )));
+        }
+        let mut blobs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut chunk: Vec<String> = Vec::new();
+        let mut chunk_bytes: u64 = 0;
+        for oid in oids {
+            let size = *sizes
+                .get(oid)
+                .ok_or_else(|| malformed(format!("object {oid} was never checked")))?;
+            if size > Self::BLOB_BATCH_BYTES as u64 {
+                return Err(malformed(format!(
+                    "blob {oid} holds {size} bytes, over the {} byte batch bound",
+                    Self::BLOB_BATCH_BYTES
+                )));
+            }
+            if chunk_bytes + size > Self::BLOB_BATCH_BYTES as u64 && !chunk.is_empty() {
+                self.read_blob_chunk(&chunk, &mut blobs)?;
+                chunk.clear();
+                chunk_bytes = 0;
+            }
+            chunk.push(oid.clone());
+            chunk_bytes += size;
+        }
+        self.read_blob_chunk(&chunk, &mut blobs)?;
+        Ok(blobs)
+    }
+
+    /// The largest number of content bytes one `cat-file --batch` chunk of
+    /// [`Git::read_blobs`] reads, kept under the captured-output limit of
+    /// [`Limits`].
+    const BLOB_BATCH_BYTES: usize = 12 * 1024 * 1024;
+
+    /// Reads one chunk of blobs into `blobs`.
+    fn read_blob_chunk(
+        &self,
+        chunk: &[String],
+        blobs: &mut BTreeMap<String, Vec<u8>>,
+    ) -> Result<(), GitError> {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        let mut input = Vec::new();
+        for oid in chunk {
+            input.extend_from_slice(oid.as_bytes());
+            input.push(b'\n');
+        }
+        let argv: Vec<OsString> = ["--no-replace-objects", "cat-file", "--batch"]
+            .iter()
+            .map(|argument| OsString::from(*argument))
+            .collect();
+        let output = self.run_stdin(Mode::Query, argv.clone(), &input)?;
+        let stdout = crate::git::require_success(&argv, output)?;
+        let malformed = |detail: String| GitError::MalformedOutput {
+            command: "cat-file --batch".to_string(),
+            detail,
+        };
+        let mut rest = stdout.as_slice();
+        while !rest.is_empty() {
+            let Some(header_end) = rest.iter().position(|byte| *byte == b'\n') else {
+                return Err(malformed("a header line never ended".to_string()));
+            };
+            let header = String::from_utf8_lossy(&rest[..header_end]).into_owned();
+            rest = &rest[header_end + 1..];
+            let mut fields = header.split(' ');
+            let Some(oid) = fields.next().map(str::to_string) else {
+                return Err(malformed("an empty header line".to_string()));
+            };
+            let kind = fields.next().unwrap_or("");
+            if kind == "missing" {
+                return Err(missing_object_failure(&argv, &header));
+            }
+            if kind != "blob" {
+                return Err(malformed(format!("object {oid} is a {kind}, not a blob")));
+            }
+            let Some(size) = fields.next().and_then(|raw| raw.parse::<usize>().ok()) else {
+                return Err(malformed(format!("no byte size for {oid}")));
+            };
+            if rest.len() < size + 1 {
+                return Err(malformed(format!("fewer than {size} bytes followed {oid}")));
+            }
+            blobs.insert(oid, rest[..size].to_vec());
+            rest = &rest[size + 1..];
+        }
+        Ok(())
+    }
+
+    /// Computes the blob object IDs of many byte strings through one
+    /// `git hash-object -t blob --stdin-paths` process over one private
+    /// scratch directory (SPEC 17.5: identity work never scales one
+    /// process per identity).
+    ///
+    /// The hashed bytes travel through files of one directory the operating
+    /// system gives this process alone, created with owner-only
+    /// permissions and removed before the call returns, whatever it
+    /// answers. `git hash-object --stdin-paths` hashes each file's exact
+    /// bytes without storing an object — the same hash
+    /// [`Git::hash_object`] computes for the same bytes, through the same
+    /// Git. An empty list runs no process at all (SPEC 14.1).
+    pub fn hash_objects(&self, inputs: &[Vec<u8>]) -> Result<Vec<String>, GitError> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "margin-hash-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|since| since.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&directory).map_err(|source| GitError::Io {
+            context: "create the identity scratch directory".to_string(),
+            source,
+        })?;
+        // Owner-only permissions: identity inputs carry document content.
+        let _ = std::fs::set_permissions(
+            &directory,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        );
+        let result = self.hash_objects_in(&directory, inputs);
+        let _ = std::fs::remove_dir_all(&directory);
+        result
+    }
+
+    /// One `hash-object --stdin-paths` run over `directory`.
+    fn hash_objects_in(
+        &self,
+        directory: &Path,
+        inputs: &[Vec<u8>],
+    ) -> Result<Vec<String>, GitError> {
+        let mut paths = String::new();
+        for (index, input) in inputs.iter().enumerate() {
+            let path = directory.join(format!("input-{index:08}"));
+            std::fs::write(&path, input).map_err(|source| GitError::Io {
+                context: "write one identity input".to_string(),
+                source,
+            })?;
+            let _ = std::fs::set_permissions(
+                &path,
+                std::os::unix::fs::PermissionsExt::from_mode(0o600),
+            );
+            paths.push_str(&path.to_string_lossy());
+            paths.push('\n');
+        }
+        let hash_argv: Vec<OsString> = ["hash-object", "-t", "blob", "--stdin-paths"]
+            .iter()
+            .map(|argument| OsString::from(*argument))
+            .collect();
+        let stdout = self.run_stdin(Mode::Query, hash_argv.clone(), paths.as_bytes())?;
+        let stdout = require_success(&hash_argv, stdout)?;
+        let oids: Vec<String> = stdout
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                validate_oid(line).ok_or_else(|| GitError::MalformedOutput {
+                    command: "hash-object".to_string(),
+                    detail: format!(
+                        "not a full lowercase hex object ID: {}",
+                        String::from_utf8_lossy(line)
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if oids.len() != inputs.len() {
+            return Err(GitError::MalformedOutput {
+                command: "hash-object".to_string(),
+                detail: format!(
+                    "expected {} object ID(s), got {}",
+                    inputs.len(),
+                    oids.len()
+                ),
+            });
+        }
+        Ok(oids)
+    }
+
     /// Writes the current index as a tree and returns its object ID from
     /// `git write-tree`. The call stores one tree object and touches no ref
     /// and no working file, but it rewrites the index it addresses to store
@@ -1459,6 +1822,30 @@ impl Git {
     /// nonapplicable patch is one typed failure, never a partial `.rej`
     /// write.
     pub fn apply_patch_cached(&self, patch: &[u8], reverse: bool) -> Result<(), GitError> {
+        self.apply_patch_documents_cached(&[patch], reverse)
+    }
+
+    /// Applies several complete patch documents in one process, in the
+    /// order given: the documents are concatenated into one patch series,
+    /// which Git applies file section by file section exactly as separate
+    /// invocations would (SPEC 9.3-9.4, 17.5 — one composition proof, one
+    /// process). A nonapplicable section fails the whole call, exactly as
+    /// the first of the separate invocations would have.
+    pub fn apply_patch_documents_cached(
+        &self,
+        documents: &[&[u8]],
+        reverse: bool,
+    ) -> Result<(), GitError> {
+        let mut series = Vec::new();
+        for document in documents {
+            series.reserve(document.len() + 1);
+            series.extend_from_slice(document);
+            // One document that does not end in a newline cannot be the
+            // last line of a valid patch; keep the series parseable anyway.
+            if !document.ends_with(b"\n") {
+                series.push(b'\n');
+            }
+        }
         let mut argv: Vec<OsString> = vec![
             "-c".into(),
             "apply.ignoreWhitespace=false".into(),
@@ -1470,7 +1857,7 @@ impl Git {
             argv.push("--reverse".into());
         }
         argv.push("-".into());
-        let output = self.run_stdin(Mode::Mutate, &argv, patch)?;
+        let output = self.run_stdin(Mode::Mutate, &argv, &series)?;
         require_success(&argv, output).map(|_| ())
     }
 
@@ -1529,6 +1916,154 @@ impl Git {
             ["--no-replace-objects", "rev-list", "--first-parent", commit],
         )?;
         parse_rev_list_oids(&stdout)
+    }
+
+    /// Reads many commit objects through one `git cat-file --batch`
+    /// process, so a history walk never scales one process per commit
+    /// (SPEC 17.5).
+    ///
+    /// Replacement objects stay disabled, exactly as [`Git::read_commit`]
+    /// disables them, and every object goes through the same strict parse.
+    /// Every object ID must be a validated canonical object ID from this
+    /// adapter, never a user string (SPEC 14.1). An object the batch cannot
+    /// return is one typed failure: the walk that named it cannot validate
+    /// the history it asked for. An empty list runs no process at all
+    /// (SPEC 14.1).
+    pub fn read_commits_batch(
+        &self,
+        commits: &[String],
+    ) -> Result<BTreeMap<String, CommitObject>, GitError> {
+        if commits.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let argv: Vec<OsString> = ["--no-replace-objects", "cat-file", "--batch"]
+            .iter()
+            .map(|argument| OsString::from(*argument))
+            .collect();
+        let mut input = Vec::new();
+        for commit in commits {
+            input.extend_from_slice(commit.as_bytes());
+            input.push(b'\n');
+        }
+        let output = self.run_stdin(Mode::Query, argv.clone(), &input)?;
+        let stdout = require_success(&argv, output)?;
+        let malformed = |detail: String| GitError::MalformedOutput {
+            command: "cat-file --batch".to_string(),
+            detail,
+        };
+        let mut objects = BTreeMap::new();
+        let mut rest = stdout.as_slice();
+        while !rest.is_empty() {
+            let Some(header_end) = rest.iter().position(|byte| *byte == b'\n') else {
+                return Err(malformed("a header line never ended".to_string()));
+            };
+            let header = String::from_utf8_lossy(&rest[..header_end]).into_owned();
+            rest = &rest[header_end + 1..];
+            let mut fields = header.split(' ');
+            let Some(oid) = fields.next().map(str::to_string) else {
+                return Err(malformed("an empty header line".to_string()));
+            };
+            if validate_oid(oid.as_bytes()).is_none() {
+                return Err(malformed(format!("not an object ID: {oid}")));
+            }
+            let kind = fields.next().unwrap_or("");
+            if kind == "missing" {
+                return Err(missing_object_failure(&argv, &header));
+            }
+            if kind != "commit" {
+                return Err(malformed(format!("object {oid} is a {kind}, not a commit")));
+            }
+            let Some(size) = fields.next().and_then(|raw| raw.parse::<usize>().ok()) else {
+                return Err(malformed(format!("no byte size for {oid}")));
+            };
+            if rest.len() < size + 1 {
+                return Err(malformed(format!("fewer than {size} bytes followed {oid}")));
+            }
+            let object =
+                parse_commit_object(&rest[..size]).map_err(|_| malformed(format!(
+                    "commit {oid} is not a commit object"
+                )))?;
+            objects.insert(oid, object);
+            rest = &rest[size + 1..];
+        }
+        Ok(objects)
+    }
+
+    /// The paths each commit changed against its first parent, through one
+    /// `git diff-tree -r -z --stdin` process fed the commit list, so a
+    /// history walk never scales one process per commit (SPEC 17.5).
+    ///
+    /// Every commit of the input holds an entry: Git prints no section for
+    /// a commit whose diff is empty — a root commit without `--root` and a
+    /// merge commit without `-m` both list nothing — and that silence is
+    /// the one-commit form's ordinary answer of "changed nothing". For a
+    /// commit with exactly one parent the listed paths are the paths whose
+    /// tree entry (mode or object ID) differs from that parent's, which is
+    /// the same set a comparison of two full tree listings derives. Rename
+    /// detection stays off: a rename is a deletion plus an addition
+    /// (SPEC 3.2 rule 6). Every object ID must be a validated canonical
+    /// object ID from this adapter, never a user string (SPEC 14.1). An
+    /// empty list runs no process at all (SPEC 14.1).
+    pub fn first_parent_changed_paths_batch(
+        &self,
+        commits: &[String],
+    ) -> Result<BTreeMap<String, Vec<OsString>>, GitError> {
+        if commits.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let argv: Vec<OsString> = ["--no-replace-objects", "diff-tree", "-r", "-z", "--stdin"]
+            .iter()
+            .map(|argument| OsString::from(*argument))
+            .collect();
+        let mut input = Vec::new();
+        for commit in commits {
+            input.extend_from_slice(commit.as_bytes());
+            input.push(b'\n');
+        }
+        let output = self.run_stdin(Mode::Query, argv.clone(), &input)?;
+        let stdout = require_success(&argv, output)?;
+        let malformed = |detail: String| GitError::MalformedOutput {
+            command: "diff-tree --stdin".to_string(),
+            detail,
+        };
+        let mut changed: BTreeMap<String, Vec<OsString>> = BTreeMap::new();
+        // Every commit of the input starts at no changes: Git prints no
+        // section at all for a commit whose diff is empty, so silence means
+        // "changed nothing", not "was never read".
+        for commit in commits {
+            changed.entry(commit.clone()).or_default();
+        }
+        // The commit line whose changes are being read; the input order,
+        // never the map's key order, decides it.
+        let mut open: Option<String> = None;
+        let mut records = split_nul(&stdout);
+        while let Some(record) = records.next() {
+            if record.first() == Some(&b':') {
+                // A change header: `:<mode> <mode> <oid> <oid> <status>`.
+                // The path is the next record, unconditionally, so a path
+                // that itself starts with a colon cannot be misread.
+                let Some(path) = records.next() else {
+                    return Err(malformed("a change header without its path".to_string()));
+                };
+                let commit = open
+                    .clone()
+                    .ok_or_else(|| malformed("a change before any commit line".to_string()))?;
+                changed
+                    .entry(commit)
+                    .or_default()
+                    .push(os_string_from_bytes(path.to_vec()));
+                continue;
+            }
+            let Some(oid) = validate_oid(record) else {
+                return Err(malformed(format!(
+                    "not a commit line: {}",
+                    String::from_utf8_lossy(record)
+                )));
+            };
+            open = Some(oid.to_string());
+            changed.entry(oid.to_string()).or_default();
+        }
+        Ok(changed)
     }
 
     /// Returns every replacement ref name from
@@ -1679,6 +2214,21 @@ fn require_success(argv: &[OsString], output: GitOutput) -> Result<Vec<u8>, GitE
             exit_code: output.exit_code,
             stderr: truncate_detail(output.stderr),
         })
+    }
+}
+
+/// The typed failure for one object a batch protocol reports missing.
+///
+/// `cat-file --batch` prints `<oid> missing` and exits zero, while the
+/// equivalent one-object call exits nonzero. A missing object is the
+/// repository's own answer, not a protocol surprise, so it maps to the
+/// same execution failure that one-object call returns — `GIT_FAILED`
+/// under SPEC 7.5 — carrying the protocol's own line as the detail.
+fn missing_object_failure(argv: &[OsString], line: &str) -> GitError {
+    GitError::Exit {
+        argv: describe_argv(argv),
+        exit_code: Some(128),
+        stderr: truncate_detail(line.as_bytes().to_vec()),
     }
 }
 

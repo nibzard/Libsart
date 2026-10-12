@@ -1,0 +1,3 @@
+benchrun: P-HELP on C1 — passed (100 counted samples, median 1.3 ms, p95 1.7 ms, budget 75 ms)
+benchrun: oracle passed, raw samples /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/raw/P-HELP.C1/2026-10-12T004647Z/samples.jsonl
+benchrun: record /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/P-HELP.C1.json

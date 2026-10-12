@@ -470,6 +470,10 @@ pub struct Shell<'a> {
     /// Whether the next frame must be drawn: every state change raises
     /// it, and the reduced-update mode consumes it (SPEC 11.4).
     redraw: bool,
+    /// Whether the background slices — the change comparison and the
+    /// timeline — still wait for the first drawn frame (SPEC 17.4: the
+    /// launch window ends at that frame, so they never delay it).
+    background_pending: bool,
     /// How the surface may decorate its text (SPEC 11.4).
     color: ColorMode,
     notice: Option<String>,
@@ -485,8 +489,33 @@ impl<'a> Shell<'a> {
     /// Loading is read-only and total: a query that fails degrades to a
     /// note, never to a refusal to open, because the surface must open
     /// read-only before adoption and stay readable in every state the
-    /// repository can be in.
+    /// repository can be in. The comparison and the timeline load inside
+    /// this call; [`Shell::open_for_launch`] is the interactive path that
+    /// defers them.
     pub fn open(root: &Path, operations: &'a Operations<'a>, options: &TuiOptions) -> Shell<'a> {
+        Self::open_common(root, operations, options, true)
+    }
+
+    /// Loads the shell the interactive launch path uses: the slices the
+    /// first useful frame does not show — the change comparison and the
+    /// timeline — wait for that frame instead of delaying it (SPEC 17.4:
+    /// the launch window ends at the first useful frame).
+    pub fn open_for_launch(
+        root: &Path,
+        operations: &'a Operations<'a>,
+        options: &TuiOptions,
+    ) -> Shell<'a> {
+        Self::open_common(root, operations, options, false)
+    }
+
+    /// The shared constructor; `load_background_now` decides whether the
+    /// background slices load inside the call or arm the deferred load.
+    fn open_common(
+        root: &Path,
+        operations: &'a Operations<'a>,
+        options: &TuiOptions,
+        load_background_now: bool,
+    ) -> Shell<'a> {
         let folder = folder_name(root);
         let mut shell = Shell {
             root: root.to_path_buf(),
@@ -517,6 +546,7 @@ impl<'a> Shell<'a> {
             editor: None,
             capture_after_edit: false,
             redraw: true,
+            background_pending: false,
             color: options.color,
             notice: None,
             quit_warning: false,
@@ -530,7 +560,18 @@ impl<'a> Shell<'a> {
             .as_ref()
             .is_some_and(|settings| settings.capture_after_edit);
         match settings.and_then(|settings| settings.scope) {
-            Some(descriptor) => shell.load_adopted(descriptor),
+            Some(descriptor) => {
+                shell.load_visible(descriptor);
+                // The comparison and the timeline are not on the first
+                // useful frame: an opening view that needs them loads
+                // them now, and the deferred reading surface waits for
+                // that frame to be drawn (SPEC 17.4).
+                if load_background_now || shell.view != View::Read {
+                    shell.load_background();
+                } else {
+                    shell.background_pending = true;
+                }
+            }
             None => shell.load_unadopted(&folder),
         }
         shell.select_initial(options.path.as_deref());
@@ -538,8 +579,19 @@ impl<'a> Shell<'a> {
     }
 
     /// Loads an adopted workspace: status, documents, comparison summary,
-    /// and timeline, each through its shared operation.
+    /// and timeline, each through its shared operation. Every rebuild
+    /// after a mutation or an explicit refresh goes through here
+    /// synchronously; only the launch path splits the two halves so the
+    /// first useful frame need not wait for the comparison.
     fn load_adopted(&mut self, descriptor: ScopeDescriptor) {
+        self.load_visible(descriptor);
+        self.load_background();
+    }
+
+    /// Loads the slices the first useful frame shows: the workspace
+    /// identity and the document list (SPEC 17.4: the launch window ends
+    /// at that frame, so nothing it does not show may delay it).
+    fn load_visible(&mut self, descriptor: ScopeDescriptor) {
         self.regenerate();
         self.workspace.adopted = true;
         let inspection = self.operations.inspect_workspace(&InspectRequest {
@@ -568,6 +620,14 @@ impl<'a> Shell<'a> {
             }
         }
         self.load_documents(&descriptor);
+    }
+
+    /// Loads the slices the first useful frame does not show: the change
+    /// comparison and the timeline page, with the observation that pins
+    /// them against the workspace the visible half just read (SPEC 5.3).
+    /// The launch path calls this after the first drawn frame; every
+    /// rebuild calls it inside [`Shell::load_adopted`].
+    fn load_background(&mut self) {
         self.changes = ChangesView::load(self.operations);
         if self.view == View::Changes {
             // The opening view is the Changes view: the first group the
@@ -583,6 +643,19 @@ impl<'a> Shell<'a> {
         // read inside this one synchronous load, so every observation a
         // later poll makes is compared against this record (SPEC 5.3).
         self.pinned = Some(PinnedObservation::of(&self.workspace));
+    }
+
+    /// Loads the deferred background slices once, after the first drawn
+    /// frame. Returns whether anything loaded, so the loop draws again
+    /// before it waits for input.
+    pub fn load_pending_background(&mut self) -> bool {
+        if !self.background_pending {
+            return false;
+        }
+        self.background_pending = false;
+        self.load_background();
+        self.redraw = true;
+        true
     }
 
     /// Starts the next generation of the read-only state (SPEC 13.3).

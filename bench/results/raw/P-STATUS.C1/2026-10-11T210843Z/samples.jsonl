@@ -1,0 +1,1 @@
+{"schema_version":1,"metric":"P-STATUS","corpus":"C1","version":"single","block":0,"run_in_block":0,"order_index":0,"warmup":false,"elapsed_ms":213.895705,"exit_code":0,"stdout_bytes":1389,"stderr_bytes":0,"oracle":"passed","oracle_failures":[],"cache_method":"warm","invalidated":false,"invalidation_reason":null,"at":"2026-10-11T21:08:43Z"}

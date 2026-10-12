@@ -1,0 +1,3 @@
+benchrun: P-STATUS on C1 — failed (100 counted samples, median 78.7 ms, p95 153.6 ms, budget 150 ms)
+benchrun: oracle passed, raw samples /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/raw/P-STATUS.C1/2026-10-12T004703Z/samples.jsonl
+benchrun: record /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/P-STATUS.C1.json

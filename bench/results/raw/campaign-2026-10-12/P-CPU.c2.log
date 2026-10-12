@@ -1,0 +1,3 @@
+benchrun: P-CPU on C2 — failed (2 counted samples, max 2.6 percent-of-one-core against the ceiling)
+benchrun: oracle passed, raw samples /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/raw/P-CPU.C2/2026-10-12T020920Z/samples.jsonl
+benchrun: record /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/P-CPU.C2.json

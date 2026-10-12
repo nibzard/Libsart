@@ -11,10 +11,12 @@ pub enum Kind {
     /// Wall time of one fresh CLI process, before creation through exit
     /// and full response delivery (SPEC 17.3).
     Cli,
-    /// PTY interaction timing: launch-to-frame or key-to-bytes (SPEC
-    /// 17.4). Not driven by this harness yet.
+    /// PTY interaction timing: launch-to-frame, key-to-bytes, or
+    /// edit-to-indicator, measured against a real pseudo-terminal (SPEC
+    /// 17.4) by the `pty` sampler module.
     Pty,
-    /// A resource quantity: idle CPU, RSS, or process-tree memory.
+    /// A resource quantity: idle CPU, RSS, or process-tree memory, read
+    /// from the kernel's own accounting by the `resource` sampler module.
     Resource,
 }
 
@@ -184,8 +186,9 @@ pub fn by_id(id: &str) -> Option<&'static MetricDef> {
     ALL.iter().find(|metric| metric.id == id)
 }
 
-/// The metrics this harness can time as fresh CLI processes. The rest
-/// stay `not_measured` until their PTY or sampler harness exists.
+/// The metrics this harness times as fresh CLI processes. The PTY and
+/// resource metrics have their own samplers; both sets write the same
+/// raw sample streams and result records.
 pub fn cli_metrics() -> Vec<&'static MetricDef> {
     ALL.iter()
         .filter(|metric| metric.kind == Kind::Cli)
