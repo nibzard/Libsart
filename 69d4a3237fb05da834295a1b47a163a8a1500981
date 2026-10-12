@@ -1,0 +1,11 @@
+The rerun exposed three harness defects: selected diff grading,
+block exclusion, and incomplete application plans. The corrected
+application fixture collects every page and restores all 49 intended
+documents on C2. Request identifiers vary across preparations.
+
+Validation: 68 harness acceptance tests and 30 example unit tests pass.
+Clippy denies warnings and passes. Formatting and record checks pass.
+The measured application executable remains the build from 25cd433.
+The recheck has 19 passing records, four failing C2 gates, and one
+inconclusive C1 keyboard record. Full raw evidence stays in the local
+audit bundle named by bench/results/recheck-2026-10-12.md.
