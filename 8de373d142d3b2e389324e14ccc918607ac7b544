@@ -1,0 +1,31 @@
+# Context
+
+## Background
+T084 targeted P-APPLY, which failed both corpora while P-CHECKPOINT
+passed on the same binary. The recorded failures came from a bench run
+of commit fcac83e; the C2 record also carried correctness_oracle
+"failed" because the harness probe read only the first 50-group diff
+page of the 148-group comparison, so its plan restored a subset no
+independent tree derivation could ever match.
+
+## Why This Way
+The untimed preparation step of P-APPLY already derives the pinned
+review (the plan's review_id is only computable from the manifest), so
+the timed review was re-deriving work the protocol had already paid
+for. The cache removes the repetition without moving any production
+work into untimed preparation: P-DIFF still clears the cache before
+every timed run so that metric keeps measuring the cold derivation.
+
+## Gotchas
+- The git-invocation logging shim (a bash wrapper on PATH) costs about
+  1.5 ms per Git process; at C1 that inflated a 0.37 s apply to 0.61 s.
+  Phase timelines taken with the shim must subtract its overhead.
+- `objects_present` answers Ok(false) on missing objects, so a cache
+  miss rederives and the missing object fails the derivation typed —
+  the pre-cache failure surface is preserved (failure_phases covers it).
+- Entry files are lowercase hex names of the key OID; eviction treats
+  any other name as not-an-entry and never deletes it.
+
+## Related
+- design note on 8de373d (cache verification chain)
+- todo note on 8de373d (remaining C2 costs)
