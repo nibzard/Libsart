@@ -1,0 +1,13 @@
+The user requested committing all project changes and merging them into
+main. This commit includes the previously uncommitted implementation,
+verification artifacts, sample content, and the four review fixes.
+
+History context must be checked before cached marker results are used.
+A blob batch budget must not reduce the supported per-file size.
+A single tmux command needs a launcher that keeps its name literal.
+Desk composition must address each created window by its unique ID.
+
+Validation: all 841 tests passed with --test-threads=1. cargo fmt --check
+and cargo clippy --locked --all-targets --quiet -- -D warnings passed.
+A parallel benchmark comparison had a timing-test failure. The release
+build was installed and passed init, status, checkpoint, and diff checks.
