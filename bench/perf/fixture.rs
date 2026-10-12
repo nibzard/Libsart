@@ -13,10 +13,12 @@
 //! commits, and asserts the pre-state before the clock starts, so a run
 //! can never degrade into a no-op or a receipt lookup.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -38,6 +40,8 @@ const DIRTY_DOCUMENTS: usize = 2;
 const FIXTURE_USER_NAME: &str = "Margin Bench Fixture";
 const FIXTURE_USER_EMAIL: &str = "margin-bench@example.invalid";
 
+static NEXT_PREPARATION: AtomicU64 = AtomicU64::new(0);
+
 /// What one reset prepared for the timed run that follows.
 pub enum Prepared {
     /// The repository alone is the workload.
@@ -54,6 +58,8 @@ pub enum Prepared {
 
 /// One prepared benchmark fixture.
 pub struct Fixture {
+    /// Separates request identifiers across measurement preparations.
+    request_prefix: String,
     /// The corpus root: `repo/` and `manifest.json` live here.
     pub root: PathBuf,
     /// The repository the timed process runs in.
@@ -129,6 +135,15 @@ impl Fixture {
         let vars = child_environment(&home);
         let oracle = GitOracle::new(&repo, vars.clone());
         let fixture = Fixture {
+            request_prefix: format!(
+                "bench-p-apply-{:x}-{:032x}-{:x}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos(),
+                NEXT_PREPARATION.fetch_add(1, Ordering::Relaxed),
+            ),
             manifest_sha256: super::hash::sha256_hex(&manifest_bytes),
             generator_revision: manifest["generator_revision"]
                 .as_str()
@@ -313,7 +328,7 @@ impl Fixture {
                 self.assert_reviewable()?;
                 let plan = self.build_plan(iteration)?;
                 Ok(Prepared::Review {
-                    request_id: format!("bench-p-apply-i{iteration:06}"),
+                    request_id: self.request_id(iteration),
                     plan,
                 })
             }
@@ -350,7 +365,7 @@ impl Fixture {
     /// next through a retained receipt.
     pub fn build_plan(&self, iteration: usize) -> Result<PathBuf, String> {
         let context = self.review_context()?;
-        let request_id = format!("bench-p-apply-i{iteration:06}");
+        let request_id = self.request_id(iteration);
         let restore = self.restored_change_ids(&context)?;
         let mut plan = serde_json::Map::new();
         plan.insert("schema_version".to_string(), Value::from(1));
@@ -377,34 +392,118 @@ impl Fixture {
         Ok(path)
     }
 
-    /// The pinned review context of the fixture, from one untimed
-    /// `margin diff` through `executable`.
+    fn request_id(&self, iteration: usize) -> String {
+        format!("{}-i{iteration:06}", self.request_prefix)
+    }
+
+    /// The full review context, collected through bounded untimed pages.
     fn review_context_via(&self, executable: &Path) -> Result<Value, String> {
-        let mut command = std::process::Command::new(executable);
-        command
-            .args(["diff", "--json"])
-            .current_dir(&self.repo)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        for (key, _) in std::env::vars_os() {
-            let scrubs = key.as_encoded_bytes().starts_with(b"GIT_") || key == "EMAIL";
-            if scrubs {
-                command.env_remove(&key);
+        let mut context: Option<Value> = None;
+        let mut cursor: Option<String> = None;
+        let mut cursors = BTreeSet::new();
+        let mut identifiers = BTreeSet::new();
+        loop {
+            let mut command = std::process::Command::new(executable);
+            command
+                .args(["diff", "--json"])
+                .current_dir(&self.repo)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            if let Some(cursor) = &cursor {
+                command.args(["--cursor", cursor]);
+            }
+            for (key, _) in std::env::vars_os() {
+                let scrubs = key.as_encoded_bytes().starts_with(b"GIT_") || key == "EMAIL";
+                if scrubs {
+                    command.env_remove(&key);
+                }
+            }
+            command.envs(&self.vars);
+            let output = command
+                .output()
+                .map_err(|error| format!("cannot run the untimed diff probe: {error}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "the untimed diff probe failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            let page = super::oracle::envelope(&output.stdout, &output.stderr)?;
+            if page["candidate_oid"].as_str() != Some(self.facts.candidate.as_str())
+                || page["baseline_oid"].as_str() != Some(self.facts.baseline.as_str())
+                || page["scope_totals"]["groups"].as_u64() != Some(self.facts.changed_groups)
+                || page["actionable"].as_bool() != Some(true)
+            {
+                return Err(
+                    "the review context does not describe the pinned actionable fixture".into(),
+                );
+            }
+            if let Some(previous) = &context {
+                for field in [
+                    "review_id",
+                    "branch_ref",
+                    "scope_id",
+                    "baseline_oid",
+                    "candidate_oid",
+                    "candidate_scope_digest",
+                    "manifest_digest",
+                    "scope_totals",
+                    "scope",
+                ] {
+                    if page.get(field) != previous.get(field) {
+                        return Err(format!("the review context changed {field} between pages"));
+                    }
+                }
+            } else {
+                let mut first = page.clone();
+                first["changes"] = Value::Array(Vec::new());
+                context = Some(first);
+            }
+            let rows = page["changes"]
+                .as_array()
+                .ok_or("the review page lists no changes")?;
+            if rows.is_empty() {
+                return Err("the review context page makes no progress".into());
+            }
+            for row in rows {
+                let identifier = row["change_id"]
+                    .as_str()
+                    .ok_or("a group has no identifier")?;
+                if !identifiers.insert(identifier.to_string()) {
+                    return Err(format!("the review context repeats group {identifier}"));
+                }
+            }
+            let collected = context
+                .as_mut()
+                .expect("the first page initializes the context");
+            collected["changes"]
+                .as_array_mut()
+                .expect("the collector is an array")
+                .extend(rows.iter().cloned());
+            if identifiers.len() as u64 > self.facts.changed_groups {
+                return Err("the review context exceeds the pinned group count".into());
+            }
+            match page.get("next_cursor") {
+                Some(Value::String(next)) if !next.is_empty() => {
+                    if !cursors.insert(next.clone()) {
+                        return Err("the review context repeats a page cursor".into());
+                    }
+                    cursor = Some(next.clone());
+                }
+                Some(Value::Null) => {
+                    if identifiers.len() as u64 != self.facts.changed_groups {
+                        return Err("the review context omits pinned groups".into());
+                    }
+                    // These flags describe the collected context, not one page.
+                    collected["complete"] = Value::Bool(true);
+                    collected["next_cursor"] = Value::Null;
+                    collected["omitted_detail_count"] = Value::from(0);
+                    return Ok(context.expect("the collected context exists"));
+                }
+                _ => return Err("the review context has no valid continuation cursor".into()),
             }
         }
-        command.envs(&self.vars);
-        let output = command
-            .output()
-            .map_err(|error| format!("cannot run the untimed diff probe: {error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "the untimed diff probe failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        let data = super::oracle::envelope(&output.stdout, &output.stderr)?;
-        Ok(data)
     }
 
     /// The cached pinned context, derived once per fixture.
@@ -416,8 +515,7 @@ impl Fixture {
         Err("the review context was not derived; call `derive_review_context` first".to_string())
     }
 
-    /// Derives and caches the pinned review context through one untimed
-    /// `margin diff` run. Called during run preparation.
+    /// Derives and caches all review pages before the timed runs.
     pub fn derive_review_context(&self, executable: &Path) -> Result<Value, String> {
         let context = self.review_context_via(executable)?;
         let body = serde_json::to_vec_pretty(&context)

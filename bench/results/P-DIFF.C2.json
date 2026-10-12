@@ -4,22 +4,22 @@
   "corpus": "C2",
   "status": "failed",
   "environment_id": "the-developer-vm",
-  "implementation_commit": "fcac83eb2fef068b632560165fe8afeb4f87efa1",
-  "executable_hash": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64",
-  "corpus_manifest_hash": "6270ad4db7467b23ea04cd11e6a5801d9bd4d7abe4a13f34c763499ad89ea0c9",
+  "implementation_commit": "25cd4338a183105d57ca62b0c8009ef0c0c7ce3e",
+  "executable_hash": "6483cccbe3333ffe7120ade2a8ab0b3f97f864e72b47a810828cecc1ce2ca6bf",
+  "corpus_manifest_hash": "5ab487573454247c227a10a92708c669965cb2c788d0cd9a22fdcb194a370711",
   "sample_count": 100,
-  "median_ms": 878.348835,
-  "p95_ms": 1433.068379,
+  "median_ms": 752.2732450000001,
+  "p95_ms": 764.419523,
   "budget_p95_ms": 500,
-  "correctness_oracle": "failed",
-  "raw_samples_path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/raw/P-DIFF.C2/2026-10-12T011406Z/samples.jsonl",
+  "correctness_oracle": "passed",
+  "raw_samples_path": "/home/agent/margin/bench/results/raw/P-DIFF.C2/2026-10-12T221002Z/samples.jsonl",
   "details": {
     "metric_kind": "cli-fresh-process",
     "metric_about": "Selected-document review data, full required Git/manifest work",
-    "measured_at": "2026-10-12T01:14:06Z",
+    "measured_at": "2026-10-12T22:10:02Z",
     "environment": {
-      "path": "bench/environment.json",
-      "git_version": "2.43.0",
+      "path": "/home/agent/margin/bench/environment.json",
+      "git_version": "2.45.0",
       "rustc_version": "rustc 1.98.1 (48a229cea 2026-09-01)",
       "cargo_version": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
       "kernel": "6.8.0-139-generic",
@@ -30,14 +30,14 @@
       "harness_revision": "margin-benchrun/2"
     },
     "executable": {
-      "path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/target/release/margin",
-      "bytes": 4669056,
-      "sha256": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64"
+      "path": "/home/agent/margin/target/release/margin",
+      "bytes": 4670440,
+      "sha256": "6483cccbe3333ffe7120ade2a8ab0b3f97f864e72b47a810828cecc1ce2ca6bf"
     },
     "corpus": {
-      "directory": "/tmp/looper_f213b06f607af254209d-t054/corpora/c2",
-      "manifest_path": "/tmp/looper_f213b06f607af254209d-t054/corpora/c2/manifest.json",
-      "manifest_sha256": "6270ad4db7467b23ea04cd11e6a5801d9bd4d7abe4a13f34c763499ad89ea0c9",
+      "directory": "/home/agent/margin/bench/corpora/recheck-20261012T195920Z/c2",
+      "manifest_path": "/home/agent/margin/bench/corpora/recheck-20261012T195920Z/c2/manifest.json",
+      "manifest_sha256": "5ab487573454247c227a10a92708c669965cb2c788d0cd9a22fdcb194a370711",
       "generator_revision": "margin-corpusgen/1",
       "seed": 7881706609582276610,
       "test_scale": false
@@ -46,7 +46,7 @@
       "warmups": 5,
       "blocks": 20,
       "runs_per_block": 5,
-      "order_seed": 1,
+      "order_seed": 20261013,
       "boundary": "wall time from before process creation through exit and full response delivery (SPEC 17.3)",
       "cache_method": "warm filesystem caches, fresh process per run",
       "order_rule": "one recorded-seed coin flip per block decides baseline/candidate order",
@@ -55,13 +55,32 @@
     },
     "statistics": {
       "sample_count": 100,
-      "median_ms": 878.348835,
-      "p95_ms": 1433.068379,
-      "min_ms": 688.7728360000001,
-      "max_ms": 1760.184867,
+      "median_ms": 752.2732450000001,
+      "p95_ms": 764.419523,
+      "min_ms": 543.4402630000001,
+      "max_ms": 787.733481,
       "method": "nearest-rank; all samples retained including slow ones"
     },
-    "comparison": null,
+    "comparison": {
+      "baseline": {
+        "path": "/home/agent/margin/ci/artifacts/benchmark-baseline-target/release/margin",
+        "bytes": 4669056,
+        "sha256": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64"
+      },
+      "baseline_median_ms": 749.2443989999999,
+      "baseline_p95_ms": 766.711013,
+      "baseline_sample_count": 100,
+      "median_increase_ms": 3.028846000000158,
+      "bootstrap": {
+        "resamples": 10000,
+        "confidence": 99,
+        "method": "percentile bootstrap of complete paired blocks; median increase; 0.5/99.5 ranks",
+        "lower_ms": 0.14908300000013242,
+        "upper_ms": 5.25496099999998
+      },
+      "blocks_paired": 20,
+      "regression_blocked": false
+    },
     "gate": {
       "budget": "p95 <= 500 ms",
       "budget_exceeded": true,
@@ -71,6 +90,8 @@
     "memory_definition": null,
     "invalidated_blocks": [],
     "notes": [
+      "Declared SPEC 17.7 confirmation; side=paired; original result: bench/results/raw/recheck-20261012T195920Z",
+      "Baseline source commit: fcac83eb2fef068b632560165fe8afeb4f87efa1",
       "the p95 exceeded its budget: SPEC 17.7 requires one declared confirmation run of both versions, preserved, before the failure blocks release"
     ]
   }

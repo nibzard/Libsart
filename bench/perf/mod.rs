@@ -31,4 +31,4 @@ pub mod timing;
 /// The revision of this harness, recorded in every environment and
 /// result record. Bump when measurement, reset, oracle, or statistics
 /// behavior changes.
-pub const HARNESS_REVISION: &str = "margin-benchrun/2";
+pub const HARNESS_REVISION: &str = "margin-benchrun/3";

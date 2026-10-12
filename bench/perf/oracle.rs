@@ -403,7 +403,9 @@ pub fn verify_diff(
         .iter()
         .map(|change| change["path"].as_str().ok_or("a change without a path"))
         .collect::<Result<_, _>>()?;
-    if shown != [facts.selected_path.as_str()] {
+    // Diff rows describe passage groups, so one selected document can
+    // appear in several rows. Every row must still name that document.
+    if shown.is_empty() || shown.iter().any(|path| *path != facts.selected_path) {
         return Err(format!(
             "the selected-document filter showed {shown:?} instead of [{}]",
             facts.selected_path

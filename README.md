@@ -149,7 +149,8 @@ terminal left raw after one recovers with `reset` (or `stty sane`). The
 command line. The Claude Code hook adapter translates supported events, and
 `hook install` and `hook remove` edit only Margin's own entries in the local
 Claude Code settings; `margin desk` composes the optional tmux writing desk.
-Parts of explicit recovery remain unfinished.
+Recovery supports inspection, exact-plan review resume, and guarded capture
+of inspected staged content.
 
 Known defects and remaining work are recorded in [to-do.json](to-do.json).
 That file is a backlog snapshot; regenerate it at integration milestones.

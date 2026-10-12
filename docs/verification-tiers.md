@@ -33,9 +33,10 @@ directory unchanged.
 | Schema/example checks | `tests/review_plans.rs` compares the shipped plan schema; `tests/cli_contract.rs` replays the example walkthrough of `examples/README.md`; both run inside the same test run |
 
 The deterministic PR tier targets ten minutes on its registered runner
-(SPEC 18.3). No runner is registered yet — `bench/environment.json` is
-unassigned — so no duration claim is made here; the wall times recorded
-by each run are the honest record. Moving a gate to nightly is allowed
+(SPEC 18.3). `bench/environment.json` records the registered virtual machine.
+The wall times recorded by each run remain the evidence for gate duration;
+registration alone does not establish that a gate meets its target.
+Moving a gate to nightly is allowed
 only while every critical invariant keeps a meaningful PR test.
 
 ### The nightly tier

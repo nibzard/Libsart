@@ -5,7 +5,7 @@
   "declared_class": "developer-laptop-class linux x86-64, local SSD storage",
   "matches_declared_class": true,
   "observed_class": "ubuntu 24.04.3 lts x86_64",
-  "registered_at": "2026-10-11T17:51:41Z",
+  "registered_at": "2026-10-12T23:16:23Z",
   "hardware": {
     "machine_model": "Standard PC (i440FX + PIIX, 1996) pc-i440fx-9.2",
     "cpu_model": "12th Gen Intel(R) Core(TM) i9-12900HK",
@@ -18,13 +18,13 @@
       "mount": "/",
       "filesystem": "ext4",
       "total_bytes": 156454371328,
-      "available_bytes": 28256411648
+      "available_bytes": 22923468800
     }
   },
   "software": {
     "kernel": "6.8.0-139-generic",
     "os": "Ubuntu 24.04.3 LTS",
-    "git_version": "2.43.0",
+    "git_version": "2.45.0",
     "rustc_version": "rustc 1.98.1 (48a229cea 2026-09-01)",
     "cargo_version": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
     "rust_toolchain": "1.98.1"
@@ -36,7 +36,7 @@
     "dependency_lock_sha256": "4f73ced8a50e9f05067c4c47da81ace72c20aebe9e168af17301c1e7e503cdf4"
   },
   "tools": {
-    "harness_revision": "margin-benchrun/1",
+    "harness_revision": "margin-benchrun/3",
     "hyperfine": "absent",
     "perf": "installed"
   },
@@ -44,12 +44,12 @@
     "governor": null,
     "supply": null,
     "thermal_millidegrees": [],
-    "load_average": "5.05 5.52 5.79 3/879 4048772",
-    "conditions": "Dedicated developer-laptop-class VM (4 logical cores of a 12th Gen i9-12900HK host, 12 GiB RAM, ext4 on /dev/sda1) reserved for Margin benchmarks; no competing builds during measurement runs; host power and thermal state are not observable from the guest, so power policy is asserted by the operator, not probed"
+    "load_average": "1.76 1.85 1.59 1/753 1822512",
+    "conditions": "Local SSD Linux VM. Quiet starts require one-minute load below 3 and no visible competing builds. Build interference is monitored and retained; host power and thermal state are not observable."
   },
   "terminal": {
     "term": "tmux-256color",
-    "colorterm": null,
+    "colorterm": "",
     "pty": "not used by the fresh-process CLI metrics; PTY metrics record their own method"
   },
   "notes": [

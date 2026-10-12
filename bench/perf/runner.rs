@@ -1014,67 +1014,78 @@ pub fn invalidate_block(
     } else {
         "single"
     };
-    let counted: Vec<f64> = samples
-        .iter()
-        .filter(|sample| sample.counted() && sample.version == gated_version)
-        .map(|sample| sample.elapsed_ms)
-        .collect();
-    if counted.is_empty() {
-        record.status = Status::Inconclusive;
-        record.sample_count = 0;
+    let definition = metric::by_id(&record.metric)
+        .ok_or_else(|| format!("unknown recorded metric {}", record.metric))?;
+    let paired = samples.iter().any(|sample| sample.version == "baseline");
+    let plan = RunPlan {
+        metric: definition.id,
+        corpus: record.corpus.clone(),
+        sides: if paired {
+            Sides::Paired {
+                baseline: details
+                    .comparison
+                    .as_ref()
+                    .map(|comparison| comparison.baseline.path.clone())
+                    .unwrap_or_else(|| details.executable.path.clone()),
+                candidate: details.executable.path.clone(),
+            }
+        } else {
+            Sides::Single(details.executable.path.clone())
+        },
+        warmups: details.sampling.warmups,
+        blocks: details.sampling.blocks,
+        runs_per_block: details.sampling.runs_per_block,
+        order_seed: details.sampling.order_seed,
+        events_per_session: details.sampling.events_per_session,
+        window_seconds: details.sampling.window_seconds,
+        implementation_commit: record.implementation_commit.clone(),
+        notes: Vec::new(),
+    };
+    let counted = record::counted_values(&samples, gated_version);
+    let statistics = statistics_of(&record.metric, &counted);
+    details.comparison = comparison_of(&plan, &samples);
+    let regression_blocked = details
+        .comparison
+        .as_ref()
+        .is_some_and(|comparison| comparison.regression_blocked);
+    let budget_exceeded = statistics.as_ref().is_some_and(|statistics| {
+        record
+            .budget_p95_ms
+            .is_some_and(|limit| statistics.p95_ms > limit as f64)
+            || record::budget_p99_ms(&record.metric, &record.corpus)
+                .is_some_and(|limit| statistics.p99_ms.is_some_and(|p99| p99 > limit as f64))
+            || record::resource_ceiling(&record.metric, &record.corpus)
+                .is_some_and(|limit| statistics.max_ms > limit)
+    });
+    let short_of_policy = sampling_below_policy(&plan, &samples);
+    record.sample_count = counted.len();
+    if definition.kind == Kind::Resource {
         record.median_ms = None;
         record.p95_ms = None;
-        details.statistics = None;
     } else {
-        let statistics = statistics_of(&record.metric, &counted)
-            .expect("a non-empty series produces statistics");
-        record.sample_count = statistics.sample_count;
-        record.median_ms = Some(statistics.median_ms);
-        record.p95_ms = Some(statistics.p95_ms);
-        if let Some(limit) = record.budget_p95_ms
-            && statistics.p95_ms > limit as f64
-        {
-            record.status = Status::Failed;
-        }
-        details.statistics = Some(statistics);
+        record.median_ms = statistics.as_ref().map(|statistics| statistics.median_ms);
+        record.p95_ms = statistics.as_ref().map(|statistics| statistics.p95_ms);
     }
-
-    // A paired record's comparison must follow the same exclusion: the
-    // baseline statistics and the bootstrap are recomputed over the
-    // retained blocks with the recorded seed, never left describing the
-    // samples that were just excluded.
-    if samples
+    details.gate.budget_exceeded = budget_exceeded;
+    details.gate.confirmation_required = budget_exceeded || regression_blocked;
+    let exits_broken = samples
         .iter()
-        .any(|sample| sample.version == "baseline" && sample.counted())
-        && samples
-            .iter()
-            .any(|sample| sample.version == "candidate" && sample.counted())
+        .any(|sample| sample.exit_code != 0 && !sample.warmup);
+    record.status = if record.correctness_oracle == OracleState::Failed
+        || exits_broken
+        || budget_exceeded
+        || regression_blocked
     {
-        let baseline_path = details
-            .comparison
-            .as_ref()
-            .map(|comparison| comparison.baseline.path.clone())
-            .unwrap_or_else(|| details.executable.path.clone());
-        let plan = RunPlan {
-            metric: metric::by_id(&record.metric)
-                .map(|definition| definition.id)
-                .unwrap_or("P-HELP"),
-            corpus: record.corpus.clone(),
-            sides: Sides::Paired {
-                baseline: baseline_path,
-                candidate: details.executable.path.clone(),
-            },
-            warmups: details.sampling.warmups,
-            blocks: details.sampling.blocks,
-            runs_per_block: details.sampling.runs_per_block,
-            order_seed: details.sampling.order_seed,
-            events_per_session: details.sampling.events_per_session,
-            window_seconds: details.sampling.window_seconds,
-            implementation_commit: record.implementation_commit.clone(),
-            notes: Vec::new(),
-        };
-        details.comparison = comparison_of(&plan, &samples);
-    }
+        Status::Failed
+    } else if short_of_policy {
+        details.notes.push(below_policy_note(&plan, counted.len()));
+        Status::Inconclusive
+    } else if statistics.is_some() {
+        Status::Passed
+    } else {
+        Status::NotMeasured
+    };
+    details.statistics = statistics;
     record
         .write(record_path)
         .map_err(|error| format!("cannot write {}: {error}", record_path.display()))?;
@@ -1159,9 +1170,50 @@ fn below_policy(plan: &RunPlan, counted_samples: usize) -> bool {
                 || plan.runs_per_block < 5
                 || counted_samples < 10_000
         }
-        "P-CPU" => plan.blocks < 2 || plan.window_seconds < 300,
-        "P-RSS" | "P-TREE-MEM" => plan.warmups < 1 || plan.blocks < 4 || plan.runs_per_block < 3,
-        _ => plan.warmups < 5 || plan.blocks < 20 || plan.runs_per_block < 5,
+        "P-CPU" => plan.blocks < 2 || plan.window_seconds < 300 || counted_samples < 2,
+        "P-RSS" | "P-TREE-MEM" => {
+            plan.warmups < 1 || plan.blocks < 4 || plan.runs_per_block < 3 || counted_samples < 12
+        }
+        _ => {
+            plan.warmups < 5 || plan.blocks < 20 || plan.runs_per_block < 5 || counted_samples < 100
+        }
+    }
+}
+
+/// Checks the retained complete blocks for every measured version.
+fn sampling_below_policy(plan: &RunPlan, samples: &[Sample]) -> bool {
+    let minimum_blocks = match plan.metric {
+        "P-CPU" => 2,
+        "P-RSS" | "P-TREE-MEM" => 4,
+        _ => 20,
+    };
+    let rows_per_run = if plan.metric == "P-KEY" {
+        plan.events_per_session
+    } else {
+        1
+    };
+    let rows_per_block = plan.runs_per_block.saturating_mul(rows_per_run);
+    plan.sides.versions().iter().any(|version| {
+        let values = record::counted_values(samples, version);
+        let complete_blocks = record::counted_blocks(samples, version)
+            .iter()
+            .filter(|block| !block.is_empty() && block.len() >= rows_per_block)
+            .count();
+        below_policy(plan, values.len()) || complete_blocks < minimum_blocks
+    }) || matches!(plan.sides, Sides::Paired { .. }) && {
+        let baseline = record::counted_blocks(samples, "baseline");
+        let candidate = record::counted_blocks(samples, "candidate");
+        baseline
+            .iter()
+            .zip(&candidate)
+            .filter(|(baseline, candidate)| {
+                !baseline.is_empty()
+                    && !candidate.is_empty()
+                    && baseline.len() >= rows_per_block
+                    && candidate.len() >= rows_per_block
+            })
+            .count()
+            < minimum_blocks
     }
 }
 
@@ -1288,7 +1340,7 @@ pub fn finish_record(
     // The SPEC 17.7.3 minimums decide, not the knobs: a shortened run is
     // diagnostic and its verdict is inconclusive, never a pass. Each kind
     // carries its own floor.
-    let short_of_policy = below_policy(plan, measured.len());
+    let short_of_policy = sampling_below_policy(plan, samples);
 
     // Correctness failures and gate failures share one verdict: a fast but
     // wrong run and an over-budget run both fail, never pass by speed.
@@ -1447,14 +1499,26 @@ fn comparison_of(plan: &RunPlan, samples: &[Sample]) -> Option<Comparison> {
     let Sides::Paired { baseline, .. } = &plan.sides else {
         return None;
     };
-    let baseline_values = record::counted_values(samples, "baseline");
-    let candidate_values = record::counted_values(samples, "candidate");
-    if baseline_values.is_empty() || candidate_values.is_empty() {
+    let all_baseline_blocks = record::counted_blocks(samples, "baseline");
+    let all_candidate_blocks = record::counted_blocks(samples, "candidate");
+    // Slots retain their original block IDs. Pair those IDs before removing
+    // gaps, so a missing block never shifts one version against the other.
+    let (baseline_blocks, candidate_blocks): (Vec<_>, Vec<_>) = all_baseline_blocks
+        .into_iter()
+        .zip(all_candidate_blocks)
+        .filter(|(baseline, candidate)| {
+            !baseline.is_empty()
+                && !candidate.is_empty()
+                && baseline.len() >= plan.runs_per_block
+                && candidate.len() >= plan.runs_per_block
+        })
+        .unzip();
+    let count = baseline_blocks.len();
+    if count == 0 {
         return None;
     }
-    let baseline_blocks = record::counted_blocks(samples, "baseline");
-    let candidate_blocks = record::counted_blocks(samples, "candidate");
-    let count = baseline_blocks.len().min(candidate_blocks.len());
+    let baseline_values: Vec<f64> = baseline_blocks.iter().flatten().copied().collect();
+    let candidate_values: Vec<f64> = candidate_blocks.iter().flatten().copied().collect();
     let bootstrap = stats::paired_bootstrap(
         &baseline_blocks[..count],
         &candidate_blocks[..count],

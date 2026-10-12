@@ -2,8 +2,11 @@
 
 `bench/` holds the benchmark side of SPEC 17: the seeded corpus
 generator, the process benchmark harness, the registered runner
-environment record, the initial result records, and the manually
+environment record, the measurement records, and the manually
 curated holdout set.
+
+See the [2026-10-12 recheck](results/recheck-2026-10-12.md) for current
+release measurements, harness corrections, and remaining evidence gaps.
 
 ## Layout
 
@@ -13,8 +16,8 @@ bench/corpus/main.rs       the corpusgen example entry point
 bench/corpus/gen/          the corpus generator library
 bench/perf/main.rs         the benchrun example entry point
 bench/perf/                the harness library
-bench/environment.json     the runner record (SPEC 17.6), registered to the dedicated runner
-bench/results/             one not_measured record per metric and corpus (SPEC 17.8)
+bench/environment.json     the registered runner record (SPEC 17.6)
+bench/results/             measured verdicts per metric and corpus (SPEC 17.8)
 bench/results/raw/         raw sample streams of measured runs, untracked
 bench/holdout/             the manually curated holdout set (SPEC 17.2)
 bench/corpora/             generated corpora, never committed
@@ -200,10 +203,18 @@ cargo run --example benchrun -- invalidate --samples <samples.jsonl> \
     --block 3 --reason "build storm" --record bench/results/P-STATUS.C1.json
 ```
 
+After invalidation, the harness recomputes the comparison using matching
+original block IDs. It also checks the retained sampling counts. A run
+with fewer complete blocks than the policy requires cannot pass.
+
+Runner registration records the machine. It does not establish exclusive
+access or prove that a measurement has no interference. Record competing
+builds and load during each campaign. Preserve affected samples and the
+incident record before repeating a measurement.
+
 Defaults follow SPEC 17.7.3 exactly: five warmups and twenty independent
 blocks of five fresh-process runs per version. Shortened runs are
-diagnostic: their records come back `inconclusive` with a note, never
-`passed`.
+diagnostic. They cannot produce a `passed` verdict.
 
 What the harness guarantees:
 

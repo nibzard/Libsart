@@ -163,7 +163,12 @@ repository and leaves the example files unchanged.
 
 ## Current limits
 
-This walkthrough uses the command-line interface. The interactive terminal
-interface and explicit recovery commands are still under development.
-Use ordinary index entries for this demo; hidden edits under `assume-unchanged`
-and `skip-worktree` are tracked in task T061.
+This walkthrough uses the command-line interface. Use `margin tui` for
+interactive review. Recovery supports `margin doctor`, exact-plan
+`margin review --resume`, and guarded `margin checkpoint --include-staged`.
+Index flags cannot hide unsaved scoped content from Margin.
+
+Use a separate Git repository for the demo. Repositories with linked
+worktrees remain outside the supported mutation policy. Release performance,
+agent evaluation, writer evaluation, and the full terminal matrix still need
+validation.

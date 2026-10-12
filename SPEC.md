@@ -1312,7 +1312,7 @@ Process-tree memory requires a sampler that measures the stated concurrent sum. 
 
 Before the first measurement, register one dedicated developer-laptop-class Linux x86-64 runner with local SSD storage in `bench/environment.json`. Record actual machine/CPU model, cores, RAM, storage, filesystem/mounts, kernel/OS, Git and Rust versions, dependency lock hash, build flags, power policy, terminal/PTY, and benchmark tools. A separate macOS runner validates its supported behavior and publishes separate results.
 
-No hardware SKU is invented in this specification. The runner is currently `unassigned`, results are `not_measured`, and the selected budgets must be evaluated once it is registered. A larger server is not a substitute for claiming acceptable laptop performance. Use stable power and no competing build jobs; record thermal and background interference. Do not require unsafe system tuning on contributor machines.
+No hardware SKU is invented in this specification. The runner is registered in `bench/environment.json`, and measurement records exist in `bench/results/`. The [current recheck](bench/results/recheck-2026-10-12.md) includes declared confirmations. Some gates still fail; release performance remains open. A larger server is not a substitute for claiming acceptable laptop performance. Use stable power and no competing build jobs; record thermal and background interference. Do not require unsafe system tuning on contributor machines.
 
 ### 17.7 Sampling and regression policy
 
@@ -1546,7 +1546,7 @@ These are validation tasks with named gates, not permission to silently replace 
 
 The design was reviewed separately for Git semantics, the formal protocol, and tests/metrics, then reconciled. A focused compatibility probe on the available Git 2.51.1 passed assertions for disposable-index selective preview, equivalent application through `git apply --index --reverse`, preservation of the real index/working files during preview, and omission of an empty review commit by a path-filtered log.
 
-That probe is evidence for those narrow design choices. It is not a completed Margin test suite and does not validate root initialization, hooks, filters, crashes, or all object formats. The product is not implemented here, performance/AX/usability results are unmeasured, and SANY/TLC execution is pending as stated in Section 15.8.
+That probe is evidence for those narrow design choices. It is not a completed Margin test suite and does not validate root initialization, hooks, filters, crashes, or all object formats. That statement describes the original design probe. The implementation, deterministic tests, formal evidence, and performance records now exist in the repository. Some current performance gates still fail. Agent and writer release evaluations remain open.
 
 ## 21. References
 

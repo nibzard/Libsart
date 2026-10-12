@@ -404,12 +404,21 @@ fn the_result_records_carry_their_budgets_through_every_state() {
                         definition.id,
                         label
                     );
-                    assert!(
-                        record.sample_count > 0,
-                        "{}.{} counted its samples",
-                        definition.id,
-                        label
-                    );
+                    if record.sample_count == 0 {
+                        let details = record
+                            .details
+                            .as_ref()
+                            .expect("excluded records have details");
+                        assert_ne!(record.status, Status::Passed, "an empty series cannot pass");
+                        assert!(
+                            !details.invalidated_blocks.is_empty(),
+                            "a measured empty series must retain its exclusions"
+                        );
+                        assert!(details.statistics.is_none());
+                        assert!(details.comparison.is_none());
+                        assert_eq!(record.median_ms, None);
+                        assert_eq!(record.p95_ms, None);
+                    }
                     assert_ne!(
                         record.correctness_oracle,
                         OracleState::NotRun,
@@ -1162,9 +1171,12 @@ fn a_query_run_records_paired_samples_and_an_honest_verdict() {
     );
     assert_eq!(comparison.bootstrap.confidence, 99);
     assert_eq!(comparison.baseline_sample_count, 4);
-    assert!(
-        !comparison.regression_blocked,
-        "one executable cannot regress on itself"
+    // Equal executable identities do not guarantee equal observed timing.
+    // Controlled sample tests cover the regression decision separately.
+    assert_eq!(
+        comparison.baseline.sha256,
+        record.executable_hash.as_deref().unwrap(),
+        "both measurement sides use the same executable"
     );
     assert!(
         details
@@ -1330,4 +1342,240 @@ fn invalidating_a_block_preserves_its_samples_and_recomputes() {
     let refusal = perf::runner::invalidate_block(&raw_path, &record_path, 99, "nothing")
         .expect_err("no such block");
     assert!(refusal.contains("no sample"));
+}
+
+#[test]
+fn diff_oracle_accepts_multiple_passages_for_one_document() {
+    let root = scratch("diff-oracle-passages");
+    let corpus = root.join("corpus");
+    let mut parameters = corpus::Parameters::c1().test_scale();
+    parameters.selected_changes = 3;
+    corpus::generate(&parameters, &corpus);
+    let fixture = perf::fixture::Fixture::prepare(&corpus, &root.join("fixture"))
+        .expect("the independent Git fixture prepares");
+    let output = Command::new(env!("CARGO_BIN_EXE_margin"))
+        .args(["diff", "--json", "--path", &fixture.facts.selected_path])
+        .current_dir(&fixture.repo)
+        .env_clear()
+        .envs(&fixture.vars)
+        .output()
+        .expect("the real diff runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let data: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        data["data"]["changes"].as_array().unwrap().len() > 1,
+        "the fixture must exercise multiple passage groups"
+    );
+    perf::oracle::verify_diff(
+        &fixture.oracle,
+        &fixture.facts,
+        &output.stdout,
+        &output.stderr,
+    )
+    .expect("multiple passages in the selected document are valid");
+
+    let mut wrong_document = data.clone();
+    wrong_document["data"]["changes"][0]["path"] = "writing/unselected.md".into();
+    assert!(
+        perf::oracle::verify_diff(
+            &fixture.oracle,
+            &fixture.facts,
+            &serde_json::to_vec(&wrong_document).unwrap(),
+            b""
+        )
+        .is_err(),
+        "the grader must reject a group from another document"
+    );
+    let mut empty = data.clone();
+    empty["data"]["changes"] = serde_json::json!([]);
+    assert!(
+        perf::oracle::verify_diff(
+            &fixture.oracle,
+            &fixture.facts,
+            &serde_json::to_vec(&empty).unwrap(),
+            b""
+        )
+        .is_err(),
+        "the grader must reject omitted selected changes"
+    );
+    let mut missing_path = data;
+    missing_path["data"]["changes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("path");
+    assert!(
+        perf::oracle::verify_diff(
+            &fixture.oracle,
+            &fixture.facts,
+            &serde_json::to_vec(&missing_path).unwrap(),
+            b""
+        )
+        .is_err(),
+        "the grader must reject a group without a path"
+    );
+    fs::remove_dir_all(root).expect("the private fixture leaves");
+}
+
+#[test]
+fn invalidating_paired_blocks_preserves_pairing_and_handles_an_empty_series() {
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_margin"));
+    let (outcome, _, _) = measure(
+        "invalidate-paired",
+        "P-HELP",
+        Sides::Paired {
+            baseline: executable.clone(),
+            candidate: executable,
+        },
+        0,
+        2,
+        2,
+    );
+    let before = samples::read_jsonl(&outcome.raw_path).unwrap();
+    perf::runner::invalidate_block(
+        &outcome.raw_path,
+        &outcome.record_path,
+        0,
+        "a documented compiler incident",
+    )
+    .expect("a gap in retained block IDs must not panic");
+    let partial = ResultRecord::load(&outcome.record_path).unwrap();
+    let comparison = partial
+        .details
+        .as_ref()
+        .unwrap()
+        .comparison
+        .as_ref()
+        .unwrap();
+    assert_eq!(comparison.blocks_paired, 1);
+    assert_eq!(comparison.baseline_sample_count, 2);
+    assert_eq!(partial.sample_count, 2);
+    assert_eq!(partial.status, Status::Inconclusive);
+
+    perf::runner::invalidate_block(
+        &outcome.raw_path,
+        &outcome.record_path,
+        1,
+        "the same compiler incident",
+    )
+    .expect("excluding the final pair must not panic");
+    let empty = ResultRecord::load(&outcome.record_path).unwrap();
+    assert_eq!(empty.status, Status::Inconclusive);
+    assert_eq!(empty.sample_count, 0);
+    assert_eq!(empty.median_ms, None);
+    assert_eq!(empty.p95_ms, None);
+    let details = empty.details.as_ref().unwrap();
+    assert!(details.statistics.is_none());
+    assert!(details.comparison.is_none());
+    assert!(!details.gate.budget_exceeded);
+    assert!(!details.gate.confirmation_required);
+    let after = samples::read_jsonl(&outcome.raw_path).unwrap();
+    assert_eq!(before.len(), after.len());
+    assert!(after.iter().all(|sample| sample.invalidated));
+}
+
+#[test]
+fn excluding_one_policy_block_makes_a_passing_measurement_inconclusive() {
+    let (fixture, environment, path, results) = sampler_fixture("invalidate-policy");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_margin"));
+    let run = plan(
+        "P-HELP",
+        Sides::Paired {
+            baseline: executable.clone(),
+            candidate: executable,
+        },
+        5,
+        20,
+        5,
+    );
+    let mut rows = Vec::new();
+    for block in 0..20 {
+        for version in ["baseline", "candidate"] {
+            for _ in 0..5 {
+                let mut row = synthetic("P-HELP", rows.len(), block, false, 1.0);
+                row.version = version.into();
+                rows.push(row);
+            }
+        }
+    }
+    let raw = results.join("policy-samples.jsonl");
+    samples::write_jsonl(&raw, &rows).unwrap();
+    let outcome = perf::runner::finish_record(&run, &fixture, &environment, &path, &rows, &raw);
+    assert_eq!(outcome.record.status, Status::Passed);
+    let record = results.join("P-HELP.C1.json");
+    outcome.record.write(&record).unwrap();
+    perf::runner::invalidate_block(&raw, &record, 0, "a documented compiler incident").unwrap();
+    let reduced = ResultRecord::load(&record).unwrap();
+    assert_eq!(reduced.sample_count, 95);
+    assert_eq!(reduced.status, Status::Inconclusive);
+    assert_eq!(
+        reduced
+            .details
+            .as_ref()
+            .unwrap()
+            .comparison
+            .as_ref()
+            .unwrap()
+            .blocks_paired,
+        19
+    );
+    assert!(!reduced.details.as_ref().unwrap().gate.budget_exceeded);
+    let replayed = samples::read_jsonl(&raw).unwrap();
+    let fresh = perf::runner::finish_record(&run, &fixture, &environment, &path, &replayed, &raw);
+    assert_eq!(fresh.record.status, reduced.status);
+    assert_eq!(fresh.record.sample_count, reduced.sample_count);
+}
+
+#[test]
+fn selective_review_collects_all_pages_and_separates_measurement_requests() {
+    let root = scratch("apply-pages");
+    let corpus = root.join("corpus");
+    let mut parameters = corpus::Parameters::c1().test_scale();
+    parameters.documents = 40;
+    parameters.changed_documents = 30;
+    parameters.selected_changes = 3;
+    parameters.commits = 80;
+    corpus::generate(&parameters, &corpus);
+    let environment = register_environment(&root);
+    let environment_path = root.join("environment.json");
+    let results = root.join("results");
+    fs::create_dir_all(&results).unwrap();
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_margin"));
+    let mut request_ids = Vec::new();
+    for preparation in 0..2 {
+        let fixture =
+            perf::fixture::Fixture::prepare(&corpus, &root.join(format!("fixture-{preparation}")))
+                .unwrap();
+        assert!(fixture.facts.changed_groups > 50, "exercise pagination");
+        let context = fixture.derive_review_context(&executable).unwrap();
+        assert_eq!(
+            context["changes"].as_array().unwrap().len() as u64,
+            fixture.facts.changed_groups,
+            "every pinned group is present"
+        );
+        assert_eq!(context["complete"], true);
+        assert!(context["next_cursor"].is_null());
+        assert_eq!(context["omitted_detail_count"], 0);
+        let input: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.build_plan(0).unwrap()).unwrap()).unwrap();
+        request_ids.push(input["request_id"].as_str().unwrap().to_string());
+        let run = plan("P-APPLY", Sides::Single(executable.clone()), 0, 1, 1);
+        let outcome =
+            perf::runner::run(&run, &fixture, &environment, &environment_path, &results).unwrap();
+        assert_eq!(
+            outcome.record.correctness_oracle,
+            OracleState::Passed,
+            "the complete selective review matches independent Git plumbing: {:?}",
+            outcome.samples
+        );
+        assert_eq!(fixture.oracle.tree_of("HEAD"), fixture.review_expected_tree);
+    }
+    assert_ne!(
+        request_ids[0], request_ids[1],
+        "new measurement preparations must not reuse request identifiers"
+    );
+    fs::remove_dir_all(root).unwrap();
 }

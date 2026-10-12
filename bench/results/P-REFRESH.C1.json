@@ -4,22 +4,22 @@
   "corpus": "C1",
   "status": "passed",
   "environment_id": "the-developer-vm",
-  "implementation_commit": "fcac83eb2fef068b632560165fe8afeb4f87efa1",
-  "executable_hash": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64",
-  "corpus_manifest_hash": "e6dd7dc04db26c98718213241d85db1b0438ae1f9c5eef9a661c18856f7a9539",
+  "implementation_commit": "25cd4338a183105d57ca62b0c8009ef0c0c7ce3e",
+  "executable_hash": "6483cccbe3333ffe7120ade2a8ab0b3f97f864e72b47a810828cecc1ce2ca6bf",
+  "corpus_manifest_hash": "e143bb9f96d25477a3d2a1bd94ac3ebf2cf990e2fe4f520676b331ccd5a1209d",
   "sample_count": 100,
-  "median_ms": 266.80629500000003,
-  "p95_ms": 378.83151999999995,
+  "median_ms": 115.10912900000001,
+  "p95_ms": 1999.700771,
   "budget_p95_ms": 3000,
   "correctness_oracle": "passed",
-  "raw_samples_path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/raw/P-REFRESH.C1/2026-10-12T004926Z/samples.jsonl",
+  "raw_samples_path": "/home/agent/margin/bench/results/raw/P-REFRESH.C1/2026-10-12T201119Z/samples.jsonl",
   "details": {
     "metric_kind": "pty-interaction",
     "metric_about": "Selected-file external edit to explicit new-edits/stale indicator",
-    "measured_at": "2026-10-12T00:49:26Z",
+    "measured_at": "2026-10-12T20:11:19Z",
     "environment": {
-      "path": "bench/environment.json",
-      "git_version": "2.43.0",
+      "path": "/home/agent/margin/bench/environment.json",
+      "git_version": "2.45.0",
       "rustc_version": "rustc 1.98.1 (48a229cea 2026-09-01)",
       "cargo_version": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
       "kernel": "6.8.0-139-generic",
@@ -30,14 +30,14 @@
       "harness_revision": "margin-benchrun/2"
     },
     "executable": {
-      "path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/target/release/margin",
-      "bytes": 4669056,
-      "sha256": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64"
+      "path": "/home/agent/margin/target/release/margin",
+      "bytes": 4670440,
+      "sha256": "6483cccbe3333ffe7120ade2a8ab0b3f97f864e72b47a810828cecc1ce2ca6bf"
     },
     "corpus": {
-      "directory": "/tmp/looper_f213b06f607af254209d-t054/corpora/c1",
-      "manifest_path": "/tmp/looper_f213b06f607af254209d-t054/corpora/c1/manifest.json",
-      "manifest_sha256": "e6dd7dc04db26c98718213241d85db1b0438ae1f9c5eef9a661c18856f7a9539",
+      "directory": "/home/agent/margin/bench/corpora/recheck-20261012T195920Z/c1",
+      "manifest_path": "/home/agent/margin/bench/corpora/recheck-20261012T195920Z/c1/manifest.json",
+      "manifest_sha256": "e143bb9f96d25477a3d2a1bd94ac3ebf2cf990e2fe4f520676b331ccd5a1209d",
       "generator_revision": "margin-corpusgen/1",
       "seed": 7881706609582276609,
       "test_scale": false
@@ -46,7 +46,7 @@
       "warmups": 5,
       "blocks": 20,
       "runs_per_block": 5,
-      "order_seed": 1,
+      "order_seed": 20261012,
       "boundary": "wall time from an external edit's write returning until the arrival notice flushes",
       "cache_method": "one fresh surface session per run on a 120-column, 40-row xterm-256color pseudo-terminal, driven with --reduced-updates so bytes mean a frame change",
       "order_rule": "one recorded-seed coin flip per block decides baseline/candidate order",
@@ -55,10 +55,10 @@
     },
     "statistics": {
       "sample_count": 100,
-      "median_ms": 266.80629500000003,
-      "p95_ms": 378.83151999999995,
-      "min_ms": 102.208368,
-      "max_ms": 477.837273,
+      "median_ms": 115.10912900000001,
+      "p95_ms": 1999.700771,
+      "min_ms": 100.703975,
+      "max_ms": 2001.4442020000001,
       "method": "nearest-rank; all samples retained including slow ones"
     },
     "comparison": null,
@@ -71,6 +71,7 @@
     "memory_definition": null,
     "invalidated_blocks": [],
     "notes": [
+      "Quiet recheck; protocol and observed conditions: bench/results/raw/recheck-20261012T195920Z",
       "each session ran the surface on a 120-column, 40-row xterm-256color pseudo-terminal with --reduced-updates"
     ]
   }

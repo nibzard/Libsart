@@ -1132,8 +1132,7 @@
         "src/integrations/tmux.rs",
         "tests/tmux_desk.rs"
       ],
-      "updated_at": "2026-10-11T14:18:53Z",
-      "unblock_when": "None; no external prerequisite is missing (tmux 3.4 is installed and exercised)"
+      "updated_at": "2026-10-11T14:18:53Z"
     },
     {
       "id": "T051",
@@ -1153,8 +1152,7 @@
         "tests/terminal_smoke.rs",
         "tests/tui_lifecycle.rs"
       ],
-      "updated_at": "2026-10-11T14:56:15Z",
-      "unblock_when": "None; no external prerequisite is missing (tmux 3.4 and all terminfo profile entries are installed and were exercised)"
+      "updated_at": "2026-10-11T14:56:15Z"
     },
     {
       "id": "T052",
@@ -1227,8 +1225,7 @@
         "tests/support/model.rs",
         "tests/tui_lifecycle.rs"
       ],
-      "updated_at": "2026-10-12T13:31:50Z",
-      "unblock_when": "Not blocked; the task completed with all pull-request gates green."
+      "updated_at": "2026-10-12T13:31:50Z"
     },
     {
       "id": "T053",
@@ -1283,15 +1280,14 @@
         "bench/results/P-TREE-MEM.C2.json",
         "tests/bench_harness.rs"
       ],
-      "updated_at": "2026-10-11T17:24:30Z",
-      "unblock_when": "\"\""
+      "updated_at": "2026-10-11T17:24:30Z"
     },
     {
       "id": "T054",
       "title": "Measure and meet release performance budgets",
       "priority": 2,
-      "status": "done",
-      "details": "Acceptance: C1 and C2 primary metrics meet SPEC 17.4 on the registered runner under the stated sampling and regression policy. C3 fails within explicit limits without omitted approval; raw samples, memory definitions, and any failed gate remain visible.",
+      "status": "todo",
+      "details": "Acceptance: C1 and C2 primary metrics meet SPEC 17.4 under the registered sampling policy. Preserve all raw samples and every unmet gate. Current recheck and declared confirmations complete: 19 records pass, four C2 records fail (selected diff, complete application, keyboard p99, idle CPU), and C1 keyboard timing is inconclusive after both build-affected attempts are excluded. T084, T085, T091, and T100 own the measured C2 gaps. T082 owns the missing quiet C1 keyboard evidence. See bench/results/recheck-2026-10-12.md. No budget has been raised or failure waived.",
       "depends_on": [
         "T053"
       ],
@@ -1516,25 +1512,20 @@
         "src/tui/shell.rs",
         "tests/bench_harness.rs"
       ],
-      "updated_at": "2026-10-12T05:50:07Z",
-      "unblock_when": "The registered runner the-developer-vm holds an exclusive window (one-minute load under 6 for the campaign's duration, honoring the environment record's no-competing-builds condition) or measurement moves to an exclusive host; then re-run bench/campaign.sh, which overwrites the records and retains both raw streams."
+      "updated_at": "2026-10-12T23:49:25.180594Z"
     },
     {
       "id": "T055",
       "title": "Evaluate the supported agent workflow",
       "priority": 3,
-      "status": "blocked",
+      "status": "todo",
       "details": "Acceptance: The 10 AX scenarios run 20 fresh trials each with a pinned agent setup and independent Git grader. Record per-scenario counts, Wilson intervals, command/output costs, zero unsafe accepted mutations, and every unmet threshold. See SPEC 17.9.",
       "depends_on": [
         "T039",
         "T048",
         "T049"
       ],
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-4819b780a3dc169e/work-00-session-0d18339513076235/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:38Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T056",
@@ -1547,11 +1538,10 @@
         "T044",
         "T046"
       ],
+      "updated_at": "2026-10-12T19:58:11.026519Z",
       "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-4d3fcc1e7c1c9e4a/work-00-session-85d3711b7313e26a/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:38Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+        "The release study requires at least 12 real writers and results from a pilot used to freeze the task and scoring protocol."
+      ]
     },
     {
       "id": "T057",
@@ -1768,13 +1758,9 @@
       "id": "T064",
       "title": "Optional editor window inside a desk",
       "priority": 3,
-      "status": "blocked",
+      "status": "todo",
       "details": "SPEC 11.4/12.5 (line 313): \"In a tmux desk, an optional editor window can occupy the writing side.\" Today `edit` suspends the TUI and runs the editor in the Margin pane; no desk-specific editor-window arrangement exists. This is optional behavior, not part of T050 acceptance.\nEvidence: src/tui editor handoff and tests/edit_handoff.rs cover the in-pane suspend/resume path only; no desk editor-window code exists in src/integrations/tmux.rs",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-2b73d354bc22ffa8/work-00-session-76d232b2365881ed/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:39Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T065",
@@ -1786,15 +1772,14 @@
         "src/integrations/tmux.rs",
         "tests/tmux_desk.rs"
       ],
-      "updated_at": "2026-10-11T16:16:07Z",
-      "unblock_when": "Not applicable; tmux 3.4 was available on the machine and no external prerequisite was missing."
+      "updated_at": "2026-10-11T16:16:07Z"
     },
     {
       "id": "T066",
       "title": "Pin a tmux version in the CI tiers",
       "priority": 2,
       "status": "done",
-      "details": "The desk tests skip with a notice where tmux is absent and run against tmux 3.4 here. SPEC 16.4 tiers should install a pinned tmux in the PR/nightly images so the composition claims always execute, and note the direct-exec `--` contract requires tmux \u003e= 3.1.\nEvidence: tmux_present() early-returns in all 7 composition cases in tests/tmux_desk.rs; CI tier work is task T052",
+      "details": "The desk tests skip with a notice where tmux is absent and run against tmux 3.4 here. SPEC 16.4 tiers should install a pinned tmux in the PR/nightly images so the composition claims always execute, and note the direct-exec `--` contract requires tmux >= 3.1.\nEvidence: tmux_present() early-returns in all 7 composition cases in tests/tmux_desk.rs; CI tier work is task T052",
       "files": [
         "README.md",
         "ci/README.md",
@@ -1805,8 +1790,7 @@
         "tests/terminal_smoke.rs",
         "tests/tmux_desk.rs"
       ],
-      "updated_at": "2026-10-11T16:28:05Z",
-      "unblock_when": "None — no external prerequisite is missing; the tier-image wiring belongs to task T052 and is recorded as a followup."
+      "updated_at": "2026-10-11T16:28:05Z"
     },
     {
       "id": "T067",
@@ -1817,62 +1801,45 @@
       "depends_on": [
         "T052"
       ],
+      "updated_at": "2026-10-12T19:58:11.026519Z",
       "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-a512ca84e47b221b/work-00-session-e88ac2e74326b72b/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:39Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+        "The named graphical terminal, macOS, and assistive-technology combinations have not been observed. This Linux runner cannot supply the complete platform matrix."
+      ]
     },
     {
       "id": "T068",
       "title": "Cover the attach_ended report branch of the tmux desk",
       "priority": 3,
-      "status": "blocked",
+      "status": "todo",
       "details": "Summary::attach_ended (src/integrations/tmux.rs) reports an attach that exits abnormally while the session still runs (\"the attach ended with {status}; the session keeps running\"). It is now the only attach-outcome branch with no driven test; a PTY case that kills the attached tmux client process by signal during attach (leaving the detached session alive) would cover it.\nEvidence: tests/tmux_desk.rs covers detached (outside composition case) and, after T065, session_ended (closing_the_last_window_while_attached_reports_the_ended_session); no case asserts the \"the attach ended with\" wording.",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-42a7461d9147b36b/work-00-session-ca7751ee04c8f635/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:40Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T069",
       "title": "Make tests/terminal_smoke.rs rustfmt-clean",
       "priority": 3,
-      "status": "blocked",
-      "details": "cargo fmt --check reports diffs at lines 394, 469, and 480 of tests/terminal_smoke.rs (committed by T051, untouched by this task). A PR-tier format gate (SPEC 18.3) would flag these; running cargo fmt on that one file fixes it.\nEvidence: cargo fmt --check output on this worktree lists three Diff hunks, all in tests/terminal_smoke.rs; the file is unmodified in this worktree's git status, so the committed content is not rustfmt-clean.",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-5a3527cdb35c4d4b/work-00-session-6e242237bb8b7d73/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:40Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "done",
+      "details": "cargo fmt --check reports diffs at lines 394, 469, and 480 of tests/terminal_smoke.rs (committed by T051, untouched by this task). A PR-tier format gate (SPEC 18.3) would flag these; running cargo fmt on that one file fixes it.\nEvidence: cargo fmt --check output on this worktree lists three Diff hunks, all in tests/terminal_smoke.rs; the file is unmodified in this worktree's git status, so the committed content is not rustfmt-clean.\nVerified 2026-10-12: cargo fmt --check passes for the integrated tree, including tests/terminal_smoke.rs.",
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T070",
       "title": "Wire ci/install-tmux.sh and MARGIN_REQUIRE_TMUX=1 into the tier jobs (T052)",
       "priority": 2,
-      "status": "blocked",
-      "details": "SPEC 18.3 states the tier table describes future repository CI and schedules no user automation now. The PR and nightly jobs must run ci/install-tmux.sh and then MARGIN_REQUIRE_TMUX=1 cargo test --test tmux_desk --locked, per ci/README.md.\nEvidence: ci/README.md:3-5 says the tier jobs of SPEC 18.3 are wired by their own task (T052); no workflow files exist in the repository yet.",
+      "status": "done",
+      "details": "SPEC 18.3 states the tier table describes future repository CI and schedules no user automation now. The PR and nightly jobs must run ci/install-tmux.sh and then MARGIN_REQUIRE_TMUX=1 cargo test --test tmux_desk --locked, per ci/README.md.\nEvidence: ci/README.md:3-5 says the tier jobs of SPEC 18.3 are wired by their own task (T052); no workflow files exist in the repository yet.\nVerified 2026-10-12: .github/workflows/pr-tier.yml and nightly-tier.yml call ci/install-tmux.sh; ci/run-tier.sh exports MARGIN_REQUIRE_TMUX=1 for test gates.",
       "depends_on": [
         "T052"
       ],
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-0034ceec25a3bbeb/work-00-session-6cebbd2ae59ee334/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:31Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T071",
       "title": "Clear the standing clippy warning baseline",
       "priority": 3,
-      "status": "blocked",
-      "details": "cargo clippy --all-targets exits 0 but emits 63 warnings across the library and many test targets (collapsible if in src/app.rs and src/cli.rs, needless borrows, and others). None are in the T066 files; fixing them or promoting them to denied lints is separate cleanup.\nEvidence: cargo clippy --locked --all-targets on commit 70764e4 reports warnings in src/app.rs:10617, src/cli.rs:1437, src/cli.rs:1461, and about 20 test targets, with exit code 0.",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-64713b96c99da6d6/work-00-session-9de12d274c8ff591/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:41Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "done",
+      "details": "cargo clippy --all-targets exits 0 but emits 63 warnings across the library and many test targets (collapsible if in src/app.rs and src/cli.rs, needless borrows, and others). None are in the T066 files; fixing them or promoting them to denied lints is separate cleanup.\nEvidence: cargo clippy --locked --all-targets on commit 70764e4 reports warnings in src/app.rs:10617, src/cli.rs:1437, src/cli.rs:1461, and about 20 test targets, with exit code 0.\nVerified 2026-10-12: cargo clippy --locked --all-targets --quiet -- -D warnings passes with no warnings.",
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T072",
@@ -1887,18 +1854,14 @@
     },
     {
       "id": "T073",
-      "title": "Add resource and process-count samplers for P-CPU, P-RSS, P-TREE-MEM, and Git process counts",
+      "title": "Record Git process counts in benchmark results",
       "priority": 2,
-      "status": "blocked",
-      "details": "SPEC 17.5 requires a sampler that measures the concurrent process-tree RSS sum (not a per-process peak), plus five-minute idle CPU of Margin plus Git children, and the diagnostic Git process counts (status \u003c=8, selected diff \u003c=12). The result records already carry `process_counts` and `memory_definition` fields, currently null.\nEvidence: bench/perf/record.rs Details.process_counts and memory_definition serialize as null today.",
+      "status": "todo",
+      "details": "Acceptance: Record Git process counts for status and selected diff, with SPEC 17.5 diagnostic targets of at most 8 and 12 processes. Populate Details.process_counts in benchmark records and retain the observed counts. The P-CPU, P-RSS, and P-TREE-MEM samplers and memory definitions already exist in bench/perf/resource.rs and are covered by tests/bench_harness.rs. Only the Git process-count diagnostic remains missing.",
       "depends_on": [
         "T053"
       ],
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-5104d16c23e1773f/work-00-session-1344e747f378d0eb/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:33Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T074",
@@ -1915,38 +1878,29 @@
         "bench/perf/envrec.rs",
         "tests/bench_harness.rs"
       ],
-      "updated_at": "2026-10-11T18:05:04Z",
-      "unblock_when": "\"\""
+      "updated_at": "2026-10-11T18:05:04Z"
     },
     {
       "id": "T075",
       "title": "Support cold-cache experiments as a separately reported method",
       "priority": 3,
-      "status": "blocked",
+      "status": "todo",
       "details": "SPEC 17.3 requires cold-start/cache experiments to be reported separately with their actual method; the harness currently records only the warm fresh-process method and notes that a new temp directory does not establish cold caches. A cold-cache lane (for example pinned cache-dropping with its limits stated) is still missing.\nEvidence: Every sample carries cache_method `warm`; no cold path exists in bench/perf.",
       "depends_on": [
         "T053"
       ],
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-729b09b5967c8a09/work-00-session-fe501546a803f1fd/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:42Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T076",
       "title": "Register Criterion-based internal-function measurements",
       "priority": 3,
-      "status": "blocked",
+      "status": "todo",
       "details": "SPEC 17.7 names Criterion for registered internal-function microbenchmarks with explicit sampling settings. None exist yet, and adding Criterion would move the development dependency count (currently one of a planned three), so it needs its own slice with the dependency rationale recorded.\nEvidence: Cargo.toml dev-dependencies hold only tempfile; no criterion target exists.",
       "depends_on": [
         "T053"
       ],
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-f41fb0b83c972a8c/work-00-session-ee2f7ff8f01d0971/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:42Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T077",
@@ -1963,208 +1917,236 @@
       "id": "T078",
       "title": "Seventh direct runtime dependency has no ADR; the repository contains no ADRs",
       "priority": 2,
-      "status": "blocked",
+      "status": "todo",
       "details": "SPEC 13.4 requires an ADR explaining capability, alternatives, and measured impact for a seventh direct runtime dependency; SPEC 18.5 and 20.1 (ADR-009) record the six-dependency decision. Acceptance: docs/adr/ holds an ADR justifying unicode-width, and the dependency-inventory deviations from the plan (seven runtime crates; dev-dependencies hold only tempfile of the planned three, with proptest never adopted and criterion pending T076) are recorded before T057 publishes the dependency documentation.\nEvidence: Cargo.toml [dependencies] at HEAD pins seven crates: clap, serde, serde_json, ratatui, crossterm, unicode-width, pulldown-cmark. `find . -name '*.md' -path '*adr*'` returns nothing and grep -ri 'adr' README.md docs/ bench/README.md finds no decision records; no backlog task mentions creating one.",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-8a24e0d70dd05fbb/work-00-session-e4656008bb1474ff/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:33Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T079",
       "title": "T053 committed rustfmt drift beyond T069's scope; T069's named target is already fixed",
       "priority": 2,
-      "status": "blocked",
-      "details": "A PR-tier format gate (SPEC 18.3) must find every committed file rustfmt-clean. Acceptance: bench/perf/*.rs and tests/bench_harness.rs are rustfmt-clean, and T069 is re-scoped to the current drift or closed because tests/terminal_smoke.rs was reformatted by T066.\nEvidence: `cargo fmt --check` at c227e17 reports 77 diff sites: 61 across bench/perf/{envrec,fixture,hash,main,metric,oracle,record,runner,stats,timing}.rs and 16 in tests/bench_harness.rs, all introduced by commit 3f9a720 'Complete T053'. tests/terminal_smoke.rs — T069's target at lines 394/469/480 — no longer appears; it was fixed in c5c850d 'Complete T066'.",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-c46510fdc66db4cd/work-00-session-460dce691a246fbc/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:34Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "done",
+      "details": "A PR-tier format gate (SPEC 18.3) must find every committed file rustfmt-clean. Acceptance: bench/perf/*.rs and tests/bench_harness.rs are rustfmt-clean, and T069 is re-scoped to the current drift or closed because tests/terminal_smoke.rs was reformatted by T066.\nEvidence: `cargo fmt --check` at c227e17 reports 77 diff sites: 61 across bench/perf/{envrec,fixture,hash,main,metric,oracle,record,runner,stats,timing}.rs and 16 in tests/bench_harness.rs, all introduced by commit 3f9a720 'Complete T053'. tests/terminal_smoke.rs \u2014 T069's target at lines 394/469/480 \u2014 no longer appears; it was fixed in c5c850d 'Complete T066'.\nVerified 2026-10-12: cargo fmt --check passes for bench/perf, tests/bench_harness.rs, and the rest of the integrated tree.",
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T080",
       "title": "Stale limits section in the example walkthrough contradicts the shipped product",
       "priority": 3,
-      "status": "blocked",
-      "details": "examples/README.md must describe current behavior, because the README directs evaluation users to it. Acceptance: the 'Current limits' section no longer claims the interactive surface and recovery commands are under development and no longer cites T061 as open work.\nEvidence: examples/README.md:167 ('The interactive terminal interface and explicit recovery commands are still under development') and :169 ('hidden edits under assume-unchanged and skip-worktree are tracked in task T061') at HEAD, while the TUI (T041-T046), doctor (T034), review --resume (T035), checkpoint --include-staged (T036), and T061 itself are all done with passing suites in the exit-0 full run.",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-93948594f4e4eb85/work-00-session-ccc28f2f0c59254a/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:43Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "done",
+      "details": "examples/README.md must describe current behavior, because the README directs evaluation users to it. Acceptance: the 'Current limits' section no longer claims the interactive surface and recovery commands are under development and no longer cites T061 as open work.\nEvidence: examples/README.md:167 ('The interactive terminal interface and explicit recovery commands are still under development') and :169 ('hidden edits under assume-unchanged and skip-worktree are tracked in task T061') at HEAD, while the TUI (T041-T046), doctor (T034), review --resume (T035), checkpoint --include-staged (T036), and T061 itself are all done with passing suites in the exit-0 full run.\nVerified 2026-10-12: The example limits and root README now name the implemented interactive and recovery commands and the actual remaining release validation.",
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T081",
-      "title": "Several SPEC 17.5 additional budgets and diagnostics have no owner",
+      "title": "Measure the additional release resource diagnostics",
       "priority": 3,
-      "status": "blocked",
-      "details": "SPEC 17.7's resource gate blocks release when binary-size, CPU, or RSS limits are exceeded, and SPEC 17.5 diagnostics must be recorded with release evidence. Acceptance: a task owns measuring the stripped release executable (\u003c=16 MiB gate), long-session retained memory, idle-rendering diagnostics, Git storage overhead, and the 1 MiB document view budget (p95 \u003c=1.5 s under C2), or T054/T073 are explicitly extended to cover them.\nEvidence: T054's acceptance names only the SPEC 17.4 primary metrics; T073 names P-CPU, P-RSS, P-TREE-MEM, and Git process counts; T057 only publishes binary size and licenses; bench/results/*.json carry no fields for these items and no open task mentions them.",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-8f0d1901e8386659/work-00-session-0123fc8e695ea22d/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:43Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "todo",
+      "details": "SPEC 17.7's resource gate blocks release when binary-size, CPU, or RSS limits are exceeded, and SPEC 17.5 diagnostics must be recorded with release evidence. Acceptance: a task owns measuring the stripped release executable (<=16 MiB gate), long-session retained memory, idle-rendering diagnostics, Git storage overhead, and the 1 MiB document view budget (p95 <=1.5 s under C2), or T054/T073 are explicitly extended to cover them.\nEvidence: T054's acceptance names only the SPEC 17.4 primary metrics; T073 names P-CPU, P-RSS, P-TREE-MEM, and Git process counts; T057 only publishes binary size and licenses; bench/results/*.json carry no fields for these items and no open task mentions them.\nReconciliation 2026-10-12: this task owns the remaining binary-size, long-session memory, idle-rendering, storage-overhead, and 1 MiB document-view measurements. These are not covered by passing primary metric records.",
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T082",
       "title": "Run T054 gated measurements under quiet conditions",
       "priority": 2,
       "status": "blocked",
-      "details": "T054 can now measure: the committed bench/environment.json is registered, so require_registered admits measurement. But registration observed load average 6.7 on 4 cores from concurrent sessions sharing this machine, and SPEC 17.6 requires no competing build jobs. Gated runs need a quiet window (no parallel cargo activity from other worktrees) and release-built executables per SPEC 17.7.1.\nEvidence: bench/environment.json power.load_average reads \"6.73 5.81 5.90 ...\"; the T074 diagnostic run of the debug binary measured 1089 ms median against the 150 ms P-STATUS budget.",
+      "details": "Acceptance: full-policy gated measurements have no competing builds, with observed conditions and preserved samples. The current campaign records guarded quiet starts and monitors builds every second. C1 keyboard timing exhausts its one declared retry; both attempts are retained and excluded. Registration, supported Git 2.45.0, full corpora, release builds, and other measurements are complete. This task owns the remaining C1 keyboard evidence and controlled runner access; an inconclusive record cannot pass.",
       "depends_on": [
         "T074"
       ],
+      "updated_at": "2026-10-12T23:49:25.180594Z",
       "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-a101af9802463d95/work-00-session-3bae7a67dbdfd3ae/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:34Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+        "C1 keyboard timing has no counted samples after two compiler-affected full-policy attempts. A controlled quiet runner window is needed for new qualifying evidence. Other project jobs were not stopped without approval."
+      ]
     },
     {
       "id": "T083",
       "title": "Refresh the stale SPEC 17.6 state sentence",
       "priority": 3,
-      "status": "blocked",
-      "details": "SPEC.md line 1315 still says \"The runner is currently `unassigned`, results are `not_measured`\". The first half is now historical; results stay not_measured until T054. Update the sentence the next time the SPEC is amended, so the text matches the registered record.\nEvidence: SPEC.md:1315 vs bench/environment.json status \"registered\".",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-64d5a46a50c2f0e8/work-00-session-79e8ccc5fe07e777/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:44Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "done",
+      "details": "SPEC.md line 1315 still says \"The runner is currently `unassigned`, results are `not_measured`\". The first half is now historical; results stay not_measured until T054. Update the sentence the next time the SPEC is amended, so the text matches the registered record.\nEvidence: SPEC.md:1315 vs bench/environment.json status \"registered\".\nVerified 2026-10-12: SPEC 17.6 now reports the registered runner and existing measurements without claiming that failing gates pass.",
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T084",
-      "title": "Reuse one manifest derivation in the review apply path",
+      "title": "Confirm and address the review-application performance gap",
       "priority": 1,
-      "status": "blocked",
-      "details": "P-APPLY fails on both corpora (C1 1044.5 ms vs 750; C2 6656.6 ms vs 2000) while the same binary's P-CHECKPOINT passes. The apply flow derives the grouped manifest, then appears to derive it again while validating the submitted plan; reusing one derivation should bring C1 inside budget and C2 near it.\nEvidence: bench/results/P-APPLY.C1.json, bench/results/P-APPLY.C2.json, raw streams under bench/results/raw/P-APPLY.*",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-49ce8edbc9839b36/work-01-session-ba0c3062cfe64ce9/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:32Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "todo",
+      "details": "Acceptance: the complete P-APPLY workload on C2 meets its 2000 ms p95 budget under full paired sampling with a passing independent tree oracle. The corrected workload restores all 49 nonselected documents and keeps the selected document. First qualifying p95: 4274.643086 ms. Declared confirmation: 5763.896986 ms. Each series has 100 candidate and 100 baseline samples; every tree oracle passes. Earlier partial-plan timings are invalid workload evidence and remain retained. Profile current validation and mutation costs before choosing a correction. The current path consumes one validated_plan result; duplicate derivation remains unverified. C1 passes confirmation at 578.428009 ms.",
+      "updated_at": "2026-10-12T23:49:25.180594Z",
+      "depends_on": [
+        "T099"
+      ]
     },
     {
       "id": "T085",
-      "title": "Close the remaining whole-scope diff gap",
+      "title": "Meet the selected-document diff budget on C2",
       "priority": 1,
-      "status": "blocked",
-      "details": "P-DIFF fails on both corpora (C1 303.9 ms vs 200; C2 1433.1 ms vs 500 at load ~11). After batching, one C2 diff runs ~140 Git processes (from ~400); the remaining cost is the two applies per change group that SPEC 10.2 step 6 requires, each dominated by re-inflating the ~100 KiB document blob. The next structural lever is applying patches in process or through a persistent applier.\nEvidence: bench/results/P-DIFF.C1.json, bench/results/P-DIFF.C2.json; strace execve counts in the task log; process economics documented in src/app.rs prove_chunk",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-e4ac23c0eabf2cd0/work-00-session-d63260e5b692cae4/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:32Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "todo",
+      "details": "Acceptance: P-DIFF on C2 meets its 500 ms p95 budget with the full paired policy and a passing correctness oracle. Preserve the current failure and confirmation while profiling the remaining work. Verified 2026-10-12 UTC: the current release first measures 772.108515 ms p95, then 764.419523 ms in the declared confirmation. Both series have 100 candidate and 100 baseline samples. No compiler/build process was observed in either series. The paired comparison reports no blocked regression; the absolute budget gap persists. C1 passes confirmation at 105.578101 ms. The earlier process-count profile describes older evidence; confirm current process costs before selecting an optimization. See bench/results/P-DIFF.C2.json and bench/results/recheck-2026-10-12.md.",
+      "updated_at": "2026-10-12T22:13:18.119850Z"
     },
     {
       "id": "T086",
       "title": "Generate path-filtered diff patches",
       "priority": 2,
-      "status": "blocked",
+      "status": "todo",
       "details": "diff --path and diff --limit on the full-scale C3 corpus refuse with LIMIT_EXCEEDED because patch generation batches all 100 changed paths and the stream crosses the 16 MiB capture bound. Generating only the requested paths' patches would serve bounded pages of the C3 shape inside the same bound.\nEvidence: bench/results/C3-stress.md and bench/results/raw/C3-stress/",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-57b4f534be74431f/work-00-session-b652360c07cbe957/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:35Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T087",
       "title": "Re-measure the load-failed gates in an exclusive window",
       "priority": 2,
       "status": "blocked",
-      "details": "P-KEY C2 p99 2001 ms (frame-limit timeouts, p95 12.6 ms is inside budget), P-REFRESH C2 5598 ms vs 3000, P-CPU C2 2.60 percent vs 2.0, and P-STATUS C1 153.6 ms vs 150 were all measured while other tenants held the registered runner at load 8-19, against the environment record's registered no-competing-builds condition. P-CPU C1 measured 0.89 percent in the campaign's quiet head, showing the code meets the ceiling without contention.\nEvidence: bench/results/raw/campaign-2026-10-12/final-progress.txt (per-metric load), the four failed records and their raw streams",
+      "details": "Acceptance: remeasure the prior load-failed gates in an exclusive window. The guarded-start campaign now passes C1 status and C2 refresh. Both C2 keyboard and CPU failures persist in full-policy controls without observed compiler/build activity; T091 and T100 own those gaps. These observations do not establish exclusive access. T082 records the remaining controlled-runner requirement. See bench/results/recheck-2026-10-12.md.",
+      "updated_at": "2026-10-12T23:49:25.180594Z",
       "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-89f87054d3118be7/work-00-session-86559162398f609b/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:35Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+        "The VM remains shared with other project jobs. Exclusive runner access has not been established."
+      ]
     },
     {
       "id": "T088",
       "title": "Regenerate the to-do.json snapshot at each integration milestone",
       "priority": 2,
-      "status": "blocked",
-      "details": "The tracked to-do.json is a point-in-time snapshot; the runtime advances task statuses in the live copy under /home/agent/margin. Each integration step should re-commit the refreshed snapshot so the README's reference stays current, exactly as the acceptance's '(regenerated at milestones)' parenthetical describes.\nEvidence: Snapshot commit d5e2f23 captured 83 tasks (61 done / 20 todo / 2 doing) on 2026-10-12; the live main-checkout copy already differs (T077 marked 'doing' there, 'todo' in the committed snapshot).",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-1ac0e558feb339c7/work-00-session-d42062e5df9c05aa/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:36Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "done",
+      "details": "The tracked to-do.json is a point-in-time snapshot; the runtime advances task statuses in the live copy under /home/agent/margin. Each integration step should re-commit the refreshed snapshot so the README's reference stays current, exactly as the acceptance's '(regenerated at milestones)' parenthetical describes.\nEvidence: Snapshot commit d5e2f23 captured 83 tasks (61 done / 20 todo / 2 doing) on 2026-10-12; the live main-checkout copy already differs (T077 marked 'doing' there, 'todo' in the committed snapshot).\nVerified 2026-10-12: the integrated snapshot is reconciled against the current code, schema, tests, CI configuration, and recorded benchmark gates. Future integration milestones must repeat this maintenance.",
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T089",
       "title": "Add a README relative-link integrity check to CI",
       "priority": 3,
-      "status": "blocked",
+      "status": "todo",
       "details": "A small test or CI step asserting every relative link in README.md resolves to a tracked file would prevent this defect class from recurring, matching SPEC 16.8's discipline that a README which misdirects readers is a failure.\nEvidence: No test or ci/ script parses root-README links today (searched tests/ and ci/ on 2026-10-12); the breakage was found only by manual inspection.",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-c92c666815239925/work-00-session-9a6418a66bbaf31e/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:44Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T090",
       "title": "Bring P-REFRESH on C2 inside its 3 s p95 budget",
       "priority": 2,
-      "status": "blocked",
-      "details": "The measured p95 is 5597.6 ms against the 3000 ms budget over 100 samples; C1 passed at 378.8 ms. The edit-to-notice path under C2 scale needs work; SPEC 17.7 requires one declared confirmation run of both versions, preserved, before the failure blocks release.\nEvidence: bench/results/P-REFRESH.C2.json: status failed, median 5102.13 ms, p95 5597.59 ms, note 'the p95 exceeded its budget'",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-e579ab7e161bdb27/work-00-session-181b118508904509/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:37Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "done",
+      "details": "Acceptance: P-REFRESH on C2 has a passing full-policy result inside its 3000 ms p95 budget, with a passing correctness oracle and preserved raw samples. Verified 2026-10-12: current release 25cd433, Git 2.45.0, 100 counted samples, p95 2404.767366 ms. No competing compiler/build process was observed during this measurement. See bench/results/P-REFRESH.C2.json and bench/results/recheck-2026-10-12.md. The prior overloaded failure remains in the retained previous campaign records.",
+      "updated_at": "2026-10-12T21:25:12.111138Z",
+      "files": [
+        "bench/results/P-REFRESH.C2.json",
+        "bench/results/recheck-2026-10-12.md"
+      ]
     },
     {
       "id": "T091",
       "title": "Bring the P-KEY p99 on C2 inside its 100 ms budget",
       "priority": 2,
-      "status": "blocked",
-      "details": "p95 is 12.65 ms (inside its 50 ms budget) but the p99 is 2000.8 ms against the 100 ms budget over a full 10,000-event series. The key-to-bytes tail during background Git work on C2 is what this gate exists to catch; one declared confirmation run must precede any release.\nEvidence: bench/results/P-KEY.C2.json: status failed, p95 12.649733 ms, p99 2000.813792 ms, 10000 samples, note 'the p99 exceeded its budget'",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-28c60c690e60b0b2/work-00-session-6b4019b340e2b2f0/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:37Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "todo",
+      "details": "Acceptance: P-KEY on C2 meets 50 ms p95 and 100 ms p99 over the full 10,000-event series. Preserve startup input coverage and full-policy controls. Initial candidate p99: 1205.677772 ms. Confirmed candidate p99: 1366.518304 ms; baseline control: 212.912449 ms. Both controls fail. The candidate confirmation has 141 events above 100 ms, all at event positions 0 or 1 across all 100 sessions, and 80 event oracle failures. No compiler/build process was observed. Profile startup input handling and required background work. See bench/results/P-KEY.C2.json and the recheck report.",
+      "updated_at": "2026-10-12T23:49:25.180594Z"
     },
     {
       "id": "T092",
-      "title": "Reclaim runner disk headroom so verification builds do not require a tmpfs target",
+      "title": "Maintain runner disk headroom for verification and stress",
       "priority": 3,
-      "status": "blocked",
-      "details": "The root filesystem sits at 97% with 5.3 G free and swap is full, so full-workspace builds die at link time (rust-lld SIGBUS). Builds currently need a /dev/shm target directory with CARGO_INCREMENTAL=0 and debug=0. Reclaiming space (old worktree targets, stale /tmp experiment dirs of this lineage) would make verification self-contained again.\nEvidence: Failed verification: 'collect2: fatal error: ld terminated with signal 7 [Bus error]' while linking tests/diff_results; df shows / at 97%; memory note margin-machine-disk-pressure documents the same pattern",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-3df97d285ccfc880/work-00-session-75001063f1a25a8c/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:45Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "todo",
+      "details": "Acceptance: maintain enough disk headroom for regular verification and full-scale stress builds. Normal builds, tests, and release commands pass with .cargo/config.toml and no earlier tmpfs workaround. At 2026-10-12T23:49:25.180594Z, the root filesystem has about 21.4 GiB available. The previous 96%-full observation is historical. Sustained capacity maintenance remains open.",
+      "updated_at": "2026-10-12T23:49:25.180594Z"
     },
     {
       "id": "T093",
       "title": "docs/verification-tiers.md still says the benchmark runner is unassigned",
       "priority": 3,
-      "status": "blocked",
-      "details": "Acceptance: the support matrix that SPEC 18.5 requires (and that T057 will publish) must not contradict the committed environment record. Update the sentence 'No runner is registered yet — bench/environment.json is unassigned' the next time the document is amended, in the same class as the SPEC.md:1315 refresh tracked by T083.\nEvidence: docs/verification-tiers.md:36-38 versus bench/environment.json:3-4, which reads \"status\": \"registered\", \"runner_id\": \"the-developer-vm\" (T074 completed 2026-10-11, before T052 closed over the document).",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-ed9cae0b67086564/work-00-session-0dc40e7bd434c71a/events-00.jsonl"
-      ],
-      "updated_at": "2026-10-12T15:18:46Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "status": "done",
+      "details": "Acceptance: the support matrix that SPEC 18.5 requires (and that T057 will publish) must not contradict the committed environment record. Update the sentence 'No runner is registered yet \u2014 bench/environment.json is unassigned' the next time the document is amended, in the same class as the SPEC.md:1315 refresh tracked by T083.\nEvidence: docs/verification-tiers.md:36-38 versus bench/environment.json:3-4, which reads \"status\": \"registered\", \"runner_id\": \"the-developer-vm\" (T074 completed 2026-10-11, before T052 closed over the document).\nVerified 2026-10-12: The verification-tier description now agrees with the registered runner record.",
+      "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
       "id": "T094",
       "title": "Four open backlog tasks are already satisfied at the reviewed revision",
       "priority": 3,
-      "status": "blocked",
-      "details": "Acceptance: close or re-scope T069, T070, T071, and T079 against the integrated tree so the backlog states real remaining work instead of work that later commits (T052's repair passes, T066) already delivered.\nEvidence: At 0fe5222: cargo fmt --check exits 0, satisfying T069 and T079 including their named bench/perf and terminal_smoke targets; cargo clippy --locked --all-targets -- -D warnings exits 0, satisfying T071 (whose evidence commit 70764e4 is not an ancestor of HEAD; git merge-base --is-ancestor returns 1); .github/workflows/pr-tier.yml:68-74 and nightly-tier.yml:56,103 run ci/install-tmux.sh and ci/run-tier.sh:143 exports MARGIN_REQUIRE_TMUX=1 for the tests gate, satisfying T070.",
-      "blockers": [
-        "execution: exit status 126; see /home/agent/.looper/margin-e7d63a59/runtime/task-c3934e0ccb8d4d6c/work-00-session-5af59baca76e0acb/events-00.jsonl"
+      "status": "done",
+      "details": "Acceptance: close or re-scope T069, T070, T071, and T079 against the integrated tree so the backlog states real remaining work instead of work that later commits (T052's repair passes, T066) already delivered.\nEvidence: At 0fe5222: cargo fmt --check exits 0, satisfying T069 and T079 including their named bench/perf and terminal_smoke targets; cargo clippy --locked --all-targets -- -D warnings exits 0, satisfying T071 (whose evidence commit 70764e4 is not an ancestor of HEAD; git merge-base --is-ancestor returns 1); .github/workflows/pr-tier.yml:68-74 and nightly-tier.yml:56,103 run ci/install-tmux.sh and ci/run-tier.sh:143 exports MARGIN_REQUIRE_TMUX=1 for the tests gate, satisfying T070.\nVerified 2026-10-12: T069, T070, T071, and T079 are verified against the integrated tree and marked done.",
+      "updated_at": "2026-10-12T19:58:11.026519Z"
+    },
+    {
+      "id": "T095",
+      "title": "Grade all passage groups in selected-document diff benchmarks",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: the benchmark grader accepts a real diff with multiple passage groups for its selected document. It still rejects groups from another document, missing paths, and an empty selected-change array. Preserve the incorrect first P-DIFF recheck samples and repeat the affected measurement after the grader correction. Evidence: the C1 recheck reports ten valid selected-document rows for both releases, but verify_diff requires exactly one row.\nVerified 2026-10-12: 67 benchmark acceptance tests and 30 example unit tests pass, including the new regression cases. Clippy denies warnings and passes. The corrected full-scale C1 diff has a passing correctness oracle. Original failed and compiler-affected samples are retained; a fully excluded paired series becomes inconclusive without a stale comparison.",
+      "depends_on": [
+        "T053"
       ],
-      "updated_at": "2026-10-12T15:18:46Z",
-      "unblock_when": "Resolve the recorded condition and set this task to todo."
+      "files": [
+        "bench/perf/oracle.rs",
+        "tests/bench_harness.rs"
+      ],
+      "created_at": "2026-10-12T20:12:03.320085Z",
+      "updated_at": "2026-10-12T20:59:08.313770Z"
+    },
+    {
+      "id": "T096",
+      "title": "Keep benchmark invalidation safe and sampling gates truthful",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: excluding paired measurement blocks preserves original block pairing and never bootstraps empty groups. Excluding all blocks clears stale comparisons and produces an inconclusive record without deleting samples. A previously passing measurement becomes inconclusive when retained samples or complete block pairs fall below policy. Resource records keep resource units and do not acquire latency fields. Evidence: the monitored P-CHECKPOINT.C1 recheck panicked while excluding compiler-affected blocks because counted_blocks retains empty index slots.\nVerified 2026-10-12: 67 benchmark acceptance tests and 30 example unit tests pass, including the new regression cases. Clippy denies warnings and passes. The corrected full-scale C1 diff has a passing correctness oracle. Original failed and compiler-affected samples are retained; a fully excluded paired series becomes inconclusive without a stale comparison.",
+      "depends_on": [
+        "T053"
+      ],
+      "files": [
+        "bench/perf/runner.rs",
+        "tests/bench_harness.rs"
+      ],
+      "created_at": "2026-10-12T20:20:21.769508Z",
+      "updated_at": "2026-10-12T20:26:32.445487Z"
+    },
+    {
+      "id": "T097",
+      "title": "Preserve singleton agent executable names containing equals signs",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: a one-element desk agent argv whose executable name contains an equals sign launches that exact executable with no extra arguments and without printing the inherited environment. Cover a real executable with spaces and an equals sign in the tmux tests. Evidence 2026-10-12: the singleton direct_exec launcher prefixes env --, but env treats even an absolute executable path containing = as an environment assignment. An isolated probe with a minimal environment prints that environment and does not run the executable. Use an argv-preserving launcher that does not parse the executable name as an assignment.",
+      "files": [
+        "src/integrations/tmux.rs",
+        "tests/tmux_desk.rs"
+      ],
+      "created_at": "2026-10-12T20:55:48.176994Z",
+      "updated_at": "2026-10-12T20:55:48.176994Z"
+    },
+    {
+      "id": "T098",
+      "title": "Remove a noise-dependent benchmark acceptance assertion",
+      "priority": 3,
+      "status": "done",
+      "details": "Acceptance: the paired measurement acceptance test verifies recording and statistical policy without requiring equal executables to have equal observed timing. Keep regression decisions covered with controlled sample data. Evidence: a_query_run_records_paired_samples_and_an_honest_verdict asserts that the same executable cannot trigger regression_blocked. A parallel test run failed this assertion; the serial rerun passed. Short timing samples on a shared runner can differ even with identical executables.\nVerified: 68 benchmark acceptance tests and 30 example unit tests pass serially with Git 2.45.0. The test with more than 50 groups applies the full workload twice against independent Git trees and uses different request identifiers. Clippy passes with warnings denied; formatting passes. Full C2 application remeasurement follows with the corrected release harness.",
+      "files": [
+        "tests/bench_harness.rs"
+      ],
+      "created_at": "2026-10-12T20:59:08.313770Z",
+      "updated_at": "2026-10-12T23:15:07.816584Z"
+    },
+    {
+      "id": "T099",
+      "title": "Collect complete context for selective review benchmarks",
+      "priority": 1,
+      "status": "done",
+      "details": "Acceptance: collect every bounded diff page before building the application workload. Require stable context identity, unique groups, and the independent manifest group count. Restore every nonselected changed document and keep the selected document. Use fresh request identifiers across measurement preparations. A real fixture with more than 50 groups must apply correctly in two preparations under an independent Git tree oracle. Preserve the old C2 application records with their failed oracle and repeat the affected full-policy measurement after correction. Evidence: the default diff page returns 50 of 148 C2 groups, so the old plan restores only 25 documents while the grader expects 49. Both executable versions fail every C2 application oracle in the initial run and confirmation.\nVerified: 68 benchmark acceptance tests and 30 example unit tests pass serially with Git 2.45.0. The test with more than 50 groups applies the full workload twice against independent Git trees and uses different request identifiers. Clippy passes with warnings denied; formatting passes. Full C2 application remeasurement follows with the corrected release harness.\nFull C2 verification: the corrected preflight, 100-sample paired measurement, and 100-sample paired confirmation pass every independent tree oracle for both versions. The timing budget fails honestly. Old incomplete plans and their failed oracles remain preserved.",
+      "files": [
+        "bench/perf/fixture.rs",
+        "bench/perf/mod.rs",
+        "tests/bench_harness.rs"
+      ],
+      "created_at": "2026-10-12T22:39:25.035202Z",
+      "updated_at": "2026-10-12T23:49:25.180594Z"
+    },
+    {
+      "id": "T100",
+      "title": "Meet the C2 idle CPU budget",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: P-CPU on C2 stays at or below 2% of one core in each of two five-minute windows, with the fixed surface sequence, passing correctness checks, and preserved conditions and raw samples. Initial candidate maximum: 2.399938201319323%. Confirmation: 2.3699379742598303%. Baseline control: 2.1532794055272615%. Both versions exceed the ceiling without observed compiler/build activity. Profile idle polling, rendering, and Git work before reducing measured costs. Preserve repository context validation and document all changes. See bench/results/P-CPU.C2.json and bench/results/recheck-2026-10-12.md.",
+      "depends_on": [
+        "T053"
+      ],
+      "created_at": "2026-10-12T23:49:25.180594Z",
+      "updated_at": "2026-10-12T23:49:25.180594Z"
     }
   ]
 }
