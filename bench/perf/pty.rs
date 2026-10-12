@@ -531,7 +531,10 @@ mod tests {
     fn escape_sequences_and_whitespace_vanish() {
         let raw = b"\x1b[2mmargin\x1b[0m writing \r\n\x1b]0;title\x07done";
         assert_eq!(visible(raw), "marginwritingdone");
-        assert_eq!(collapse("New edits  arrived.\nRefresh"), "Neweditsarrived.Refresh");
+        assert_eq!(
+            collapse("New edits  arrived.\nRefresh"),
+            "Neweditsarrived.Refresh"
+        );
     }
 
     #[test]

@@ -1,0 +1,25 @@
+# Build defaults shared by every tier and every developer (task T052).
+#
+# The verification gates build cold: a pull-request run, a nightly matrix
+# leg, and a fresh continuous-integration checkout each compile every
+# crate once and never reuse an incremental cache. Full debuginfo and
+# that cache roughly tripled the size of the `target` directory of such
+# a one-shot build (about 3.4 GiB measured for `cargo test --all-targets`
+# before this file, under 2 GiB after it), which is disk and time every
+# gate pays for no evidence in return: no gate debugs the binaries it
+# builds, and every suite prints its failing seeds and cases instead
+# (SPEC 18.4).
+#
+# `line-tables-only` keeps line numbers in backtraces — the gates run
+# with `RUST_BACKTRACE=1`, and a panic still points at its line — while
+# dropping the variable and inline data a debugger would need. A session
+# that wants full debugging can override this per invocation:
+#
+#   CARGO_INCREMENTAL=1 CARGO_PROFILE_DEV_DEBUG=2 cargo test
+#
+# The release and bench profiles are unchanged.
+[build]
+incremental = false
+
+[profile.dev]
+debug = "line-tables-only"

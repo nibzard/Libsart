@@ -1,0 +1,14 @@
+gate: tests (tier pr)
+started (UTC): 2026-10-12T11:03:29Z
+git: git version 2.45.0 at /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-97a9a572900eb23c/looper_1990dfcc79a5d78a7606/tools/ci-git/2.45.0/bin/git
+rustc: rustc 1.98.1 (48a229cea 2026-09-01)
+cargo: cargo 1.98.1 (797e8a9bc 2026-08-05)
+java: openjdk version "21.0.12.1" 2026-08-18
+tmux: tmux 3.4
+kernel: Linux 6.8.0-139-generic x86_64
+os: "Ubuntu 24.04.3 LTS"
+cpus: 4
+MARGIN_RESTORATION_CASES=256
+MARGIN_RESTORATION_LARGE_CASES=16
+MARGIN_MATRIX_HISTORY_COMMITS=250
+MARGIN_REQUIRE_TMUX=1

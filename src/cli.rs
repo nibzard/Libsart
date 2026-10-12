@@ -1434,14 +1434,14 @@ fn dispatch(matches: &ArgMatches) -> Finished {
                 return finished;
             }
             let path = sub.get_one::<String>("path").cloned();
-            if let Some(path) = &path {
-                if let Err(error) = crate::domain::parse_document_path(path) {
-                    return error_finished(
-                        Some("tui"),
-                        &OperationError::new(error.public_code(), error.to_string()),
-                        invocation.json,
-                    );
-                }
+            if let Some(path) = &path
+                && let Err(error) = crate::domain::parse_document_path(path)
+            {
+                return error_finished(
+                    Some("tui"),
+                    &OperationError::new(error.public_code(), error.to_string()),
+                    invocation.json,
+                );
             }
             // The interactive surface owns its terminal, so it cannot run
             // through the buffered output contract every other command
@@ -1460,7 +1460,6 @@ fn dispatch(matches: &ArgMatches) -> Finished {
             }
             let view = sub
                 .get_one::<String>("view")
-                .as_deref()
                 .and_then(|raw| crate::tui::View::parse(raw))
                 .unwrap_or_default();
             // The global `--color` setting reaches the surface as its

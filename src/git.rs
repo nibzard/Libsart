@@ -1502,10 +1502,7 @@ impl Git {
     /// validated canonical object ID from this adapter, never a user
     /// string (SPEC 14.1). An empty list runs no process at all
     /// (SPEC 14.1).
-    pub fn read_blobs(
-        &self,
-        oids: &[String],
-    ) -> Result<BTreeMap<String, Vec<u8>>, GitError> {
+    pub fn read_blobs(&self, oids: &[String]) -> Result<BTreeMap<String, Vec<u8>>, GitError> {
         if oids.is_empty() {
             return Ok(BTreeMap::new());
         }
@@ -1725,11 +1722,7 @@ impl Git {
         if oids.len() != inputs.len() {
             return Err(GitError::MalformedOutput {
                 command: "hash-object".to_string(),
-                detail: format!(
-                    "expected {} object ID(s), got {}",
-                    inputs.len(),
-                    oids.len()
-                ),
+                detail: format!("expected {} object ID(s), got {}", inputs.len(), oids.len()),
             });
         }
         Ok(oids)
@@ -1979,10 +1972,8 @@ impl Git {
             if rest.len() < size + 1 {
                 return Err(malformed(format!("fewer than {size} bytes followed {oid}")));
             }
-            let object =
-                parse_commit_object(&rest[..size]).map_err(|_| malformed(format!(
-                    "commit {oid} is not a commit object"
-                )))?;
+            let object = parse_commit_object(&rest[..size])
+                .map_err(|_| malformed(format!("commit {oid} is not a commit object")))?;
             objects.insert(oid, object);
             rest = &rest[size + 1..];
         }
@@ -2544,9 +2535,9 @@ mod tests {
         for bad in [
             format!("tree {oid}\n"),
             format!("tree {oid}\ntree {other}\n\nm\n"),
-            format!("tree not-an-oid\n\nm\n"),
+            "tree not-an-oid\n\nm\n".to_string(),
             format!("tree {oid}\nparent short\n\nm\n"),
-            format!(" continued-without-header\n\nm\n"),
+            " continued-without-header\n\nm\n".to_string(),
         ] {
             assert!(
                 parse_commit_object(bad.as_bytes()).is_err(),

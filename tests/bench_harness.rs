@@ -44,12 +44,9 @@ fn project_root() -> PathBuf {
 /// One private scratch directory under the run's resource prefix, so
 /// generated corpora and records never touch the checkout.
 fn scratch(tag: &str) -> PathBuf {
-    let prefix = std::env::var("LOOPER_RESOURCE_PREFIX")
-        .unwrap_or_else(|_| "looper-margin".to_string());
-    let root = std::env::temp_dir().join(format!(
-        "{prefix}-t053-{tag}-{}",
-        std::process::id()
-    ));
+    let prefix =
+        std::env::var("LOOPER_RESOURCE_PREFIX").unwrap_or_else(|_| "looper-margin".to_string());
+    let root = std::env::temp_dir().join(format!("{prefix}-t053-{tag}-{}", std::process::id()));
     let unique = root.join(format!(
         "{:?}",
         std::time::SystemTime::now()
@@ -114,7 +111,13 @@ fn plan_with(
 
 /// One synthetic sample row, so the record arithmetic is tested without
 /// running sessions.
-fn synthetic(metric: &str, order: usize, block: usize, warmup: bool, value: f64) -> samples::Sample {
+fn synthetic(
+    metric: &str,
+    order: usize,
+    block: usize,
+    warmup: bool,
+    value: f64,
+) -> samples::Sample {
     samples::Sample {
         schema_version: samples::SAMPLES_SCHEMA_VERSION,
         metric: metric.to_string(),
@@ -148,7 +151,10 @@ fn the_shipped_environment_record_registers_the_dedicated_runner() {
     let record = EnvironmentRecord::load(&path).expect("the shipped record parses");
     // T074: the operator registered the actual dedicated runner, so the
     // shipped record is live evidence, and measurement accepts it.
-    assert_eq!(record.status, "registered", "the dedicated runner is registered");
+    assert_eq!(
+        record.status, "registered",
+        "the dedicated runner is registered"
+    );
     assert_eq!(record.schema_version, 1);
     assert!(record.is_registered());
     require_registered(&record).expect("measurement accepts the registered runner");
@@ -186,7 +192,12 @@ fn the_shipped_environment_record_registers_the_dedicated_runner() {
         "the storage and its filesystem are recorded"
     );
     let software = record.software.as_ref().expect("software is probed");
-    for fact in [&software.kernel, &software.os, &software.git_version, &software.rustc_version] {
+    for fact in [
+        &software.kernel,
+        &software.os,
+        &software.git_version,
+        &software.rustc_version,
+    ] {
         assert!(
             fact.as_deref().is_some_and(|fact| !fact.is_empty()),
             "a core software fact is missing"
@@ -210,10 +221,7 @@ fn the_shipped_environment_record_registers_the_dedicated_runner() {
             .is_some_and(|text| !text.is_empty()),
         "the operator's interference statement is recorded"
     );
-    assert!(
-        record.terminal.is_some(),
-        "the terminal facts are recorded"
-    );
+    assert!(record.terminal.is_some(), "the terminal facts are recorded");
     assert!(
         !record.notes.is_empty(),
         "the record states how its fields were obtained"
@@ -264,13 +272,19 @@ fn a_registered_runner_record_carries_actual_details() {
                 "the CPU model {model} is transcribed, not probed"
             );
         }
-        let cores = cpuinfo.lines().filter(|line| line.starts_with("processor")).count();
+        let cores = cpuinfo
+            .lines()
+            .filter(|line| line.starts_with("processor"))
+            .count();
         assert_eq!(hardware.cpu_cores, Some(cores as u32));
     }
 
     // Software: the tools this machine really runs.
     let software = record.software.as_ref().expect("software is probed");
-    let git = Command::new("git").arg("--version").output().expect("git runs");
+    let git = Command::new("git")
+        .arg("--version")
+        .output()
+        .expect("git runs");
     let git = String::from_utf8_lossy(&git.stdout).trim().to_string();
     let git = git.strip_prefix("git version ").unwrap_or(&git).to_string();
     assert_eq!(software.git_version.as_deref(), Some(git.as_str()));
@@ -364,7 +378,10 @@ fn the_result_records_carry_their_budgets_through_every_state() {
                     // full provenance, counted samples, an oracle verdict,
                     // and a retained raw stream (SPEC 17.7-17.8).
                     assert!(
-                        record.environment_id.as_deref().is_some_and(|id| !id.is_empty()),
+                        record
+                            .environment_id
+                            .as_deref()
+                            .is_some_and(|id| !id.is_empty()),
                         "{}.{} names its runner",
                         definition.id,
                         label
@@ -406,7 +423,12 @@ fn the_result_records_carry_their_budgets_through_every_state() {
                         definition.id,
                         label
                     );
-                    assert!(record.details.is_some(), "{}.{} carries details", definition.id, label);
+                    assert!(
+                        record.details.is_some(),
+                        "{}.{} carries details",
+                        definition.id,
+                        label
+                    );
                 }
             }
         }
@@ -430,7 +452,8 @@ fn the_result_records_carry_their_budgets_through_every_state() {
     }
 
     // A resource metric carries no latency budget.
-    let memory = ResultRecord::load(&results.join("P-TREE-MEM.C2.json")).expect("the record exists");
+    let memory =
+        ResultRecord::load(&results.join("P-TREE-MEM.C2.json")).expect("the record exists");
     assert_eq!(memory.budget_p95_ms, None);
 }
 
@@ -463,7 +486,11 @@ fn the_boundary_spans_creation_through_exit_and_full_delivery() {
         .arg("head -c 150000 /dev/zero | tr '\\0' m; sleep 0.02; printf tail");
     let timed = perf::timing::time_child(&mut command).expect("the child runs");
     assert_eq!(timed.exit, Some(0));
-    assert_eq!(timed.stdout.len(), 150_004, "the whole response is delivered");
+    assert_eq!(
+        timed.stdout.len(),
+        150_004,
+        "the whole response is delivered"
+    );
     assert!(timed.stdout.ends_with(b"tail"));
     assert!(
         timed.elapsed_ms() >= 20.0,
@@ -493,15 +520,23 @@ fn an_unassigned_environment_blocks_measurement_without_writing_records() {
     );
     let refusal = perf::runner::run(&run, &fixture, &environment, &path, &results)
         .expect_err("measurement refuses an unassigned record");
-    assert!(refusal.contains("unassigned"), "the refusal is explicit: {refusal}");
     assert!(
-        results.read_dir().expect("the results directory reads").count() == 0,
+        refusal.contains("unassigned"),
+        "the refusal is explicit: {refusal}"
+    );
+    assert!(
+        results
+            .read_dir()
+            .expect("the results directory reads")
+            .count()
+            == 0,
         "nothing was written; the record stays not_measured"
     );
 }
 
 /// Prepares a registered fixture set for the sampler acceptance tests.
-fn sampler_fixture(tag: &str) -> (perf::fixture::Fixture, EnvironmentRecord, PathBuf, PathBuf) {    let root = scratch(tag);
+fn sampler_fixture(tag: &str) -> (perf::fixture::Fixture, EnvironmentRecord, PathBuf, PathBuf) {
+    let root = scratch(tag);
     let results = root.join("results");
     fs::create_dir_all(&results).expect("the results directory exists");
     let environment = register_environment(&root);
@@ -516,7 +551,14 @@ fn sampler_fixture(tag: &str) -> (perf::fixture::Fixture, EnvironmentRecord, Pat
 fn paired_plans_are_refused_for_pty_and_resource_metrics() {
     let (fixture, environment, path, results) = sampler_fixture("paired-refusal");
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_margin"));
-    for id in ["P-OPEN", "P-KEY", "P-REFRESH", "P-CPU", "P-RSS", "P-TREE-MEM"] {
+    for id in [
+        "P-OPEN",
+        "P-KEY",
+        "P-REFRESH",
+        "P-CPU",
+        "P-RSS",
+        "P-TREE-MEM",
+    ] {
         let run = plan(
             id,
             Sides::Paired {
@@ -560,17 +602,22 @@ fn p_open_measures_launch_to_the_first_useful_frame() {
         assert!(sample.elapsed_ms > 0.0, "each launch was timed");
         assert_eq!(sample.unit, None, "P-OPEN is a latency in milliseconds");
         assert_eq!(
-            sample.oracle,
-            "passed",
+            sample.oracle, "passed",
             "the frame showed identity, content, state, and actions: {:?}",
             sample.oracle_failures
         );
         assert_eq!(sample.exit_code, 0, "the session quit cleanly");
     }
     let record = &outcome.record;
-    let details = record.details.as_ref().expect("measured records carry details");
+    let details = record
+        .details
+        .as_ref()
+        .expect("measured records carry details");
     assert_eq!(details.metric_kind, "pty-interaction");
-    assert_eq!(details.memory_definition, None, "a latency record defines no memory");
+    assert_eq!(
+        details.memory_definition, None,
+        "a latency record defines no memory"
+    );
     assert!(
         details
             .sampling
@@ -580,10 +627,7 @@ fn p_open_measures_launch_to_the_first_useful_frame() {
         details.sampling.boundary
     );
     assert!(
-        details
-            .sampling
-            .cache_method
-            .contains("--reduced-updates"),
+        details.sampling.cache_method.contains("--reduced-updates"),
         "the session shape is recorded"
     );
     // A two-session diagnostic run never passes, and its gate states
@@ -624,10 +668,17 @@ fn p_key_times_one_sample_per_navigation_event() {
     let order: Vec<usize> = raw.iter().map(|sample| sample.order_index).collect();
     let mut sorted_order = order.clone();
     sorted_order.sort_unstable();
-    assert_eq!(order, sorted_order, "the execution order is recorded in order");
+    assert_eq!(
+        order, sorted_order,
+        "the execution order is recorded in order"
+    );
     for (index, sample) in raw.iter().enumerate() {
         assert_eq!(sample.block, index / 20, "the block is the session's block");
-        assert_eq!(sample.run_in_block, index % 20, "the run index is the event's place");
+        assert_eq!(
+            sample.run_in_block,
+            index % 20,
+            "the run index is the event's place"
+        );
         assert_eq!(sample.unit, None);
         assert!(
             sample.oracle == "passed" || sample.elapsed_ms > 0.0,
@@ -650,19 +701,23 @@ fn p_key_times_one_sample_per_navigation_event() {
     );
 
     let record = &outcome.record;
-    let details = record.details.as_ref().expect("measured records carry details");
+    let details = record
+        .details
+        .as_ref()
+        .expect("measured records carry details");
     assert_eq!(details.metric_kind, "pty-interaction");
     assert_eq!(details.sampling.events_per_session, 20);
     assert_eq!(
-        details.statistics.as_ref().expect("statistics exist").p99_ms,
+        details
+            .statistics
+            .as_ref()
+            .expect("statistics exist")
+            .p99_ms,
         None,
         "a forty-event series does not borrow a p99"
     );
     assert!(
-        details
-            .notes
-            .iter()
-            .any(|note| note.contains("10,000")),
+        details.notes.iter().any(|note| note.contains("10,000")),
         "the event floor is named: {:?}",
         details.notes
     );
@@ -692,8 +747,7 @@ fn p_refresh_times_the_external_edit_to_the_arrival_notice() {
     assert!(sample.elapsed_ms > 0.0, "the discovery window was timed");
     assert_eq!(sample.unit, None);
     assert_eq!(
-        sample.oracle,
-        "passed",
+        sample.oracle, "passed",
         "the notice arrived and the oracle held: {:?}",
         sample.oracle_failures
     );
@@ -706,7 +760,10 @@ fn p_refresh_times_the_external_edit_to_the_arrival_notice() {
         "exactly the selected document is dirty"
     );
     let record = &outcome.record;
-    let details = record.details.as_ref().expect("measured records carry details");
+    let details = record
+        .details
+        .as_ref()
+        .expect("measured records carry details");
     assert_eq!(details.metric_kind, "pty-interaction");
     assert!(
         details.sampling.boundary.contains("arrival notice"),
@@ -723,9 +780,10 @@ fn p_refresh_times_the_external_edit_to_the_arrival_notice() {
 #[test]
 fn the_memory_resources_report_their_quantities_in_mib() {
     let (fixture, environment, path, results) = sampler_fixture("memory");
-    for (id, ceiling, marker) in
-        [("P-RSS", 64.0, "VmHWM"), ("P-TREE-MEM", 128.0, "concurrent sum")]
-    {
+    for (id, ceiling, marker) in [
+        ("P-RSS", 64.0, "VmHWM"),
+        ("P-TREE-MEM", 128.0, "concurrent sum"),
+    ] {
         let run = plan(
             id,
             Sides::Single(PathBuf::from(env!("CARGO_BIN_EXE_margin"))),
@@ -742,15 +800,17 @@ fn the_memory_resources_report_their_quantities_in_mib() {
         assert_eq!(sample.unit.as_deref(), Some("MiB"), "{id} names its unit");
         assert!(sample.elapsed_ms > 0.0, "{id} measured a positive quantity");
         assert_eq!(
-            sample.oracle,
-            "passed",
+            sample.oracle, "passed",
             "{id} verified: {:?}",
             sample.oracle_failures
         );
         assert_eq!(sample.exit_code, 0, "the session quit cleanly");
 
         let record = &outcome.record;
-        let details = record.details.as_ref().expect("measured records carry details");
+        let details = record
+            .details
+            .as_ref()
+            .expect("measured records carry details");
         assert_eq!(details.metric_kind, "resource");
         // A resource quantity is not a latency: the base fields stay
         // empty and the numbers live in the statistics block, whose
@@ -767,8 +827,14 @@ fn the_memory_resources_report_their_quantities_in_mib() {
             statistics.max_ms > ceiling,
             "{id} gates on the maximum"
         );
-        let definition = details.memory_definition.as_ref().expect("{id} defines its memory");
-        assert!(definition.contains(marker), "{id} says what it summed: {definition}");
+        let definition = details
+            .memory_definition
+            .as_ref()
+            .expect("{id} defines its memory");
+        assert!(
+            definition.contains(marker),
+            "{id} says what it summed: {definition}"
+        );
         assert!(
             matches!(record.status, Status::Failed | Status::Inconclusive),
             "a below-policy run never passes: {:?}",
@@ -802,12 +868,21 @@ fn p_cpu_reports_the_idle_share_of_one_core() {
         Some("percent-of-one-core"),
         "P-CPU names its unit"
     );
-    assert!(sample.elapsed_ms >= 0.0, "a share can round to zero at this scale");
+    assert!(
+        sample.elapsed_ms >= 0.0,
+        "a share can round to zero at this scale"
+    );
     let record = &outcome.record;
-    let details = record.details.as_ref().expect("measured records carry details");
+    let details = record
+        .details
+        .as_ref()
+        .expect("measured records carry details");
     assert_eq!(details.metric_kind, "resource");
     assert_eq!(record.median_ms, None, "P-CPU carries no latency");
-    let definition = details.memory_definition.as_ref().expect("P-CPU defines its accounting");
+    let definition = details
+        .memory_definition
+        .as_ref()
+        .expect("P-CPU defines its accounting");
     assert!(
         definition.contains("CLK_TCK"),
         "the accounting names its ticks: {definition}"
@@ -854,11 +929,21 @@ fn a_resource_ceiling_gates_on_the_maximum_counted_sample() {
     samples::write_jsonl(&raw_path, &rows).expect("the stream writes");
     let outcome =
         perf::runner::finish_record(&within, &fixture, &environment, &path, &rows, &raw_path);
-    assert_eq!(outcome.record.status, Status::Passed, "every sample sat inside");
-    assert_eq!(outcome.record.median_ms, None, "a resource record carries no latency");
+    assert_eq!(
+        outcome.record.status,
+        Status::Passed,
+        "every sample sat inside"
+    );
+    assert_eq!(
+        outcome.record.median_ms, None,
+        "a resource record carries no latency"
+    );
     let details = outcome.record.details.as_ref().expect("the details exist");
     assert!(!details.gate.budget_exceeded);
-    assert_eq!(details.statistics.as_ref().expect("statistics").max_ms, 33.0);
+    assert_eq!(
+        details.statistics.as_ref().expect("statistics").max_ms,
+        33.0
+    );
 
     // One wild run over the ceiling fails the benchmark even though the
     // p95 of the series sits far below it: a percentile would hide what a
@@ -870,7 +955,11 @@ fn a_resource_ceiling_gates_on_the_maximum_counted_sample() {
     samples::write_jsonl(&raw_path, &rows).expect("the stream writes");
     let outcome =
         perf::runner::finish_record(&within, &fixture, &environment, &path, &rows, &raw_path);
-    assert_eq!(outcome.record.status, Status::Failed, "the maximum crossed 64 MiB");
+    assert_eq!(
+        outcome.record.status,
+        Status::Failed,
+        "the maximum crossed 64 MiB"
+    );
     let details = outcome.record.details.as_ref().expect("the details exist");
     assert!(details.gate.budget_exceeded);
     assert!(
@@ -919,14 +1008,23 @@ fn the_p_key_p99_gate_fires_from_the_large_event_series() {
     );
     let raw_path = results.join("synthetic-p99.jsonl");
     samples::write_jsonl(&raw_path, &rows).expect("the stream writes");
-    let outcome = perf::runner::finish_record(&run, &fixture, &environment, &path, &rows, &raw_path);
+    let outcome =
+        perf::runner::finish_record(&run, &fixture, &environment, &path, &rows, &raw_path);
     let record = &outcome.record;
     let details = record.details.as_ref().expect("the details exist");
     let statistics = details.statistics.as_ref().expect("the statistics exist");
     assert_eq!(statistics.sample_count, 10_000);
     assert_eq!(statistics.p95_ms, 10.0, "the p95 stays inside its budget");
-    assert_eq!(statistics.p99_ms, Some(500.0), "the p99 exists at policy scale");
-    assert_eq!(record.status, Status::Failed, "the p99 crossed its 100 ms budget");
+    assert_eq!(
+        statistics.p99_ms,
+        Some(500.0),
+        "the p99 exists at policy scale"
+    );
+    assert_eq!(
+        record.status,
+        Status::Failed,
+        "the p99 crossed its 100 ms budget"
+    );
     assert!(details.gate.budget_exceeded);
     assert!(
         details
@@ -984,8 +1082,15 @@ fn a_query_run_records_paired_samples_and_an_honest_verdict() {
     // Raw paired samples: warmups retained, both versions present,
     // global order recorded, every run timed and oracle-verified.
     let raw = samples::read_jsonl(&outcome.raw_path).expect("the raw stream reads back");
-    assert_eq!(raw.len(), 1 + 1 + 2 * 2 * 2, "warmups and every measured run");
-    assert!(raw.iter().any(|sample| sample.warmup), "warmups are retained");
+    assert_eq!(
+        raw.len(),
+        1 + 1 + 2 * 2 * 2,
+        "warmups and every measured run"
+    );
+    assert!(
+        raw.iter().any(|sample| sample.warmup),
+        "warmups are retained"
+    );
     let versions: Vec<&str> = {
         let mut seen: Vec<&str> = raw.iter().map(|sample| sample.version.as_str()).collect();
         seen.sort_unstable();
@@ -996,10 +1101,16 @@ fn a_query_run_records_paired_samples_and_an_honest_verdict() {
     let order: Vec<usize> = raw.iter().map(|sample| sample.order_index).collect();
     let mut sorted_order = order.clone();
     sorted_order.sort_unstable();
-    assert_eq!(order, sorted_order, "the execution order is recorded in order");
+    assert_eq!(
+        order, sorted_order,
+        "the execution order is recorded in order"
+    );
     for sample in &raw {
         assert!(sample.elapsed_ms > 0.0, "every run is timed");
-        assert_eq!(sample.cache_method, "warm", "the cache method is the SPEC 17.3 warm CLI");
+        assert_eq!(
+            sample.cache_method, "warm",
+            "the cache method is the SPEC 17.3 warm CLI"
+        );
         assert_eq!(sample.oracle, "passed", "every run passed its oracle");
     }
 
@@ -1014,7 +1125,10 @@ fn a_query_run_records_paired_samples_and_an_honest_verdict() {
         "a below-policy run never passes: {:?}",
         record.status
     );
-    let details = record.details.as_ref().expect("measured records carry details");
+    let details = record
+        .details
+        .as_ref()
+        .expect("measured records carry details");
     let p95 = record.p95_ms.expect("the p95 is measured");
     assert_eq!(
         details.gate.budget_exceeded,
@@ -1026,16 +1140,32 @@ fn a_query_run_records_paired_samples_and_an_honest_verdict() {
     assert!(record.p95_ms.unwrap_or(0.0) >= record.median_ms.unwrap_or(0.0));
     assert_eq!(record.budget_p95_ms, Some(150));
     assert_eq!(record.environment_id, environment.runner_id);
-    assert!(record.executable_hash.as_deref().is_some_and(|hash| hash.len() == 64));
-    assert!(record.corpus_manifest_hash.as_deref().is_some_and(|hash| hash.len() == 64));
+    assert!(
+        record
+            .executable_hash
+            .as_deref()
+            .is_some_and(|hash| hash.len() == 64)
+    );
+    assert!(
+        record
+            .corpus_manifest_hash
+            .as_deref()
+            .is_some_and(|hash| hash.len() == 64)
+    );
     assert_eq!(details.metric_kind, "cli-fresh-process");
     assert_eq!(details.sampling.warmups, 1);
     assert_eq!(details.sampling.order_seed, 20261011);
     let comparison = details.comparison.as_ref().expect("paired records compare");
-    assert_eq!(comparison.bootstrap.resamples, 10_000, "the predeclared bootstrap");
+    assert_eq!(
+        comparison.bootstrap.resamples, 10_000,
+        "the predeclared bootstrap"
+    );
     assert_eq!(comparison.bootstrap.confidence, 99);
     assert_eq!(comparison.baseline_sample_count, 4);
-    assert!(!comparison.regression_blocked, "one executable cannot regress on itself");
+    assert!(
+        !comparison.regression_blocked,
+        "one executable cannot regress on itself"
+    );
     assert!(
         details
             .notes
@@ -1147,20 +1277,18 @@ fn a_fast_incorrect_command_fails_the_benchmark() {
     }
     let record = &outcome.record;
     assert_eq!(record.correctness_oracle, OracleState::Failed);
-    assert_eq!(record.status, Status::Failed, "incorrect cannot pass by being fast");
+    assert_eq!(
+        record.status,
+        Status::Failed,
+        "incorrect cannot pass by being fast"
+    );
 }
 
 #[test]
 fn invalidating_a_block_preserves_its_samples_and_recomputes() {
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_margin"));
-    let (outcome, _environment, _results) = measure(
-        "invalidate",
-        "P-HELP",
-        Sides::Single(executable),
-        0,
-        2,
-        2,
-    );
+    let (outcome, _environment, _results) =
+        measure("invalidate", "P-HELP", Sides::Single(executable), 0, 2, 2);
     let raw_path = outcome.raw_path.clone();
     let record_path = outcome.record_path.clone();
     let before = samples::read_jsonl(&raw_path).expect("the raw stream reads back");
@@ -1182,7 +1310,10 @@ fn invalidating_a_block_preserves_its_samples_and_recomputes() {
         }
     }
     let recomputed = ResultRecord::load(&record_path).expect("the record reads back");
-    assert!(recomputed.sample_count < counted_before, "the block is excluded");
+    assert!(
+        recomputed.sample_count < counted_before,
+        "the block is excluded"
+    );
     let details = recomputed.details.as_ref().expect("the details survive");
     assert_eq!(details.invalidated_blocks.len(), 1);
     assert_eq!(details.invalidated_blocks[0].block, 1);

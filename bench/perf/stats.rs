@@ -34,7 +34,10 @@ pub fn p95(values: &[f64]) -> f64 {
 /// The smallest and largest sample.
 pub fn range(values: &[f64]) -> (f64, f64) {
     let ordered = sorted(values);
-    (*ordered.first().expect("samples exist"), *ordered.last().expect("samples exist"))
+    (
+        *ordered.first().expect("samples exist"),
+        *ordered.last().expect("samples exist"),
+    )
 }
 
 /// The seeded SplitMix64 stream the sampling policy uses for order
@@ -112,7 +115,7 @@ pub fn paired_bootstrap(
     );
     assert!(!baseline_blocks.is_empty(), "the bootstrap needs blocks");
     let mut increases = Vec::with_capacity(resamples);
-    let mut rng = SplitMix64::seeded(seed ^ 0xB005_7A9_0000_0000);
+    let mut rng = SplitMix64::seeded(seed ^ 0x0B00_57A9_0000_0000);
     for _ in 0..resamples {
         let mut baseline_pool = Vec::new();
         let mut candidate_pool = Vec::new();
@@ -152,7 +155,11 @@ mod tests {
         let baseline: Vec<Vec<f64>> = (0..20).map(|_| vec![100.0; 5]).collect();
         let slowed: Vec<Vec<f64>> = (0..20).map(|_| vec![130.0; 5]).collect();
         let bootstrap = paired_bootstrap(&baseline, &slowed, 2_000, 7);
-        assert!(bootstrap.lower_ms > 25.0, "lower bound {}", bootstrap.lower_ms);
+        assert!(
+            bootstrap.lower_ms > 25.0,
+            "lower bound {}",
+            bootstrap.lower_ms
+        );
         assert!(bootstrap.regression_blocked(100.0));
 
         let steady: Vec<Vec<f64>> = (0..20)
@@ -170,10 +177,18 @@ mod tests {
     #[test]
     fn the_same_seed_repeats_the_same_interval() {
         let baseline: Vec<Vec<f64>> = (0..6)
-            .map(|block| (0..5).map(|run| 100.0 + block as f64 + run as f64).collect())
+            .map(|block| {
+                (0..5)
+                    .map(|run| 100.0 + block as f64 + run as f64)
+                    .collect()
+            })
             .collect();
         let candidate: Vec<Vec<f64>> = (0..6)
-            .map(|block| (0..5).map(|run| 112.0 + block as f64 + run as f64).collect())
+            .map(|block| {
+                (0..5)
+                    .map(|run| 112.0 + block as f64 + run as f64)
+                    .collect()
+            })
             .collect();
         let first = paired_bootstrap(&baseline, &candidate, 500, 99);
         let second = paired_bootstrap(&baseline, &candidate, 500, 99);

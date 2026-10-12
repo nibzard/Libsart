@@ -22,16 +22,13 @@ fn compress(state: &mut [u32; 8], block: &[u8]) {
     let mut w = [0u32; 64];
     for (index, word) in w.iter_mut().take(16).enumerate() {
         let at = index * 4;
-        *word = u32::from_be_bytes([
-            block[at],
-            block[at + 1],
-            block[at + 2],
-            block[at + 3],
-        ]);
+        *word = u32::from_be_bytes([block[at], block[at + 1], block[at + 2], block[at + 3]]);
     }
     for index in 16..64 {
-        let s0 = w[index - 15].rotate_right(7) ^ w[index - 15].rotate_right(18) ^ (w[index - 15] >> 3);
-        let s1 = w[index - 2].rotate_right(17) ^ w[index - 2].rotate_right(19) ^ (w[index - 2] >> 10);
+        let s0 =
+            w[index - 15].rotate_right(7) ^ w[index - 15].rotate_right(18) ^ (w[index - 15] >> 3);
+        let s1 =
+            w[index - 2].rotate_right(17) ^ w[index - 2].rotate_right(19) ^ (w[index - 2] >> 10);
         w[index] = w[index - 16]
             .wrapping_add(s0)
             .wrapping_add(w[index - 7])

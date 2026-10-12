@@ -123,11 +123,9 @@ impl RunPlan {
                          first answering bytes arrive from the surface"
                             .to_string()
                     }
-                    _ => {
-                        "wall time from an external edit's write returning until the arrival \
+                    _ => "wall time from an external edit's write returning until the arrival \
                          notice flushes"
-                            .to_string()
-                    }
+                        .to_string(),
                 },
                 format!(
                     "one fresh surface session per run on a {}-column, {}-row xterm-256color \
@@ -250,6 +248,10 @@ fn timed_command(
 /// One run against one executable: reset, time, verify. Reset and
 /// verification sit outside the timed window by construction — the
 /// clock only wraps the child.
+// The parameter list mirrors the sample coordinates of SPEC 17.7.3 (block,
+// position, order index, warmup flag, iteration), so the record stays
+// reconstructible from the call site.
+#[allow(clippy::too_many_arguments)]
 fn one_run(
     plan: &RunPlan,
     executable: &Path,
@@ -269,7 +271,13 @@ fn one_run(
     let mut command = timed_command(plan, executable, fixture, &prepared);
     let timed = time_child(&mut command)
         .map_err(|error| format!("cannot run the measured command: {error}"))?;
-    let failures = verify_run(plan, fixture, &timed.stdout, &timed.stderr, request_id.as_deref());
+    let failures = verify_run(
+        plan,
+        fixture,
+        &timed.stdout,
+        &timed.stderr,
+        request_id.as_deref(),
+    );
     let exit_code = timed.exit.unwrap_or(-1);
     let mut all = failures;
     if let Some(problem) = timed.exit_problem() {
@@ -376,7 +384,11 @@ fn sample_of(
         exit_code,
         stdout_bytes: timed.stdout.len() as u64,
         stderr_bytes: timed.stderr.len() as u64,
-        oracle: if failures.is_empty() { "passed".to_string() } else { "failed".to_string() },
+        oracle: if failures.is_empty() {
+            "passed".to_string()
+        } else {
+            "failed".to_string()
+        },
         oracle_failures: failures.to_vec(),
         cache_method: "warm".to_string(),
         invalidated: false,
@@ -491,7 +503,10 @@ fn unit_samples(
             let mut failures = unit.failures.clone();
             failures.extend(point.failures.iter().cloned());
             if unit.exit_code != 0 {
-                failures.insert(0, format!("the session ended with exit code {}", unit.exit_code));
+                failures.insert(
+                    0,
+                    format!("the session ended with exit code {}", unit.exit_code),
+                );
             }
             Sample {
                 schema_version: SAMPLES_SCHEMA_VERSION,
@@ -510,7 +525,11 @@ fn unit_samples(
                 exit_code: unit.exit_code,
                 stdout_bytes: unit.stdout_bytes,
                 stderr_bytes: 0,
-                oracle: if failures.is_empty() { "passed".to_string() } else { "failed".to_string() },
+                oracle: if failures.is_empty() {
+                    "passed".to_string()
+                } else {
+                    "failed".to_string()
+                },
                 oracle_failures: failures,
                 cache_method: "warm".to_string(),
                 invalidated: false,
@@ -556,16 +575,16 @@ fn useful_frame_needles(fixture: &Fixture) -> Result<(String, String, Vec<String
         .map_err(|error| format!("the selected document cannot be read: {error}"))?;
     let text = String::from_utf8_lossy(&working);
     let first_line = text.lines().next().unwrap_or_default();
-    let source = if first_line.chars().count() >= 4 { first_line } else { &text };
+    let source = if first_line.chars().count() >= 4 {
+        first_line
+    } else {
+        &text
+    };
     let content: String = pty::collapse(source).chars().take(40).collect();
-    let saved = [
-        "Saved",
-        "Unsaved draft",
-        "Saved, working file gone",
-    ]
-    .iter()
-    .map(|label| pty::collapse(label))
-    .collect();
+    let saved = ["Saved", "Unsaved draft", "Saved, working file gone"]
+        .iter()
+        .map(|label| pty::collapse(label))
+        .collect();
     Ok((identity, content, saved))
 }
 
@@ -700,7 +719,9 @@ fn key_unit(plan: &RunPlan, executable: &Path, fixture: &Fixture) -> Result<Meas
     // The read-only session touched nothing: stock Git confirms it
     // outside timing (SPEC 17.7.6).
     if !clean_before.is_empty() {
-        failures.push(format!("the repository was dirty before the session: {clean_before}"));
+        failures.push(format!(
+            "the repository was dirty before the session: {clean_before}"
+        ));
     }
     let after = fixture.oracle.status_porcelain();
     if !after.is_empty() {
@@ -753,9 +774,8 @@ fn refresh_unit(executable: &Path, fixture: &Fixture) -> Result<MeasuredUnit, St
     // status text ends near the row's start, while the notice's tail sits
     // past column 90 of a 120-column row, so its cells are always new.
     let notice = pty::collapse("this review never saw");
-    let (elapsed_ms, appeared) = session.wait_useful(started, FRAME_LIMIT, |text| {
-        text.contains(&notice)
-    });
+    let (elapsed_ms, appeared) =
+        session.wait_useful(started, FRAME_LIMIT, |text| text.contains(&notice));
     let exit_code = session.quit(QUIT_LIMIT);
     if !appeared {
         failures.push(
@@ -796,7 +816,11 @@ fn refresh_unit(executable: &Path, fixture: &Fixture) -> Result<MeasuredUnit, St
 }
 
 /// Runs one resource metric session: P-CPU, P-RSS, or P-TREE-MEM.
-fn resource_unit(plan: &RunPlan, executable: &Path, fixture: &Fixture) -> Result<MeasuredUnit, String> {
+fn resource_unit(
+    plan: &RunPlan,
+    executable: &Path,
+    fixture: &Fixture,
+) -> Result<MeasuredUnit, String> {
     fixture.reset_to_candidate()?;
     fixture.assert_reviewable()?;
     let run = match plan.metric {
@@ -831,8 +855,8 @@ pub fn run(
     results_dir: &Path,
 ) -> Result<RunOutcome, String> {
     require_registered(environment)?;
-    let definition = metric::by_id(plan.metric)
-        .ok_or_else(|| format!("unknown metric {}", plan.metric))?;
+    let definition =
+        metric::by_id(plan.metric).ok_or_else(|| format!("unknown metric {}", plan.metric))?;
     match definition.kind {
         Kind::Cli => {}
         Kind::Pty | Kind::Resource => {
@@ -919,7 +943,14 @@ pub fn run(
         .map_err(|error| format!("cannot write {}: {error}", raw_path.display()))?;
 
     let record_path = results_dir.join(ResultRecord::file_name(plan.metric, &plan.corpus));
-    let outcome = finish_record(plan, fixture, environment, environment_path, &samples, &raw_path);
+    let outcome = finish_record(
+        plan,
+        fixture,
+        environment,
+        environment_path,
+        &samples,
+        &raw_path,
+    );
     outcome
         .record
         .write(&record_path)
@@ -966,13 +997,11 @@ pub fn invalidate_block(
         .details
         .as_mut()
         .ok_or_else(|| "the record was never measured; nothing to recompute".to_string())?;
-    details
-        .invalidated_blocks
-        .push(InvalidatedBlock {
-            block,
-            reason: reason.to_string(),
-            at: now_utc(),
-        });
+    details.invalidated_blocks.push(InvalidatedBlock {
+        block,
+        reason: reason.to_string(),
+        at: now_utc(),
+    });
     details.notes.push(format!(
         "block {block} was invalidated after a documented incident ({reason}); its samples are \
          preserved but excluded, and both sides must be rerun once under the predeclared rule"
@@ -1002,10 +1031,10 @@ pub fn invalidate_block(
         record.sample_count = statistics.sample_count;
         record.median_ms = Some(statistics.median_ms);
         record.p95_ms = Some(statistics.p95_ms);
-        if let Some(limit) = record.budget_p95_ms {
-            if statistics.p95_ms > limit as f64 {
-                record.status = Status::Failed;
-            }
+        if let Some(limit) = record.budget_p95_ms
+            && statistics.p95_ms > limit as f64
+        {
+            record.status = Status::Failed;
         }
         details.statistics = Some(statistics);
     }
@@ -1166,8 +1195,7 @@ fn below_policy_note(plan: &RunPlan, counted_samples: usize) -> String {
         _ => format!(
             "{} counted samples over {} blocks sit below the SPEC 17.7.3 policy \
              (at least 20 independent block pairs); the comparison evidence is inconclusive",
-            counted_samples,
-            plan.blocks
+            counted_samples, plan.blocks
         ),
     }
 }
@@ -1240,11 +1268,14 @@ pub fn finish_record(
         .iter()
         .filter(|sample| sample.invalidated)
         .filter_map(|sample| {
-            sample.invalidation_reason.as_ref().map(|reason| InvalidatedBlock {
-                block: sample.block,
-                reason: reason.clone(),
-                at: now_utc(),
-            })
+            sample
+                .invalidation_reason
+                .as_ref()
+                .map(|reason| InvalidatedBlock {
+                    block: sample.block,
+                    reason: reason.clone(),
+                    at: now_utc(),
+                })
         })
         .fold(Vec::new(), |mut acc: Vec<InvalidatedBlock>, block| {
             if !acc.iter().any(|recorded| recorded.block == block.block) {
@@ -1382,7 +1413,9 @@ pub fn finish_record(
         implementation_commit: plan.implementation_commit.clone(),
         executable_hash: executable.as_ref().map(|summary| summary.sha256.clone()),
         corpus_manifest_hash: Some(fixture.manifest_sha256.clone()),
-        sample_count: statistics.as_ref().map_or(0, |stats_block| stats_block.sample_count),
+        sample_count: statistics
+            .as_ref()
+            .map_or(0, |stats_block| stats_block.sample_count),
         // A resource quantity is not a latency: the base fields stay
         // empty and the numbers live in `details.statistics`, whose
         // method sentence names their unit (SPEC 17.8).
@@ -1469,7 +1502,10 @@ fn environment_summary_of(
 ) -> EnvironmentSummary {
     EnvironmentSummary {
         path: environment_path.to_path_buf(),
-        git_version: environment.software.as_ref().and_then(|software| software.git_version.clone()),
+        git_version: environment
+            .software
+            .as_ref()
+            .and_then(|software| software.git_version.clone()),
         rustc_version: environment
             .software
             .as_ref()
@@ -1478,14 +1514,23 @@ fn environment_summary_of(
             .software
             .as_ref()
             .and_then(|software| software.cargo_version.clone()),
-        kernel: environment.software.as_ref().and_then(|software| software.kernel.clone()),
-        os: environment.software.as_ref().and_then(|software| software.os.clone()),
+        kernel: environment
+            .software
+            .as_ref()
+            .and_then(|software| software.kernel.clone()),
+        os: environment
+            .software
+            .as_ref()
+            .and_then(|software| software.os.clone()),
         dependency_lock_sha256: environment
             .build
             .as_ref()
             .and_then(|build| build.dependency_lock_sha256.clone()),
         build_profile: None,
-        rustflags: environment.build.as_ref().map(|build| build.rustflags.clone()),
+        rustflags: environment
+            .build
+            .as_ref()
+            .map(|build| build.rustflags.clone()),
         harness_revision: super::HARNESS_REVISION.to_string(),
     }
 }
@@ -1498,7 +1543,10 @@ mod tests {
     fn an_unassigned_environment_refuses_to_measure() {
         let record = EnvironmentRecord::unassigned();
         let problem = require_registered(&record).unwrap_err();
-        assert!(problem.contains("unassigned"), "the refusal names the state");
+        assert!(
+            problem.contains("unassigned"),
+            "the refusal names the state"
+        );
         let mut registered = record;
         registered.status = "registered".to_string();
         assert!(require_registered(&registered).is_ok());

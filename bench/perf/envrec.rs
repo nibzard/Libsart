@@ -200,8 +200,7 @@ impl EnvironmentRecord {
 
     /// Writes the record, pretty-printed.
     pub fn write(&self, path: &Path) -> std::io::Result<()> {
-        let body = serde_json::to_vec_pretty(self)
-            .map_err(std::io::Error::other)?;
+        let body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         fs::write(path, body)
     }
 
@@ -213,20 +212,21 @@ impl EnvironmentRecord {
 
 /// Reads one whole small file, when it exists.
 fn read_optional(path: &str) -> Option<String> {
-    fs::read_to_string(path).ok().map(|body| body.trim().to_string())
+    fs::read_to_string(path)
+        .ok()
+        .map(|body| body.trim().to_string())
 }
 
 /// One `key: value` field out of a `/proc/cpuinfo`-style file.
 fn proc_field(body: &str, key: &str) -> Option<String> {
-    body.lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.trim() == key {
-                Some(value.trim().to_string())
-            } else {
-                None
-            }
-        })
+    body.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim() == key {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    })
 }
 
 /// Runs one command and returns its trimmed standard output on success.
@@ -240,10 +240,10 @@ fn command_stdout(argv: &[&str]) -> Option<String> {
 
 /// The CPU model string.
 fn probe_cpu_model() -> Option<String> {
-    if let Some(body) = read_optional("/proc/cpuinfo") {
-        if let Some(model) = proc_field(&body, "model name") {
-            return Some(model);
-        }
+    if let Some(body) = read_optional("/proc/cpuinfo")
+        && let Some(model) = proc_field(&body, "model name")
+    {
+        return Some(model);
     }
     #[cfg(target_os = "macos")]
     {
@@ -258,14 +258,19 @@ fn probe_cpu_model() -> Option<String> {
 /// Logical and physical core counts.
 fn probe_cores() -> (Option<u32>, Option<u32>) {
     if let Some(body) = read_optional("/proc/cpuinfo") {
-        let logical = body.lines().filter(|line| line.starts_with("processor")).count();
+        let logical = body
+            .lines()
+            .filter(|line| line.starts_with("processor"))
+            .count();
         let physical = proc_field(&body, "cpu cores").and_then(|value| value.parse().ok());
         if logical > 0 {
             return (Some(logical as u32), physical);
         }
     }
     (
-        std::thread::available_parallelism().ok().map(|count| count.get() as u32),
+        std::thread::available_parallelism()
+            .ok()
+            .map(|count| count.get() as u32),
         None,
     )
 }
@@ -309,8 +314,16 @@ fn longest_mount(path: &Path) -> Option<(String, String, String)> {
             continue;
         }
         let length = mount_path.as_os_str().len();
-        if best.as_ref().is_none_or(|(best_length, _, _, _)| length > *best_length) {
-            best = Some((length, device.to_string(), mount_path.to_string_lossy().into_owned(), filesystem.to_string()));
+        if best
+            .as_ref()
+            .is_none_or(|(best_length, _, _, _)| length > *best_length)
+        {
+            best = Some((
+                length,
+                device.to_string(),
+                mount_path.to_string_lossy().into_owned(),
+                filesystem.to_string(),
+            ));
         }
     }
     let (_, device, mount, filesystem) = best?;
@@ -323,12 +336,12 @@ fn unescape_mount(raw: &str) -> String {
     let mut rest = raw;
     while let Some(position) = rest.find('\\') {
         decoded.push_str(&rest[..position]);
-        let escape = rest[position..].as_bytes();
+        let escape = &rest.as_bytes()[position..];
         if escape.len() >= 4 {
-            let octal = std::str::from_utf8(&escape[1..4]).ok().and_then(|digits| {
-                u32::from_str_radix(digits, 8).ok()
-            });
-            if let Some(value) = octal.map(char::from_u32).flatten() {
+            let octal = std::str::from_utf8(&escape[1..4])
+                .ok()
+                .and_then(|digits| u32::from_str_radix(digits, 8).ok());
+            if let Some(value) = octal.and_then(char::from_u32) {
                 decoded.push(value);
                 rest = &rest[position + 4..];
                 continue;
@@ -350,16 +363,15 @@ fn probe_storage_bytes(path: &Path) -> (Option<u64>, Option<u64>) {
     };
     let text = String::from_utf8_lossy(&output.stdout);
     // The data row reads: device, total, used, available, capacity, mount.
-    let Some(fields) = text
-        .lines()
-        .find(|line| line.starts_with('/'))
-        .map(|line| line.split_whitespace().map(str::to_string).collect::<Vec<_>>())
-    else {
+    let Some(fields) = text.lines().find(|line| line.starts_with('/')).map(|line| {
+        line.split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    }) else {
         return (None, None);
     };
-    let number = |index: usize| -> Option<u64> {
-        fields.get(index).and_then(|field| field.parse().ok())
-    };
+    let number =
+        |index: usize| -> Option<u64> { fields.get(index).and_then(|field| field.parse().ok()) };
     match (number(1), number(3)) {
         (Some(total), Some(available)) => (Some(total), Some(available)),
         _ => (None, None),
@@ -368,8 +380,8 @@ fn probe_storage_bytes(path: &Path) -> (Option<u64>, Option<u64>) {
 
 /// Kernel and OS names.
 fn probe_kernel_os() -> (Option<String>, Option<String>) {
-    let kernel = read_optional("/proc/sys/kernel/osrelease")
-        .or_else(|| command_stdout(&["uname", "-r"]));
+    let kernel =
+        read_optional("/proc/sys/kernel/osrelease").or_else(|| command_stdout(&["uname", "-r"]));
     let os = read_optional("/etc/os-release")
         .and_then(|body| release_field(&body, "PRETTY_NAME"))
         .filter(|name| !name.is_empty())
@@ -393,7 +405,12 @@ fn release_field(body: &str, key: &str) -> Option<String> {
 }
 
 /// Tool versions.
-fn probe_versions() -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+fn probe_versions() -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let git = command_stdout(&["git", "--version"]).map(|raw| {
         raw.strip_prefix("git version ")
             .unwrap_or(&raw)
@@ -434,20 +451,15 @@ fn probe_hardware(path: &Path) -> Hardware {
 
 /// Power policy and interference observations.
 fn probe_power() -> Power {
-    let governor = read_optional(
-        "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
-    );
+    let governor = read_optional("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor");
     let supply = fs::read_dir("/sys/class/power_supply")
         .map(|entries| {
             let mut states = Vec::new();
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let Some(state) = read_optional(
-                    &format!("/sys/class/power_supply/{name}/online"),
-                )
-                .or_else(|| {
-                    read_optional(&format!("/sys/class/power_supply/{name}/status"))
-                }) else {
+                let Some(state) = read_optional(&format!("/sys/class/power_supply/{name}/online"))
+                    .or_else(|| read_optional(&format!("/sys/class/power_supply/{name}/status")))
+                else {
                     continue;
                 };
                 states.push(format!("{name}={state}"));
@@ -496,7 +508,12 @@ fn probe_build(source_root: Option<&Path>) -> Build {
 
 /// The toolchain channel `rust-toolchain.toml` pins, when present.
 fn probe_toolchain(source_root: &Path) -> Option<String> {
-    let body = read_optional(&source_root.join("rust-toolchain.toml").display().to_string())?;
+    let body = read_optional(
+        &source_root
+            .join("rust-toolchain.toml")
+            .display()
+            .to_string(),
+    )?;
     body.lines().find_map(|line| {
         let (name, value) = line.split_once('=')?;
         if name.trim() == "channel" {
@@ -580,8 +597,14 @@ pub fn probe_record(
     let machine_fingerprint = format!(
         "{}|{}|{}|{}",
         hardware.cpu_model.as_deref().unwrap_or("cpu"),
-        hardware.cpu_cores.map(|cores| cores.to_string()).unwrap_or_default(),
-        hardware.ram_total_bytes.map(|ram| ram.to_string()).unwrap_or_default(),
+        hardware
+            .cpu_cores
+            .map(|cores| cores.to_string())
+            .unwrap_or_default(),
+        hardware
+            .ram_total_bytes
+            .map(|ram| ram.to_string())
+            .unwrap_or_default(),
         hardware.machine_model.as_deref().unwrap_or("model"),
     );
     EnvironmentRecord {
@@ -668,12 +691,21 @@ mod tests {
         let scratch = std::env::temp_dir();
         let record = probe_record(None, &scratch, None, None);
         assert_eq!(record.status, "registered");
-        assert!(record.runner_id.as_deref().unwrap_or("").starts_with("margin-runner-"));
+        assert!(
+            record
+                .runner_id
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("margin-runner-")
+        );
 
         let hardware = record.hardware.expect("hardware is probed");
         assert_eq!(hardware.architecture, std::env::consts::ARCH);
         assert!(hardware.cpu_cores.unwrap_or(0) > 0, "a core count exists");
-        assert!(hardware.ram_total_bytes.unwrap_or(0) > 0, "a RAM total exists");
+        assert!(
+            hardware.ram_total_bytes.unwrap_or(0) > 0,
+            "a RAM total exists"
+        );
         let storage = hardware.storage.expect("the scratch directory has a mount");
         assert!(!storage.mount.is_empty() && !storage.filesystem.is_empty());
         if let (Some(total), Some(available)) = (storage.total_bytes, storage.available_bytes) {
@@ -689,13 +721,20 @@ mod tests {
                     "the recorded CPU model {model} came from elsewhere"
                 );
             }
-            let cores = cpuinfo.lines().filter(|line| line.starts_with("processor")).count();
+            let cores = cpuinfo
+                .lines()
+                .filter(|line| line.starts_with("processor"))
+                .count();
             assert_eq!(hardware.cpu_cores, Some(cores as u32));
         }
 
         let software = record.software.expect("software is probed");
         let git = String::from_utf8_lossy(
-            &Command::new("git").arg("--version").output().expect("git runs").stdout,
+            &Command::new("git")
+                .arg("--version")
+                .output()
+                .expect("git runs")
+                .stdout,
         )
         .trim()
         .to_string();
@@ -746,10 +785,7 @@ mod tests {
     #[test]
     fn rfc3339_matches_known_moments() {
         use std::time::Duration;
-        assert_eq!(
-            rfc3339_utc(std::time::UNIX_EPOCH),
-            "1970-01-01T00:00:00Z"
-        );
+        assert_eq!(rfc3339_utc(std::time::UNIX_EPOCH), "1970-01-01T00:00:00Z");
         assert_eq!(
             rfc3339_utc(std::time::UNIX_EPOCH + Duration::from_secs(1_767_229_200)),
             "2026-01-01T01:00:00Z"

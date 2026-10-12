@@ -122,11 +122,7 @@ fn clock_ticks_per_second() -> f64 {
     const SC_CLK_TCK: i32 = 2;
     // SAFETY: one read-only libc query with an integer argument.
     let ticks = unsafe { sysconf(SC_CLK_TCK) };
-    if ticks > 0 {
-        ticks as f64
-    } else {
-        100.0
-    }
+    if ticks > 0 { ticks as f64 } else { 100.0 }
 }
 
 // SAFETY: declared for the sysconf call above; the standard C library is
@@ -190,7 +186,9 @@ fn snapshot() -> BTreeMap<u32, ProcStat> {
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(digits) = name.to_str().filter(|text| text.bytes().all(|b| b.is_ascii_digit()))
+        let Some(digits) = name
+            .to_str()
+            .filter(|text| text.bytes().all(|b| b.is_ascii_digit()))
         else {
             continue;
         };
@@ -286,7 +284,9 @@ pub fn run_rss(
                 .ok_or_else(|| "the parent's VmHWM left /proc before it was read".to_string())?;
             let mut failures = Vec::new();
             if !peak.is_finite() || peak <= 0.0 {
-                failures.push(format!("the measured peak RSS {peak} is not a positive quantity"));
+                failures.push(format!(
+                    "the measured peak RSS {peak} is not a positive quantity"
+                ));
             }
             Ok(("MiB", peak, failures))
         },
@@ -311,7 +311,10 @@ pub fn run_tree_memory(
             let pid = sampler_root.load(Ordering::Relaxed);
             if pid != 0 {
                 let whole = snapshot();
-                let sum: f64 = tree_of(&whole, pid).iter().map(|&pid| resident_mib(pid)).sum();
+                let sum: f64 = tree_of(&whole, pid)
+                    .iter()
+                    .map(|&pid| resident_mib(pid))
+                    .sum();
                 if sum > peak {
                     peak = sum;
                 }
@@ -334,8 +337,9 @@ pub fn run_tree_memory(
     let mut run = outcome?;
     run.value = peak;
     if !peak.is_finite() || peak <= 0.0 {
-        run.failures
-            .push(format!("the measured tree peak {peak} is not a positive quantity"));
+        run.failures.push(format!(
+            "the measured tree peak {peak} is not a positive quantity"
+        ));
     }
     Ok(run)
 }
@@ -355,9 +359,8 @@ pub fn run_cpu(
     window: Duration,
 ) -> Result<ResourceRun, String> {
     let ticks_per_second = clock_ticks_per_second();
-    let mut session =
-        PtySession::spawn(executable, &["tui", "--reduced-updates"], envs, cwd)
-            .map_err(|error| format!("the surface cannot start on its terminal: {error}"))?;
+    let mut session = PtySession::spawn(executable, &["tui", "--reduced-updates"], envs, cwd)
+        .map_err(|error| format!("the surface cannot start on its terminal: {error}"))?;
     let mut failures = Vec::new();
     if !session.wait_for("1 Read 2 Changes 3 History", STEP_LIMIT) {
         failures.push("the session never showed the useful first frame".to_string());
@@ -466,16 +469,47 @@ mod tests {
         let stime: u64 = fields.next().unwrap().parse().unwrap();
         assert_eq!(ppid, 41, "the parent link survives the command field");
         assert_eq!(utime, 7);
-        assert_eq!(stime, 1, "the pair is fields 14 and 15, nine fields past ppid");
+        assert_eq!(
+            stime, 1,
+            "the pair is fields 14 and 15, nine fields past ppid"
+        );
     }
 
     #[test]
     fn the_tree_of_a_snapshot_contains_every_descendant() {
         let mut whole = BTreeMap::new();
-        whole.insert(1, ProcStat { ppid: 0, utime: 0, stime: 0 });
-        whole.insert(10, ProcStat { ppid: 1, utime: 0, stime: 0 });
-        whole.insert(11, ProcStat { ppid: 10, utime: 0, stime: 0 });
-        whole.insert(99, ProcStat { ppid: 1, utime: 0, stime: 0 });
+        whole.insert(
+            1,
+            ProcStat {
+                ppid: 0,
+                utime: 0,
+                stime: 0,
+            },
+        );
+        whole.insert(
+            10,
+            ProcStat {
+                ppid: 1,
+                utime: 0,
+                stime: 0,
+            },
+        );
+        whole.insert(
+            11,
+            ProcStat {
+                ppid: 10,
+                utime: 0,
+                stime: 0,
+            },
+        );
+        whole.insert(
+            99,
+            ProcStat {
+                ppid: 1,
+                utime: 0,
+                stime: 0,
+            },
+        );
         let mut tree = tree_of(&whole, 10);
         tree.sort_unstable();
         assert_eq!(tree, vec![10, 11], "an unrelated process stays out");
@@ -496,7 +530,10 @@ mod tests {
     fn the_fixed_sequence_visits_every_view() {
         assert_eq!(SEQUENCE.len(), 5, "changes, history, read, j, k");
         let sentence = sequence_sentence();
-        assert!(sentence.contains("Changes") && sentence.contains("History"), "{sentence}");
+        assert!(
+            sentence.contains("Changes") && sentence.contains("History"),
+            "{sentence}"
+        );
     }
 
     #[test]
