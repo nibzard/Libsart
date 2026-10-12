@@ -2,21 +2,21 @@
   "schema_version": 1,
   "metric": "P-APPLY",
   "corpus": "C1",
-  "status": "failed",
+  "status": "passed",
   "environment_id": "the-developer-vm",
-  "implementation_commit": "fcac83eb2fef068b632560165fe8afeb4f87efa1",
-  "executable_hash": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64",
+  "implementation_commit": "8de373d142d3b2e389324e14ccc918607ac7b544",
+  "executable_hash": "d9a9576990e0662239aca93bee713d94a674e037f2edb891ed9858d715d53bfa",
   "corpus_manifest_hash": "e6dd7dc04db26c98718213241d85db1b0438ae1f9c5eef9a661c18856f7a9539",
   "sample_count": 100,
-  "median_ms": 693.816551,
-  "p95_ms": 1044.487611,
+  "median_ms": 367.154545,
+  "p95_ms": 382.60441299999997,
   "budget_p95_ms": 750,
   "correctness_oracle": "passed",
-  "raw_samples_path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/raw/P-APPLY.C1/2026-10-12T005116Z/samples.jsonl",
+  "raw_samples_path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-49ce8edbc9839b36/bench/results/raw/P-APPLY.C1/2026-10-12T150629Z/samples.jsonl",
   "details": {
     "metric_kind": "cli-fresh-process",
     "metric_about": "Selective review through verified review commit and response",
-    "measured_at": "2026-10-12T00:51:17Z",
+    "measured_at": "2026-10-12T15:06:29Z",
     "environment": {
       "path": "bench/environment.json",
       "git_version": "2.43.0",
@@ -30,13 +30,13 @@
       "harness_revision": "margin-benchrun/2"
     },
     "executable": {
-      "path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/target/release/margin",
-      "bytes": 4669056,
-      "sha256": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64"
+      "path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-49ce8edbc9839b36/target/release/margin",
+      "bytes": 4864344,
+      "sha256": "d9a9576990e0662239aca93bee713d94a674e037f2edb891ed9858d715d53bfa"
     },
     "corpus": {
-      "directory": "/tmp/looper_f213b06f607af254209d-t054/corpora/c1",
-      "manifest_path": "/tmp/looper_f213b06f607af254209d-t054/corpora/c1/manifest.json",
+      "directory": "/tmp/looper_750d820637eea6d38b56-t084/corpora/c1",
+      "manifest_path": "/tmp/looper_750d820637eea6d38b56-t084/corpora/c1/manifest.json",
       "manifest_sha256": "e6dd7dc04db26c98718213241d85db1b0438ae1f9c5eef9a661c18856f7a9539",
       "generator_revision": "margin-corpusgen/1",
       "seed": 7881706609582276609,
@@ -55,23 +55,23 @@
     },
     "statistics": {
       "sample_count": 100,
-      "median_ms": 693.816551,
-      "p95_ms": 1044.487611,
-      "min_ms": 475.734066,
-      "max_ms": 1157.05858,
+      "median_ms": 367.154545,
+      "p95_ms": 382.60441299999997,
+      "min_ms": 345.440511,
+      "max_ms": 397.289122,
       "method": "nearest-rank; all samples retained including slow ones"
     },
     "comparison": null,
     "gate": {
       "budget": "p95 <= 750 ms",
-      "budget_exceeded": true,
-      "confirmation_required": true
+      "budget_exceeded": false,
+      "confirmation_required": false
     },
     "process_counts": null,
     "memory_definition": null,
     "invalidated_blocks": [],
     "notes": [
-      "the p95 exceeded its budget: SPEC 17.7 requires one declared confirmation run of both versions, preserved, before the failure blocks release"
+      "T084: one manifest derivation reused across the diff and the review apply through the rebuildable cache"
     ]
   }
 }
