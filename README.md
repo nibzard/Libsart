@@ -152,6 +152,7 @@ Claude Code settings; `margin desk` composes the optional tmux writing desk.
 Parts of explicit recovery remain unfinished.
 
 Known defects and remaining work are recorded in [to-do.json](to-do.json).
+That file is a backlog snapshot; regenerate it at integration milestones.
 Use the disposable example repository when evaluating the current behavior.
 
 ## Build and test
