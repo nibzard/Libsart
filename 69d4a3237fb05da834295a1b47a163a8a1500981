@@ -1,0 +1,8 @@
+Profile the confirmed C2 gaps: complete application (T084), selected
+diff (T085), startup keyboard response (T091), and idle CPU (T100).
+Obtain controlled runner access for missing C1 keyboard evidence
+(T082 and T087). Keep the failed and excluded samples.
+
+The agent trials, writer study, terminal matrix, and remaining
+implementation and documentation tasks stay open in to-do.json.
+T097 records the singleton agent executable edge case involving '='.
