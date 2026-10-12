@@ -1,0 +1,52 @@
+# Design: The rebuildable manifest cache keyed by review context
+
+## Problem
+P-APPLY measured a fresh `margin review` process that rederived the
+grouped manifest its own plan was composed from: `pinned_review` runs
+`build_grouped_manifest` on every invocation, and the diff, the plan
+validation, the resume, and the TUI finish each paid the whole tree
+diff, blob reads, Markdown grouping, and per-group apply proofs again
+for the same pinned comparison.
+
+## Approach
+One cache entry per pinned comparison, stored under
+`$GIT_DIR/margin/manifest-cache/<key>`, where the key is the Git-hashed
+canonical bytes of the review context (branch, B, C, scope, engine,
+Git version) under its own domain `margin-review-cache-v1` — the review
+identity's inputs minus the manifest digest, so the entry can be found
+before the manifest exists. SPEC 8.2 lists rebuildable caches as allowed
+disposable state; SPEC 13.3 names exactly this cache ("cache by
+B/C/scope/engine"; "a cache miss may be slower but cannot change
+correctness").
+
+Verification on read, in order: strict parse (deny_unknown_fields),
+context equality with the live comparison, manifest digest recomputed
+from the stored groups, review identity recomputed from the context and
+that digest, every change identity recomputed in one batched hash, and
+one batched `cat-file --batch-check` that B, C, and every blob the
+derivation read are still in the store. Structural checks refuse an
+entry whose hunk indexes point outside the file, whose group lost its
+patch unit, whose blob fields are not full object IDs, or whose hunk
+offset+length overflow. Any refusal is a silent miss and a full
+rederivation through the one authority.
+
+## Key Trade-offs
+- A cache entry is only as trustworthy as the digests it recomputes, so
+  the read path costs four hash processes and one batch-check; that is
+  ~20-40 ms against 160 ms (C1) / 1200 ms (C2) of derivation.
+- Presentation fields (headings, excerpts) are not identity-covered; an
+  accidentally corrupted presentation would be served. The identities,
+  the patch bytes, the order, and the plan validation are covered, so
+  approval semantics cannot move; a same-user forger is outside the
+  trust boundary of SPEC 14.6 (they could rewrite .git directly).
+- Entries are bounded (6 entries, 64 MiB total, 32 MiB per entry);
+  eviction is by mtime with a name tie-break. A C3-scale manifest is
+  simply never stored.
+- The bench fixture clears the cache before every timed P-DIFF run so
+  that metric keeps measuring the cold derivation its budget covers,
+  while P-APPLY measures the real diff-then-review continuity.
+
+## References
+- SPEC 8.2 (disposable state), 8.6 (identities), 13.3 (caching), 14.6
+  (trust boundary), INV-12, INV-14
+- bench/results/P-APPLY.C1.json, P-APPLY.C2.json (the failing evidence)
