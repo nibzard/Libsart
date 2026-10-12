@@ -1,0 +1,12 @@
+# Todo: the remaining P-APPLY costs the cache does not remove
+
+- The apply path hashes the whole scoped working tree three times
+  (working_before, the post-apply R check, observe_receipt_completion):
+  ~0.85 s of the C2 run at 100 MiB scope. Narrowing those hashes to the
+  paths the decision touches would need care: the postcondition
+  inspection is deliberately whole-scope.
+- apply_selected_review runs `--check` then `--index` per restored unit
+  (two processes per unit). SPEC 9.4 names both steps, so removing the
+  check needs a spec-level argument first.
+- The C2 p95 sits near its 2000 ms budget after the cache; the two items
+  above are the next levers.
