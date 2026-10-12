@@ -164,9 +164,12 @@ impl Sampling {
             blocks: 20,
             runs_per_block: 5,
             order_seed: 0,
-            boundary: "wall time from before process creation through exit and full response delivery".to_string(),
+            boundary:
+                "wall time from before process creation through exit and full response delivery"
+                    .to_string(),
             cache_method: "warm filesystem caches, fresh process per run".to_string(),
-            order_rule: "one recorded-seed coin flip per block decides baseline/candidate order".to_string(),
+            order_rule: "one recorded-seed coin flip per block decides baseline/candidate order"
+                .to_string(),
             events_per_session: 0,
             window_seconds: 0,
         }
@@ -391,7 +394,10 @@ impl ResultRecord {
 /// only.
 pub fn counted_blocks(samples: &[Sample], version: &str) -> Vec<Vec<f64>> {
     let mut grouped: Vec<Vec<f64>> = Vec::new();
-    for sample in samples.iter().filter(|sample| sample.version == version && sample.counted()) {
+    for sample in samples
+        .iter()
+        .filter(|sample| sample.version == version && sample.counted())
+    {
         while grouped.len() <= sample.block {
             grouped.push(Vec::new());
         }
@@ -450,10 +456,21 @@ mod tests {
         // Exactly the fifteen fields of the SPEC example, nothing more;
         // JSON object order carries no meaning, so the set is the claim.
         let mut expected: Vec<&str> = [
-            "schema_version", "metric", "corpus", "status", "environment_id",
-            "implementation_commit", "executable_hash", "corpus_manifest_hash",
-            "sample_count", "median_ms", "p95_ms", "budget_p95_ms",
-            "correctness_oracle", "raw_samples_path", "details",
+            "schema_version",
+            "metric",
+            "corpus",
+            "status",
+            "environment_id",
+            "implementation_commit",
+            "executable_hash",
+            "corpus_manifest_hash",
+            "sample_count",
+            "median_ms",
+            "p95_ms",
+            "budget_p95_ms",
+            "correctness_oracle",
+            "raw_samples_path",
+            "details",
         ]
         .to_vec();
         expected.sort_unstable();
@@ -489,11 +506,23 @@ mod tests {
         assert_eq!(resource_ceiling("P-TREE-MEM", "C2"), Some(256.0));
         assert_eq!(resource_ceiling("P-CPU", "C1"), Some(1.0));
         assert_eq!(resource_ceiling("P-CPU", "C2"), Some(2.0));
-        assert_eq!(resource_ceiling("P-STATUS", "C1"), None, "a latency metric has no ceiling");
-        assert_eq!(resource_ceiling("P-RSS", "C3"), None, "C3 carries no budget");
+        assert_eq!(
+            resource_ceiling("P-STATUS", "C1"),
+            None,
+            "a latency metric has no ceiling"
+        );
+        assert_eq!(
+            resource_ceiling("P-RSS", "C3"),
+            None,
+            "C3 carries no budget"
+        );
         assert_eq!(budget_p99_ms("P-KEY", "C1"), Some(100));
         assert_eq!(budget_p99_ms("P-KEY", "C2"), Some(100));
-        assert_eq!(budget_p99_ms("P-STATUS", "C1"), None, "only P-KEY gates a p99");
+        assert_eq!(
+            budget_p99_ms("P-STATUS", "C1"),
+            None,
+            "only P-KEY gates a p99"
+        );
     }
 
     #[test]
@@ -523,7 +552,11 @@ mod tests {
             let back: Status = serde_json::from_str(&text).expect("reads back");
             assert_eq!(back, status);
         }
-        for oracle in [OracleState::NotRun, OracleState::Passed, OracleState::Failed] {
+        for oracle in [
+            OracleState::NotRun,
+            OracleState::Passed,
+            OracleState::Failed,
+        ] {
             let text = serde_json::to_string(&oracle).expect("serializes");
             let back: OracleState = serde_json::from_str(&text).expect("reads back");
             assert_eq!(back, oracle);

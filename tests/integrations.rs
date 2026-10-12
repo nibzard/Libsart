@@ -71,9 +71,17 @@ fn hook_args(env: &support::env::IsolatedEnv, cwd: &Path, args: &[&str], payload
         .unwrap_or_else(|error| panic!("cannot run the margin binary: {error}"));
     {
         let mut stdin = child.stdin.take().expect("piped standard input");
-        stdin
-            .write_all(payload)
-            .expect("the payload fits one pipe write");
+        // A child that refuses its arguments exits before draining standard
+        // input, and the write then meets a closed pipe. That early exit is
+        // the behavior under test, so a broken pipe here is not a harness
+        // failure; every other write error still is.
+        if let Err(error) = stdin.write_all(payload) {
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe,
+                "the payload write failed: {error}"
+            );
+        }
     }
     child.wait_with_output().expect("the hook command finishes")
 }

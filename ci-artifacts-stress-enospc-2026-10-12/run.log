@@ -1,0 +1,50 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/bench_corpora.rs (target/debug/deps/bench_corpora-9c29a8fd98810ca3)
+
+running 22 tests
+test c1_generates_a_reproducible_daily_desk has been running for over 60 seconds
+test c2_generates_the_release_envelope has been running for over 60 seconds
+test c3_generates_the_stress_shape has been running for over 60 seconds
+test c4_variants_record_independent_state has been running for over 60 seconds
+test c4_variants_record_independent_state ... ok
+test corpus::build::tests::conflicting_lines_differ_same_length ... ok
+test corpus::build::tests::hunk_counting_reads_headers ... ok
+test corpus::edits::tests::claim_and_link_edits_keep_line_length ... ok
+test corpus::edits::tests::edits_land_apart_and_change_content ... ok
+test corpus::edits::tests::word_swap_requires_whole_words ... ok
+test corpus::plan::tests::exact_totals_allocate_exactly ... ok
+test corpus::plan::tests::full_definitions_match_spec_17_2 ... ok
+test corpus::plan::tests::layouts_fill_their_budgets ... ok
+test corpus::plan::tests::test_scales_keep_their_invariants ... ok
+test corpus::rng::tests::same_seed_same_sequence ... ok
+test corpus::rng::tests::splitmix64_reference_sequence ... ok
+test corpus::text::tests::repeated_lines_hit_the_exact_total ... ok
+test corpus::text::tests::swap_pairs_keep_their_lengths ... ok
+test corpus::text::tests::tail_hits_the_exact_total ... ok
+test corpus::text::tests::wrap_respects_the_width ... ok
+test definitions_match_spec_17_2 ... ok
+test holdout_set_is_curated_and_excluded ... ok
+test seeds_change_the_corpus has been running for over 60 seconds
+test c1_generates_a_reproducible_daily_desk ... ok
+test seeds_change_the_corpus ... ok
+test c2_generates_the_release_envelope ... ok
+test c3_generates_the_stress_shape ... FAILED
+
+failures:
+
+---- c3_generates_the_stress_shape stdout ----
+
+thread 'c3_generates_the_stress_shape' (3609660) panicked at tests/../bench/corpus/gen/runner.rs:277:9:
+git commit failed with exit exit status: 128 in /home/agent/.looper/margin-e7d63a59/runtime/task-97a9a572900eb23c/work-00-session-c48f98dbce267264/tmp/.tmp61x5V5/corpus/repo
+stderr: fatal: unable to write loose object file: No space left on device
+
+stack backtrace:
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    c3_generates_the_stress_shape
+
+test result: FAILED. 21 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14164.05s
+
+error: test failed, to rerun pass `--test bench_corpora`

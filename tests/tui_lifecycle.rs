@@ -299,11 +299,9 @@ fn the_editor_handoff_suspends_the_terminal_and_takes_it_back() {
     let editor = scratch.path().join("stand-in-editor.sh");
     std::fs::write(
         &editor,
-        format!(
-            "#!/bin/sh\nstty -a > \"$MARGIN_EDIT_PROBE\"\nprintf 'Edited in the editor.\\n' >> \
-             \"$1\"\n"
-        )
-        .as_bytes(),
+        "#!/bin/sh\nstty -a > \"$MARGIN_EDIT_PROBE\"\nprintf 'Edited in the editor.\\n' >> \
+         \"$1\"\n"
+            .as_bytes(),
     )
     .expect("the stand-in editor");
     std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755))
@@ -342,7 +340,7 @@ fn the_editor_handoff_suspends_the_terminal_and_takes_it_back() {
     assert!(
         pty.wait_for("Edited in the editor.", LIMIT),
         "the editor ran and the reloaded document shows its line: {}",
-        String::from_utf8_lossy(&pty.raw_output()),
+        String::from_utf8_lossy(pty.raw_output()),
     );
     // The handoff left the alternate screen for the child and re-entered
     // it on return, beside the one pair of the opening frame.

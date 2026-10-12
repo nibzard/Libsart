@@ -210,8 +210,18 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "P-HELP", "P-STATUS", "P-DIFF", "P-OPEN", "P-CHECKPOINT", "P-APPLY",
-                "P-HISTORY", "P-KEY", "P-REFRESH", "P-CPU", "P-RSS", "P-TREE-MEM",
+                "P-HELP",
+                "P-STATUS",
+                "P-DIFF",
+                "P-OPEN",
+                "P-CHECKPOINT",
+                "P-APPLY",
+                "P-HISTORY",
+                "P-KEY",
+                "P-REFRESH",
+                "P-CPU",
+                "P-RSS",
+                "P-TREE-MEM",
             ]
         );
         assert_eq!(by_id("P-STATUS").unwrap().c1.p95_ms(), Some(150));
@@ -231,7 +241,10 @@ mod tests {
         // The SPEC's initial example record is P-DIFF on C2 with a 500 ms
         // p95 budget; the registry must reproduce that number.
         let diff = by_id("P-DIFF").expect("P-DIFF exists");
-        assert_eq!(diff.budget("C2").and_then(|budget| budget.p95_ms()), Some(500));
+        assert_eq!(
+            diff.budget("C2").and_then(|budget| budget.p95_ms()),
+            Some(500)
+        );
         assert_eq!(diff.budget("C3"), None, "C3 carries no latency budget");
     }
 }

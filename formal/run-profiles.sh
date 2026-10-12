@@ -5,10 +5,15 @@
 # the pinned official tla2tools jar. The four positive profiles must pass;
 # MarginReviewUncooperative must fail on NoUnseenOverwrite only.
 #
-# Usage: formal/run-profiles.sh [log-directory]
+# Usage: formal/run-profiles.sh [log-directory] [profile ...]
 # The log directory defaults to formal/evidence/logs. Each run writes
 # sany.log, tlc-<profile>.log, environment.txt, and summary.tsv there.
 # Counterexample traces are preserved as <profile>.counterexample.json.
+#
+# Named profiles run instead of all five. The CI tiers of SPEC 18.3 use
+# that: the pull-request tier passes the four small safety, liveness,
+# control, and negative profiles, and the nightly tier adds the larger
+# MarginReviewNightly profile. SANY runs in every case.
 #
 # The jar is downloaded from the official GitHub release when absent and its
 # sha256 is verified against formal/tools/tla2tools-<version>.jar.sha256,
@@ -23,6 +28,16 @@ here=$(cd "$(dirname "$0")" && pwd)
 tools="${here}/tools"
 jar="${tools}/tla2tools-${version}.jar"
 out=${1:-${here}/evidence/logs}
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+
+# The script changes directory before writing its logs, so a relative log
+# directory is anchored to the invocation directory while it still applies.
+case $out in
+/*) ;;
+*) out="$(pwd)/$out" ;;
+esac
 
 mkdir -p "${tools}" "${out}"
 
@@ -66,6 +81,31 @@ expected=(
   pass
   fail-no-unseen-overwrite
 )
+
+# Arguments after the log directory name the profiles to run; without any,
+# all five run. A typo would silently skip a profile, so unknown names stop
+# the gate instead.
+if [ "$#" -gt 0 ]; then
+  selected=()
+  wanted_expected=()
+  for name in "$@"; do
+    found=
+    for i in "${!profiles[@]}"; do
+      if [ "${profiles[$i]}" = "${name}" ]; then
+        found=${i}
+        break
+      fi
+    done
+    if [ -z "${found}" ]; then
+      echo "unknown profile '${name}'; known: ${profiles[*]}" >&2
+      exit 2
+    fi
+    selected+=("${name}")
+    wanted_expected+=("${expected[$found]}")
+  done
+  profiles=("${selected[@]}")
+  expected=("${wanted_expected[@]}")
+fi
 
 summary="${out}/summary.tsv"
 printf 'profile\texpected\texit\tresult\tgenerated\tdistinct\tdepth\twall_s\n' >"${summary}"

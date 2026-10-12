@@ -204,6 +204,34 @@ fn plan_of(context: &str, members: &str) -> String {
     format!("{}, {members}}}", &context[..context.len() - 1])
 }
 
+/// One change identity the pinned review never issued, derived from a real
+/// one so it stays a well-formed value of the same shape. The first hex
+/// digit flips to the opposite nibble, and the result is checked against
+/// every issued identity: a replacement that happens to land on an issued
+/// identity would turn the refusal under test into an approval.
+fn stranger_change(changes: &[String]) -> String {
+    let issued = &changes[0];
+    let position = issued
+        .rfind(':')
+        .expect("a change identity carries an algorithm prefix")
+        + 1;
+    let flipped = if issued.as_bytes()[position] == b'f' {
+        '0'
+    } else {
+        'f'
+    };
+    let stranger = format!(
+        "{}{flipped}{}",
+        &issued[..position],
+        &issued[position + 1..]
+    );
+    assert!(
+        changes.iter().all(|issued| *issued != stranger),
+        "the flipped identity {stranger} must differ from every issued one"
+    );
+    stranger
+}
+
 /// The typed problem one invalid fixture must refuse with. The two variants
 /// whose text repeats implementation wording are compared by variant and
 /// public code only.
@@ -565,7 +593,7 @@ fn structural_faults_are_typed_invalid_plans() {
 #[test]
 fn unknown_and_undecided_changes_are_named() {
     let (repo, context, changes, _review_id) = pending_review();
-    let stranger = changes[0].replace('0', "f");
+    let stranger = stranger_change(&changes);
 
     // An identity the pinned review never issued.
     let unknown = plan_of(
@@ -756,7 +784,7 @@ fn the_plan_rules_are_reachable_through_the_library() {
     );
     assert_eq!(domain::validate_plan_coverage(&keep_one, &known), Ok(()));
 
-    let stranger = changes[0].replace('0', "f");
+    let stranger = stranger_change(&changes);
     let unknown = ReviewPlan::parse(
         plan_of(
             &context,

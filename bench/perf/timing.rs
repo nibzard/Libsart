@@ -46,7 +46,10 @@ impl TimedProcess {
 /// must carry its own working directory and environment; this function
 /// only owns the pipes and the clock, never any fixture work.
 pub fn time_child(command: &mut Command) -> io::Result<TimedProcess> {
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let started = Instant::now();
     let child = command.spawn()?;
     let output = child.wait_with_output()?;
@@ -65,8 +68,7 @@ mod tests {
     /// A deterministic child whose output size and sleep are known, so
     /// the test can prove the window covers creation and delivery. The
     /// payload comes from `head` so the argv stays small.
-    const SLEEPER_SCRIPT: &str =
-        "head -c 200000 /dev/zero | tr '\\0' m; sleep 0.02; printf tail";
+    const SLEEPER_SCRIPT: &str = "head -c 200000 /dev/zero | tr '\\0' m; sleep 0.02; printf tail";
 
     #[test]
     fn the_window_spans_creation_sleep_and_full_delivery() {

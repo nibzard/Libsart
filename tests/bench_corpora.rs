@@ -181,7 +181,14 @@ fn build_variant(variant: Variant, base: &Parameters) -> (TempDir, corpus::Corpu
 
 /// Asserts that a second run of the same parameters reproduces the
 /// manifest exactly, including the observed storage state.
-fn assert_rerun_reproduces(built: &corpus::CorpusResult, base: &Parameters) {
+///
+/// The comparison needs only the first run's manifest, which is held in
+/// memory, so this function takes ownership of the first corpus's
+/// directory and deletes it before building the second. Holding both
+/// trees at once would double the peak disk of the full-scale nightly
+/// stress gate (one C3 build is about 1.8 GiB, SPEC 18.3-18.4).
+fn assert_rerun_reproduces(root: TempDir, built: &corpus::CorpusResult, base: &Parameters) {
+    drop(root);
     let second_root = TempDir::new().expect("a second temporary root");
     let second = corpus::generate(base, &second_root.path().join("corpus"));
     assert_eq!(
@@ -273,7 +280,7 @@ fn definitions_match_spec_17_2() {
 #[test]
 fn c1_generates_a_reproducible_daily_desk() {
     let base = parameters("MARGIN_BENCH_FULL_C1", Parameters::c1());
-    let (_root, built, oracle) = build(&base);
+    let (root, built, oracle) = build(&base);
     let manifest = &built.manifest;
 
     // The manifest self-declares its provenance.
@@ -289,14 +296,14 @@ fn c1_generates_a_reproducible_daily_desk() {
 
     assert_conformant(&built, &oracle, &base, None);
     assert_classes_covered(manifest);
-    assert_rerun_reproduces(&built, &base);
+    assert_rerun_reproduces(root, &built, &base);
 }
 
 /// C2 at the default scale: the exact-total allocations hold.
 #[test]
 fn c2_generates_the_release_envelope() {
     let base = parameters("MARGIN_BENCH_FULL_C2", Parameters::c2());
-    let (_root, built, oracle) = build(&base);
+    let (root, built, oracle) = build(&base);
     let manifest = &built.manifest;
 
     let (total, max, changed_total, selected_bytes) = match base.sizes {
@@ -334,7 +341,7 @@ fn c2_generates_the_release_envelope() {
 
     assert_conformant(&built, &oracle, &base, None);
     assert_classes_covered(manifest);
-    assert_rerun_reproduces(&built, &base);
+    assert_rerun_reproduces(root, &built, &base);
 }
 
 /// C3 at the default scale: the pathological documents are included in
@@ -342,7 +349,7 @@ fn c2_generates_the_release_envelope() {
 #[test]
 fn c3_generates_the_stress_shape() {
     let base = parameters("MARGIN_BENCH_FULL_C3", Parameters::c3());
-    let (_root, built, oracle) = build(&base);
+    let (root, built, oracle) = build(&base);
     let manifest = &built.manifest;
 
     let (total, mass) = (
@@ -381,7 +388,7 @@ fn c3_generates_the_stress_shape() {
 
     assert_conformant(&built, &oracle, &base, None);
     assert_classes_covered(manifest);
-    assert_rerun_reproduces(&built, &base);
+    assert_rerun_reproduces(root, &built, &base);
 }
 
 /// Every C4 variant records expectations an independent Git oracle can

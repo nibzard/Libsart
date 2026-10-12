@@ -1,8 +1,45 @@
 # CI tier support
 
 This directory holds the pieces a verification tier needs beyond `cargo
-test` itself. The tmux pin is the first one (task T066); the tier jobs of
-SPEC 18.3 are wired by their own task (T052).
+test` itself: the tier gates of SPEC 18.3 (task T052) and the tool pins
+those gates install (tmux from T066, and the Git versions of the nightly
+support matrix).
+
+The tiers themselves:
+
+- `.github/workflows/pr-tier.yml` — the pull-request tier: lints, the
+  declared Rust minimum, the deterministic test gate at 256 generated
+  property cases, and the four small TLC profiles.
+- `.github/workflows/nightly-tier.yml` — the nightly tier: the Git/OS
+  support matrix, the 10,000-case property gate, all five TLC profiles
+  plus the mutation checks, and the full-scale stress corpora.
+- `ci/run-tier.sh <gate> [pr|nightly]` — every gate's commands. The
+  workflows call this script; the same command runs a gate locally. Each
+  run writes its log, tool versions, and timing line under
+  `ci/artifacts/<gate>-<tier>/`.
+- `ci/install-git.sh <version>` and `ci/git.sha256` — the pinned Git
+  releases of the nightly matrix, built from the official kernel.org
+  tarball into a private prefix.
+
+The claimed Rust, Git, Linux, and macOS versions, with the evidence
+behind each claim, live in
+[docs/verification-tiers.md](../docs/verification-tiers.md).
+
+## Shared build defaults
+
+`.cargo/config.toml` turns incremental compilation off and lowers the
+dev profile's debuginfo to line tables. Every gate builds cold — a
+pull-request run, a nightly matrix leg, and a fresh checkout each
+compile every crate once — so an incremental cache and full debuginfo
+were disk and time no gate used: the one-shot
+`cargo test --all-targets` target directory measured 3.4 GiB before the
+defaults and 1.5 GiB after them. Backtraces keep their line numbers
+(`RUST_BACKTRACE=1` is set by every gate); a session that wants full
+debugging overrides the defaults per invocation:
+
+```bash
+CARGO_INCREMENTAL=1 CARGO_PROFILE_DEV_DEBUG=2 cargo test
+```
 
 ## The pinned tmux
 
@@ -57,3 +94,27 @@ The pin is 3.4 because that is the release the composition claims were
 exercised against when the desk was built. Raise it together with
 `tmux.sha256` after running the desk suite against a newer release;
 never lower it below 3.1.
+
+## The pinned Git versions
+
+The nightly matrix runs the deterministic gate against more than the
+runner's system Git. `ci/install-git.sh <version>` builds one pinned
+release from the official kernel.org tarball after the checksum in
+`ci/git.sha256` matches, into a private prefix under
+`ci/artifacts/git/<version>/` (override with `GIT_BUILD_ROOT`), and
+prints the `bin` directory to put first on `PATH`. The build omits
+network and optional integrations (`NO_CURL`, `NO_OPENSSL`, `NO_TCLTK`,
+`NO_GETTEXT`, `NO_PERL`): the product uses local plumbing only, and a
+tier image needs no OpenSSL development headers.
+
+The pins and their roles:
+
+| Pin | Role |
+| --- | --- |
+| 2.45.0 | The oldest claimed upstream Git (the floor; see `docs/verification-tiers.md` for why older releases fail) |
+| 2.56.0 | The newest upstream release at the time of pinning |
+
+Raise the floor pin only with recorded evidence: the flag probes and the
+gate run against the candidate. Raise the latest pin together with
+`ci/git.sha256` whenever a new upstream release should join the matrix.
+

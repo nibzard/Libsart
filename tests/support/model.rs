@@ -321,13 +321,13 @@ impl Machine {
                 if parent != pending.head {
                     return Err(pinned_violation("Publish", &pending.head, parent));
                 }
-                if let Some(expected) = pending.index_tree.as_deref() {
-                    if expected != tree {
-                        return Err(format!(
-                            "Publish commits the tree {tree}, but the application verified \
-                             the index result {expected}"
-                        ));
-                    }
+                if let Some(expected) = pending.index_tree.as_deref()
+                    && expected != tree
+                {
+                    return Err(format!(
+                        "Publish commits the tree {tree}, but the application verified \
+                         the index result {expected}"
+                    ));
                 }
                 if let Some(existing) = self.receipts.get(request) {
                     return Err(format!(
@@ -342,11 +342,12 @@ impl Machine {
                     ));
                 }
                 if self.unseen_overwrite {
-                    return Err(format!(
+                    return Err(
                         "Publish follows one external write of a third value during the \
                          apply interval, which the model's publication guard refuses \
                          (NoUnseenOverwrite)"
-                    ));
+                            .to_string(),
+                    );
                 }
                 self.receipts.insert(request.to_string(), head.to_string());
                 self.appended.insert(head.to_string());

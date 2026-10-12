@@ -1543,7 +1543,10 @@ pub fn repository_policy_blockers(git: &Git) -> Result<Vec<PolicyBlocker>, Polic
     }
 
     // In-progress Git operations (SPEC 3.1), resolved by one process.
-    let names: Vec<&str> = OPERATION_MARKERS.iter().map(|(marker, _)| *marker).collect();
+    let names: Vec<&str> = OPERATION_MARKERS
+        .iter()
+        .map(|(marker, _)| *marker)
+        .collect();
     for ((_marker, blocker), path) in OPERATION_MARKERS.iter().zip(git.git_paths(&names)?) {
         if path.exists() {
             blockers.push(blocker.clone());
@@ -2831,19 +2834,27 @@ fn group_one_file_prepare<'a>(
     // Both sides' exact bytes: the source the grouping reads (SPEC 10.2
     // step 3), from the one batch that read every changed document.
     let before_bytes = match &entry.entry_before {
-        Some(before) => Some(blobs.get(&before.blob_oid).ok_or_else(|| {
-            ManifestError::PatchContract {
-                detail: format!("the before blob of {:?} was not batch-read", path),
-            }
-        })?),
+        Some(before) => {
+            Some(
+                blobs
+                    .get(&before.blob_oid)
+                    .ok_or_else(|| ManifestError::PatchContract {
+                        detail: format!("the before blob of {:?} was not batch-read", path),
+                    })?,
+            )
+        }
         None => None,
     };
     let after_bytes = match &entry.entry_after {
-        Some(after) => Some(blobs.get(&after.blob_oid).ok_or_else(|| {
-            ManifestError::PatchContract {
-                detail: format!("the after blob of {:?} was not batch-read", path),
-            }
-        })?),
+        Some(after) => {
+            Some(
+                blobs
+                    .get(&after.blob_oid)
+                    .ok_or_else(|| ManifestError::PatchContract {
+                        detail: format!("the after blob of {:?} was not batch-read", path),
+                    })?,
+            )
+        }
         None => None,
     };
     let before_text: Option<&str> = match before_bytes {
@@ -2878,8 +2889,8 @@ fn group_one_file_prepare<'a>(
         let presentation = if unreadable {
             markdown::opaque_presentation(
                 scope,
-                before_bytes.as_deref().map(Vec::as_slice),
-                after_bytes.as_deref().map(Vec::as_slice),
+                before_bytes.map(Vec::as_slice),
+                after_bytes.map(Vec::as_slice),
             )
         } else {
             let before = before_text.unwrap_or_default();
@@ -3212,25 +3223,29 @@ fn prove_group_rounds(
     // every answer comes back in group order whatever it is.
     let threads = groups.len().min(8);
     let chunk = groups.len().div_ceil(threads);
-    let answers: Vec<std::sync::Mutex<Option<Result<bool, ManifestError>>>> = groups
-        .iter()
-        .map(|_| std::sync::Mutex::new(None))
-        .collect();
+    let answers: Vec<std::sync::Mutex<Option<Result<bool, ManifestError>>>> =
+        groups.iter().map(|_| std::sync::Mutex::new(None)).collect();
     std::thread::scope(|scope| {
         for (worker, chunk_of_groups) in groups.chunks(chunk).enumerate() {
             let answers = &answers;
             scope.spawn(move || {
                 let base = worker * chunk;
                 for (offset, group) in chunk_of_groups.iter().enumerate() {
-                    *answers[base + offset].lock().expect("the answer slot is free") =
-                        Some(one_round(group));
+                    *answers[base + offset]
+                        .lock()
+                        .expect("the answer slot is free") = Some(one_round(group));
                 }
             });
         }
     });
     answers
         .into_iter()
-        .map(|answer| answer.into_inner().expect("the workers finished").expect("every group answered"))
+        .map(|answer| {
+            answer
+                .into_inner()
+                .expect("the workers finished")
+                .expect("every group answered")
+        })
         .collect()
 }
 
@@ -3293,7 +3308,10 @@ fn prove_chunk(git: &Git, files: &[ChunkFile<'_>]) -> Result<Vec<bool>, Manifest
         // typed and a disagreement names the writer (SPEC 16.6 item 2).
         let listed = probe.ls_files_stage()?;
         for file in files {
-            let expected = (file.after_entry.0.as_str().to_string(), file.after_entry.1.clone());
+            let expected = (
+                file.after_entry.0.as_str().to_string(),
+                file.after_entry.1.clone(),
+            );
             let read = listed
                 .iter()
                 .find(|entry| {
@@ -3318,7 +3336,11 @@ fn prove_chunk(git: &Git, files: &[ChunkFile<'_>]) -> Result<Vec<bool>, Manifest
             .map(|file| staged_shape(&Some(file.after_entry.clone())))
             .collect();
         let mut running = vec![true; files.len()];
-        let deepest = files.iter().map(|file| file.groups.len()).max().unwrap_or(0);
+        let deepest = files
+            .iter()
+            .map(|file| file.groups.len())
+            .max()
+            .unwrap_or(0);
         for round in 0..deepest {
             let members: Vec<usize> = (0..files.len())
                 .filter(|&at| running[at] && round < files[at].groups.len())
@@ -3355,10 +3377,7 @@ fn prove_chunk(git: &Git, files: &[ChunkFile<'_>]) -> Result<Vec<bool>, Manifest
                     running[at] = false;
                 }
             }
-            let forwards: Vec<usize> = members
-                .into_iter()
-                .filter(|&at| running[at])
-                .collect();
+            let forwards: Vec<usize> = members.into_iter().filter(|&at| running[at]).collect();
             if forwards.is_empty() {
                 continue;
             }
@@ -3451,9 +3470,7 @@ fn seed_probe_entry(
         ObjectFormat::Sha1 => 20,
         ObjectFormat::Sha256 => 32,
     };
-    let entry = after_entry
-        .as_ref()
-        .map(|(mode, oid)| (mode, oid.as_str()));
+    let entry = after_entry.as_ref().map(|(mode, oid)| (mode, oid.as_str()));
     write_probe_index(temp_index, width, entry, path).map_err(ManifestError::Io)
 }
 
@@ -3495,7 +3512,10 @@ fn write_probe_index_entries(
         stat[24..28].copy_from_slice(&mode_bits.to_be_bytes());
         bytes.extend_from_slice(&stat);
         let raw = decode_oid_bytes(oid).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "the entry object ID is not hex")
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the entry object ID is not hex",
+            )
         })?;
         bytes.extend_from_slice(&raw);
         let name = path.as_bytes();
@@ -3516,7 +3536,7 @@ fn write_probe_index_entries(
 
 /// Decodes one full lowercase hex object ID to its raw bytes.
 fn decode_oid_bytes(oid: &str) -> Option<Vec<u8>> {
-    if oid.len() % 2 != 0 {
+    if !oid.len().is_multiple_of(2) {
         return None;
     }
     let mut raw = Vec::with_capacity(oid.len() / 2);
@@ -3582,7 +3602,11 @@ fn staged_shape(entry: &Option<(EntryMode, String)>) -> Option<(String, String)>
 /// the same way, and a file this reader cannot understand — an index
 /// version or extension it does not parse — falls back to the adapter's
 /// `ls-files` read, never to a guess (SPEC 10.2 step 6, 17.5).
-fn staged_entry(probe: &Git, index_path: &Path, path: &str) -> Result<Option<(String, String)>, ManifestError> {
+fn staged_entry(
+    probe: &Git,
+    index_path: &Path,
+    path: &str,
+) -> Result<Option<(String, String)>, ManifestError> {
     // The object width decides the entry layout: a SHA-256 repository
     // stores 32-byte identifiers where a SHA-1 repository stores 20. The
     // adapter memoizes the format, so this costs one process per
@@ -3594,9 +3618,9 @@ fn staged_entry(probe: &Git, index_path: &Path, path: &str) -> Result<Option<(St
     match staged_entry_from_index_file(index_path, path, width) {
         Ok(entry) => Ok(entry),
         Err(IndexRead::Absent) => Ok(None),
-        Err(IndexRead::Unparsable) => {
-            probe.staged_entry_of(&OsString::from(path)).map_err(ManifestError::from)
-        }
+        Err(IndexRead::Unparsable) => probe
+            .staged_entry_of(&OsString::from(path))
+            .map_err(ManifestError::from),
     }
 }
 
@@ -3678,7 +3702,6 @@ fn staged_entry_from_index_file(
     }
     Ok(None)
 }
-
 
 // ---------------------------------------------------------------------------
 // Bounded detail pages (SPEC 6.3, 7.2)
@@ -4985,8 +5008,7 @@ impl HistoryWalk {
         let outcome = self.validate_marker_uncached(commit);
         match &outcome {
             Ok(marker) => {
-                self.markers
-                    .insert(commit.to_string(), Ok(marker.clone()));
+                self.markers.insert(commit.to_string(), Ok(marker.clone()));
             }
             Err(MarkerError::Invalid(problem)) => {
                 self.markers
@@ -5313,7 +5335,7 @@ impl From<io::Error> for BaselineError {
 /// such as the digest a recorded marker carries (SPEC 8.4 rule 2). The
 /// string form is what every comparison inside the walk uses, so receipt
 /// validation reuses the same walk without recomputing an identity.
-impl<'g> HistoryWalk {
+impl HistoryWalk {
     /// The baseline selection walk of SPEC 8.5 from `start`, over the
     /// prefetched ancestry.
     fn select_baseline_matching(
@@ -5465,19 +5487,17 @@ impl<'g> HistoryWalk {
                     // stays ordinary history and neither answers nor
                     // conflicts, whatever fingerprint it records.
                     if marker.kind == CommitKind::Review {
-                        match self
-                            .review_records_its_own_baseline(&marker, &marker.scope_digest)
-                        {
+                        match self.review_records_its_own_baseline(&marker, &marker.scope_digest) {
                             Ok(true) => {}
                             Ok(false) => {
                                 index += 1;
                                 continue;
                             }
                             Err(BaselineError::Git(error)) => {
-                                return Err(ReceiptScanError::Git(error))
+                                return Err(ReceiptScanError::Git(error));
                             }
                             Err(BaselineError::Io(error)) => {
-                                return Err(ReceiptScanError::Io(error))
+                                return Err(ReceiptScanError::Io(error));
                             }
                             Err(BaselineError::Unavailable(_)) => {
                                 index += 1;
@@ -5567,12 +5587,8 @@ impl<'g> HistoryWalk {
                             index += 1;
                             continue;
                         }
-                        Err(BaselineError::Git(error)) => {
-                            return Err(ReceiptScanError::Git(error))
-                        }
-                        Err(BaselineError::Io(error)) => {
-                            return Err(ReceiptScanError::Io(error))
-                        }
+                        Err(BaselineError::Git(error)) => return Err(ReceiptScanError::Git(error)),
+                        Err(BaselineError::Io(error)) => return Err(ReceiptScanError::Io(error)),
                         Err(BaselineError::Unavailable(_)) => {
                             index += 1;
                             continue;
@@ -5879,9 +5895,7 @@ fn classify_timeline_commit(
     commit: &str,
     path_filter: &[String],
 ) -> Result<ClassifiedCommit, OperationError> {
-    let object = walk
-        .commit_object(commit)
-        .map_err(|error| history_walk_failed(error))?;
+    let object = walk.commit_object(commit).map_err(history_walk_failed)?;
     let claimed = domain::parse_trailer_block(&object.message)
         .ok()
         .and_then(|trailers| {
@@ -7000,9 +7014,7 @@ pub fn read_local_settings(git: &Git) -> Result<LocalSettings, SettingsError> {
         domain::SETTINGS_KEY_CAPTURE_AFTER_EDIT,
         domain::SETTINGS_KEY_EDITOR_ARGV,
     ];
-    let values = git
-        .config_values(&keys)
-        .map_err(SettingsError::Git)?;
+    let values = git.config_values(&keys).map_err(SettingsError::Git)?;
     let setting = |key: &'static str| values.get(key).cloned();
     Ok(LocalSettings {
         version: parse_stored_setting(
@@ -8739,17 +8751,17 @@ impl<'a> Operations<'a> {
         let walk = walk.as_mut().expect("the constructor fills the walk");
         walk.find_receipt(&head, kind, request_id, fingerprint)
             .map_err(|error| {
-            OperationError {
-                code: error.public_code(),
-                message: format!(
-                    "the receipt scan did not complete, so the request {request_id} cannot be \
+                OperationError {
+                    code: error.public_code(),
+                    message: format!(
+                        "the receipt scan did not complete, so the request {request_id} cannot be \
                      shown absent and the mutation stays blocked: {error}"
-                ),
-                retryable: error.retryable(),
-                recovery_argv: Vec::new(),
-            }
-            .recovery(&["margin", "status", "--json"])
-        })
+                    ),
+                    retryable: error.retryable(),
+                    recovery_argv: Vec::new(),
+                }
+                .recovery(&["margin", "status", "--json"])
+            })
     }
 
     /// Inspects one workspace (SPEC 13.2 `inspect_workspace`, 4.2, 6.3).
@@ -8820,9 +8832,7 @@ impl<'a> Operations<'a> {
                 let walk = guard.as_mut().expect("the constructor fills the walk");
                 match walk.select_baseline(candidate, &resolved.digest) {
                     Ok(marker) => BaselineStatus::Anchored(Box::new(marker)),
-                    Err(BaselineError::Unavailable(reason)) => {
-                        BaselineStatus::Unavailable(reason)
-                    }
+                    Err(BaselineError::Unavailable(reason)) => BaselineStatus::Unavailable(reason),
                     Err(error) => {
                         return InspectResult::failure(
                             OperationError::from(error),
@@ -8830,7 +8840,7 @@ impl<'a> Operations<'a> {
                         );
                     }
                 }
-            },
+            }
             None => BaselineStatus::NoCandidate,
         };
 
@@ -10856,12 +10866,12 @@ impl<'a> Operations<'a> {
             None => 0,
         };
         let mut guard = self.history_walk();
-        let mut walk = guard.as_mut().expect("the constructor fills the walk");
+        let walk = guard.as_mut().expect("the constructor fills the walk");
         let history = match walk.own_history(&head) {
             Ok(history) => history,
             Err(error) => return failure(history_walk_failed(error)),
         };
-        let page = match timeline_page(&mut walk, &history, &contract, start, limit) {
+        let page = match timeline_page(walk, &history, &contract, start, limit) {
             Ok(page) => page,
             Err(error) => return failure(error),
         };
@@ -11851,10 +11861,10 @@ impl<'a> Operations<'a> {
             Ok(ReceiptLookup::Conflict {
                 commit, recorded, ..
             }) => {
-                if !request.dry_run {
-                    if let Some(trace) = self.trace.as_ref() {
-                        trace.submit_conflict(&plan.request_id);
-                    }
+                if !request.dry_run
+                    && let Some(trace) = self.trace.as_ref()
+                {
+                    trace.submit_conflict(&plan.request_id);
                 }
                 return failure(
                     request_id_conflict(&plan.request_id, &commit, &recorded),
@@ -13164,13 +13174,12 @@ impl<'a> Operations<'a> {
         // anchor is a reportable state, not a failure.
         let mut guard = self.history_walk();
         let walk = guard.as_mut().expect("the constructor fills the walk");
-        let baseline_oid = match walk
-            .select_baseline_matching(&receipt.candidate, &receipt.scope_digest)
-        {
-            Ok(marker) => Some(marker.commit),
-            Err(BaselineError::Unavailable(_)) => None,
-            Err(error) => return failure(error.into()),
-        };
+        let baseline_oid =
+            match walk.select_baseline_matching(&receipt.candidate, &receipt.scope_digest) {
+                Ok(marker) => Some(marker.commit),
+                Err(BaselineError::Unavailable(_)) => None,
+                Err(error) => return failure(error.into()),
+            };
 
         RestoreResult::success(
             RestoreOutcome {
@@ -13234,9 +13243,7 @@ impl<'a> Operations<'a> {
                 let walk = guard.as_mut().expect("the constructor fills the walk");
                 match walk.select_baseline(candidate, &resolved.digest) {
                     Ok(marker) => BaselineStatus::Anchored(Box::new(marker)),
-                    Err(BaselineError::Unavailable(reason)) => {
-                        BaselineStatus::Unavailable(reason)
-                    }
+                    Err(BaselineError::Unavailable(reason)) => BaselineStatus::Unavailable(reason),
                     Err(error) => return failure(OperationError::from(error)),
                 }
             }

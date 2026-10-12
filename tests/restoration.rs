@@ -954,7 +954,7 @@ fn case_shape(
     max_groups: usize,
 ) -> Vec<(bool, usize)> {
     if index < FIXED_SHAPES.len() {
-        let fixed: Vec<(bool, usize)> = FIXED_SHAPES[index].iter().copied().collect();
+        let fixed: Vec<(bool, usize)> = FIXED_SHAPES[index].to_vec();
         let total: usize = fixed.iter().map(|(_, regions)| regions).sum();
         if total >= min_groups && total <= max_groups {
             return fixed;
@@ -1193,7 +1193,7 @@ fn larger_generated_manifests_restore_sampled_subsets() {
     let cases = case_budget("MARGIN_RESTORATION_LARGE_CASES", DEFAULT_LARGE_CASES).max(2);
     let failures = run_parallel(cases, |index| {
         check_generated_case(
-            SEED_SALT ^ 0xA11C_E5_0000_0000 ^ index as u64,
+            SEED_SALT ^ 0x00A1_1CE5_0000_0000 ^ index as u64,
             index + 1000,
             9,
             12,

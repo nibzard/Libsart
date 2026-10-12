@@ -1,0 +1,1144 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (target/debug/deps/margin-d061f8e5dd945b21)
+
+running 151 tests
+test app::tests::blocker_codes_follow_the_exit_classes ... ok
+test app::tests::commit_observations_carry_their_object_id ... ok
+test app::tests::effect_values_match_the_json_envelope ... ok
+test app::tests::blocker_messages_stay_bounded ... ok
+test app::tests::lost_observations_never_narrow ... ok
+test app::tests::explicit_non_text_markings_stay_allowed ... ok
+test app::tests::outcomes_derive_success_from_the_error_slot ... ok
+test app::tests::git_boolean_values_parse ... ok
+test app::tests::receipt_refusals_carry_their_public_codes ... ok
+test app::tests::the_adopted_branch_compares_names_not_contexts ... ok
+test app::tests::recovery_argv_never_goes_beyond_its_observations ... ok
+test app::tests::transformation_attributes_report_their_value ... ok
+test app::tests::process_failures_keep_their_retryability ... ok
+test app::tests::the_operation_dimension_follows_recovery_evidence_only ... ok
+test app::tests::presentation_filters_match_only_on_components ... ok
+test cli::tests::display_escaping_keeps_newlines_and_tabs ... ok
+test cli::tests::command_paths_come_from_the_argv_walk ... ok
+test cli::tests::envelope_serializes_in_the_documented_shape ... ok
+test cli::tests::documented_examples_still_invoke_the_program ... ok
+test cli::tests::exit_classes_follow_the_spec_table ... ok
+test cli::tests::a_json_call_without_a_command_is_a_typed_failure ... ok
+test cli::tests::budgets_and_discovery_roots_are_validated ... ok
+test cli::tests::huge_arguments_stay_bounded ... ok
+test cli::tests::interactive_commands_reject_json ... ok
+test cli::tests::messages_are_bounded_and_carry_no_controls ... ok
+test cli::tests::outcome_envelopes_carry_operations_effects ... ok
+test cli::tests::parser_errors_are_caught_not_terminated ... ok
+test cli::tests::projected_change_detail_never_exceeds_its_weight ... ok
+test cli::tests::opposing_setup_flags_conflict ... ok
+test cli::tests::text_errors_go_to_stderr ... ok
+test cli::tests::json_is_detected_before_argument_errors ... ok
+test cli::tests::the_log_page_default_matches_the_domain_constant ... ok
+test cli::tests::the_raw_export_refuses_a_terminal_destination ... ok
+test domain::tests::a_stored_scope_reenters_as_user_input ... ok
+test domain::tests::canonical_bytes_match_the_specification_example ... ok
+test domain::tests::canonical_roots_sort_prune_and_absorb ... ok
+test cli::tests::version_and_help_stay_available_in_text_mode ... ok
+test domain::tests::canonical_writer_never_merges_adjacent_values ... ok
+test cli::tests::structured_help_lists_every_leaf_with_its_effect ... ok
+test domain::tests::commit_messages_carry_the_reserved_trailer_block ... ok
+test domain::tests::committed_maps_enforce_their_value_shapes ... ok
+test domain::tests::content_digest_covers_every_entry_field ... ok
+test domain::tests::content_entries_sort_by_path_bytes ... ok
+test domain::tests::document_paths_normalize_and_reject_escapes ... ok
+test domain::tests::directory_entries_match_boundaries_without_suffixes ... ok
+test domain::tests::committed_trailers_extract_into_one_map ... ok
+test domain::tests::first_use_settings_capture_nothing ... ok
+test domain::tests::manifest_digest_keeps_group_order ... ok
+test domain::tests::explicit_messages_cannot_inject_reserved_trailers ... ok
+test domain::tests::identity_and_request_shapes_follow_their_contracts ... ok
+test domain::tests::non_utf8_input_is_rejected_with_its_bytes ... ok
+test domain::tests::paths_match_roots_excludes_and_suffixes ... ok
+test domain::tests::oversized_setting_values_are_refused ... ok
+test domain::tests::plan_fingerprint_sorts_decisions_and_covers_every_field ... ok
+test domain::tests::prepared_values_must_have_the_documented_shapes ... ok
+test domain::tests::regular_file_modes_parse_and_render ... ok
+test domain::tests::restoration_plans_parse_strictly_and_pin_one_document ... ok
+test domain::tests::restoration_sources_use_one_canonical_line ... ok
+test domain::tests::review_and_change_inputs_carry_their_contract ... ok
+test domain::tests::review_and_restore_maps_require_their_receipt_fields ... ok
+test domain::tests::review_plans_parse_strictly_and_resolve_their_own_defaults ... ok
+test domain::tests::review_plans_refuse_every_structural_fault ... ok
+test domain::tests::roots_normalize_and_reject_escapes ... ok
+test domain::tests::setting_values_round_trip_through_their_documented_forms ... ok
+test domain::tests::stored_values_outside_the_documented_form_are_refused ... ok
+test domain::tests::suffixes_require_a_dot_and_lose_case ... ok
+test domain::tests::the_document_limits_match_the_spec_values ... ok
+test domain::tests::the_three_state_dimensions_use_the_spec_vocabulary ... ok
+test domain::tests::plan_problems_carry_the_public_error_codes ... ok
+test domain::tests::the_timeline_cursor_covers_its_whole_page_contract ... ok
+test domain::tests::trailer_blocks_parse_strictly ... ok
+test domain::tests::the_parsed_plan_feeds_the_plan_fingerprint ... ok
+test git::tests::commit_objects_parse_headers_and_exact_message ... ok
+test git::tests::inherited_redirection_is_refused ... ok
+test git::tests::ls_files_records_parse_strictly ... ok
+test git::tests::empty_staging_list_never_spawns ... ok
+test git::tests::ls_files_verbose_records_parse_strictly ... ok
+test git::tests::nul_records_drop_only_the_trailing_empty_record ... ok
+test git::tests::oid_validation_accepts_both_formats_lowercase_only ... ok
+test git::tests::own_overrides_are_allowed ... ok
+test git::tests::rev_list_lines_parse_strictly ... ok
+test integrations::claude::tests::a_non_object_payload_is_malformed ... ok
+test integrations::claude::tests::a_valid_payload_pins_the_supported_contract ... ok
+test integrations::claude::tests::an_empty_payload_is_one_missing_event ... ok
+test git::tests::ls_tree_records_parse_strictly ... ok
+test integrations::claude::tests::an_oversized_payload_is_refused_before_any_parse ... ok
+test integrations::claude::tests::every_boundary_names_its_row_of_the_policy_table ... ok
+test integrations::claude::tests::an_unnamed_or_unsupported_event_is_refused ... ok
+test integrations::claude::tests::installation_appends_one_entry_per_uncovered_event ... ok
+test integrations::claude::tests::one_unreadable_configuration_is_refused_before_any_plan ... ok
+test git::tests::version_line_rejects_empty_output ... ok
+test cli::tests::help_and_version_json_are_envelopes ... ok
+test integrations::claude::tests::pinned_fields_must_hold_the_pinned_types ... ok
+test integrations::claude::tests::planning_an_install_over_a_full_configuration_changes_nothing ... ok
+test integrations::claude::tests::one_replacement_keeps_the_targets_permission_bits ... ok
+test integrations::claude::tests::removal_drops_the_hooks_object_only_once_it_is_empty ... ok
+test integrations::claude::tests::removal_keeps_the_user_hooks_of_one_shared_group ... ok
+test integrations::claude::tests::the_fingerprint_tracks_every_byte_of_the_file ... ok
+test integrations::claude::tests::unknown_fields_are_ignored ... ok
+test integrations::tmux::tests::a_dead_agent_is_reported_honestly ... ok
+test integrations::tmux::tests::control_characters_never_reach_the_report_lines ... ok
+test integrations::claude::tests::one_write_creates_the_file_only_inside_the_explicit_action ... ok
+test integrations::tmux::tests::the_agent_argv_is_explicit_and_bounded ... ok
+test integrations::claude::tests::one_write_refuses_when_the_target_moved_under_the_plan ... ok
+test integrations::tmux::tests::the_report_names_every_surface_and_behavior ... ok
+test integrations::tmux::tests::the_session_name_skips_every_taken_name ... ok
+test integrations::tmux::tests::two_columns_start_at_the_desk_width ... ok
+test markdown::tests::a_moved_passage_couples_its_two_hunks ... ok
+test markdown::tests::distant_list_items_stay_independent_but_one_fence_couples ... ok
+test markdown::tests::headings_and_front_matter_group_by_structure ... ok
+test markdown::tests::presentation_reports_exact_offsets_and_word_hints ... ok
+test markdown::tests::reference_and_footnote_relations_fall_back_to_the_whole_file ... ok
+test markdown::tests::reordered_lines_get_no_word_hints ... ok
+test markdown::tests::structures_carry_source_line_ranges ... ok
+test markdown::tests::unbalanced_raw_html_falls_back_to_the_whole_file ... ok
+test markdown::tests::two_lists_stay_independent ... ok
+test markdown::tests::whitespace_and_invisible_changes_carry_markers ... ok
+test tui::changes::tests::bounded_excerpts_state_what_they_hid ... ok
+test tui::changes::tests::counts_cover_decisions_and_unvisited_scope ... ok
+test tui::changes::tests::decisions_toggle_undo_and_stay_in_memory ... ok
+test tui::changes::tests::incomplete_or_unactionable_comparisons_label_groups_unavailable ... ok
+test tui::changes::tests::opaque_sides_render_as_bounded_hexadecimal ... ok
+test tui::changes::tests::selection_moves_between_groups_and_follows_scrolling ... ok
+test tui::changes::tests::stale_comparisons_relabel_every_group_and_refuse_decisions ... ok
+test markdown::tests::hunk_lines_split_bodies_by_prefix ... ok
+test integrations::tmux::tests::the_missing_tmux_refusal_explains_the_tab_alternative ... ok
+test tui::changes::tests::states_label_themselves_in_words ... ok
+test tui::history::tests::one_side_names_absence_and_emptiness_in_distinct_words ... ok
+test tui::changes::tests::the_source_view_states_exact_coordinates_and_bytes ... ok
+test tui::history::tests::timestamps_pair_the_local_clock_with_the_exact_value ... ok
+test tui::layout::tests::a_zero_sized_frame_is_total ... ok
+test tui::layout::tests::every_rect_stays_inside_the_frame ... ok
+test tui::layout::tests::medium_frames_drop_the_list ... ok
+test tui::layout::tests::narrow_frames_shrink_the_measure ... ok
+test tui::layout::tests::the_width_classes_follow_the_spec_table ... ok
+test tui::layout::tests::wide_frames_show_the_list_and_cap_the_measure ... ok
+test tui::layout::tests::tiny_frames_stay_a_single_surface ... ok
+test tui::refresh::tests::a_cleared_blocker_states_the_recovery ... ok
+test tui::refresh::tests::a_changed_scope_and_changed_eligibility_name_their_categories ... ok
+test tui::refresh::tests::a_matching_workspace_reports_no_arrival ... ok
+test tui::refresh::tests::dirty_scoped_files_name_new_content ... ok
+test tui::refresh::tests::a_moved_head_names_new_content ... ok
+test tui::wrap::tests::anchors_resolve_forward_to_rows ... ok
+test tui::wrap::tests::a_word_wider_than_the_row_splits_at_cells ... ok
+test tui::wrap::tests::blank_source_lines_keep_their_rows ... ok
+test tui::wrap::tests::empty_text_is_one_empty_row ... ok
+test tui::wrap::tests::short_lines_stay_one_row_each ... ok
+test tui::wrap::tests::wide_characters_count_their_cells ... ok
+test tui::wrap::tests::words_wrap_at_spaces_and_drop_them ... ok
+test tui::changes::tests::the_column_renders_every_group_with_its_context ... ok
+test tui::wrap::tests::zero_width_is_treated_as_one_cell ... ok
+
+test result: ok. 151 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/main.rs (target/debug/deps/margin-000df83d18266f9d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/baseline_selection.rs (target/debug/deps/baseline_selection-5864f2150a05b160)
+
+running 11 tests
+test a_restore_never_advances_the_baseline ... ok
+test a_new_start_resets_the_anchor ... ok
+test a_foreign_start_blocks_older_approval_of_the_returned_scope ... ok
+test history_without_markers_has_no_baseline ... ok
+test a_review_without_any_anchor_below_it_cannot_anchor_the_scope ... ok
+test grafted_history_returns_baseline_unavailable ... ok
+test sha256_repositories_select_their_anchor ... ok
+test a_review_must_record_the_baseline_the_walk_selects ... ok
+test shallow_history_returns_baseline_unavailable ... ok
+test ordinary_commits_and_external_merges_leave_the_prior_baseline ... ok
+test the_walk_stops_at_the_nearest_marker_and_sees_empty_commits ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.90s
+
+     Running tests/bench_corpora.rs (target/debug/deps/bench_corpora-9c29a8fd98810ca3)
+
+running 22 tests
+test c3_generates_the_stress_shape ... ok
+test corpus::build::tests::conflicting_lines_differ_same_length ... ok
+test corpus::build::tests::hunk_counting_reads_headers ... ok
+test corpus::edits::tests::claim_and_link_edits_keep_line_length ... ok
+test corpus::edits::tests::edits_land_apart_and_change_content ... ok
+test corpus::edits::tests::word_swap_requires_whole_words ... ok
+test corpus::plan::tests::exact_totals_allocate_exactly ... ok
+test corpus::plan::tests::full_definitions_match_spec_17_2 ... ok
+test corpus::plan::tests::layouts_fill_their_budgets ... ok
+test corpus::plan::tests::test_scales_keep_their_invariants ... ok
+test corpus::rng::tests::same_seed_same_sequence ... ok
+test corpus::rng::tests::splitmix64_reference_sequence ... ok
+test corpus::text::tests::repeated_lines_hit_the_exact_total ... ok
+test corpus::text::tests::swap_pairs_keep_their_lengths ... ok
+test corpus::text::tests::tail_hits_the_exact_total ... ok
+test corpus::text::tests::wrap_respects_the_width ... ok
+test definitions_match_spec_17_2 ... ok
+test holdout_set_is_curated_and_excluded ... ok
+test c1_generates_a_reproducible_daily_desk ... ok
+test seeds_change_the_corpus ... ok
+test c2_generates_the_release_envelope ... ok
+test c4_variants_record_independent_state ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.76s
+
+     Running tests/bench_harness.rs (target/debug/deps/bench_harness-f4d595edec646b9e)
+
+running 45 tests
+test a_not_measured_registry_still_distinguishes_every_status ... ok
+test a_registered_runner_record_carries_actual_details ... ok
+test a_fast_incorrect_command_fails_the_benchmark ... ok
+test an_unassigned_environment_blocks_measurement_without_writing_records ... ok
+test corpus::build::tests::conflicting_lines_differ_same_length ... ok
+test corpus::build::tests::hunk_counting_reads_headers ... ok
+test corpus::edits::tests::claim_and_link_edits_keep_line_length ... ok
+test corpus::edits::tests::edits_land_apart_and_change_content ... ok
+test corpus::edits::tests::word_swap_requires_whole_words ... ok
+test corpus::plan::tests::exact_totals_allocate_exactly ... ok
+test corpus::plan::tests::full_definitions_match_spec_17_2 ... ok
+test corpus::plan::tests::layouts_fill_their_budgets ... ok
+test corpus::plan::tests::test_scales_keep_their_invariants ... ok
+test corpus::rng::tests::same_seed_same_sequence ... ok
+test corpus::rng::tests::splitmix64_reference_sequence ... ok
+test corpus::text::tests::repeated_lines_hit_the_exact_total ... ok
+test corpus::text::tests::swap_pairs_keep_their_lengths ... ok
+test corpus::text::tests::tail_hits_the_exact_total ... ok
+test corpus::text::tests::wrap_respects_the_width ... ok
+test a_checkpoint_run_resets_the_dirty_state_before_every_iteration ... ok
+test perf::envrec::tests::a_registered_record_round_trips ... ok
+test perf::envrec::tests::probing_this_machine_records_actual_details ... ok
+test perf::envrec::tests::rfc3339_matches_known_moments ... ok
+test perf::envrec::tests::the_unassigned_record_invents_nothing ... ok
+test perf::hash::tests::known_vectors ... ok
+test perf::metric::tests::the_example_record_of_spec_17_8_carries_its_budget ... ok
+test perf::metric::tests::the_table_matches_spec_17_4 ... ok
+test perf::oracle::tests::a_broken_envelope_is_rejected_for_the_right_reason ... ok
+test perf::record::tests::a_not_measured_resource_metric_has_no_latency_budget ... ok
+test perf::record::tests::every_status_and_oracle_state_round_trips ... ok
+test perf::record::tests::the_initial_record_matches_the_spec_17_8_example ... ok
+test perf::runner::tests::an_unassigned_environment_refuses_to_measure ... ok
+test perf::samples::tests::a_round_trip_keeps_every_run ... ok
+test perf::stats::tests::a_large_increase_blocks_and_a_small_one_does_not ... ok
+test perf::stats::tests::nearest_rank_matches_the_policy ... ok
+test perf::stats::tests::the_same_seed_repeats_the_same_interval ... ok
+test perf::timing::tests::a_nonzero_exit_is_reported_not_hidden ... ok
+test perf::timing::tests::the_window_spans_creation_sleep_and_full_delivery ... ok
+test invalidating_a_block_preserves_its_samples_and_recomputes ... ok
+test the_boundary_spans_creation_through_exit_and_full_delivery ... ok
+test the_initial_result_records_are_not_measured_with_their_budgets ... ok
+test the_shipped_environment_record_is_unassigned_and_invents_nothing ... ok
+test pty_and_resource_metrics_stay_not_measured_under_this_harness ... ok
+test a_selective_review_run_matches_the_independent_plumbing ... ok
+test a_query_run_records_paired_samples_and_an_honest_verdict ... ok
+
+test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.26s
+
+     Running tests/c0_corpus.rs (target/debug/deps/c0_corpus-5f05debdaea918a9)
+
+running 5 tests
+test grouping_expectations_partition_complete_hunks ... ok
+test corpus_covers_every_required_class ... ok
+test whole_file_fallbacks_are_recorded_for_conservative_classes ... ok
+test corpus_has_at_least_60_reviewed_pairs ... ok
+test recorded_expectations_reproduce_through_stock_git ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.74s
+
+     Running tests/change_manifest.rs (target/debug/deps/change_manifest-aacf144d139cbb18)
+
+running 19 tests
+test empty_change_set_yields_empty_manifest ... ok
+test entries_match_the_raw_oracle ... ok
+test invalid_revisions_fail_typed ... ok
+test hostile_configuration_cannot_change_the_contract ... ok
+test manifest_digest_covers_full_patch_bytes ... ok
+test identities_are_stable_and_input_sensitive ... ok
+test mode_only_change_is_captured ... ok
+test parser_accepts_a_well_formed_patch ... ok
+test parser_rejects_broken_streams ... ok
+test opaque_binary_changes_are_whole_file ... ok
+test odd_paths_stay_literal ... ok
+test patch_bytes_match_stock_git ... ok
+test prose_edit_yields_one_whole_file_group ... ok
+test rename_is_deletion_plus_addition ... ok
+test scope_limits_the_manifest ... ok
+test stored_symlink_blocks_the_manifest ... ok
+test sha256_repositories_work ... ok
+test whitespace_and_final_newline_stay_exact ... ok
+test many_paths_batch_through_processes ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.96s
+
+     Running tests/checkpoint.rs (target/debug/deps/checkpoint-a53c4f0ad8e21a25)
+
+running 39 tests
+test a_branch_that_switches_before_staging_refuses_without_writing ... ok
+test a_concurrent_writer_cannot_smuggle_out_of_scope_staging ... ok
+test a_draft_after_an_ordinary_commit_keeps_the_prior_baseline ... ok
+test a_branch_switch_after_adoption_refuses_the_checkpoint ... ok
+test a_head_that_moves_before_staging_refuses_without_writing ... ok
+test a_dry_run_reports_the_intended_tree_without_writing ... ok
+test a_head_that_moves_before_the_recovery_commit_refuses_without_writing ... ok
+test a_hook_that_edits_working_files_before_rejecting_is_reported ... ok
+test a_held_lock_refuses_the_checkpoint_as_busy ... ok
+test a_hook_that_rewrites_trailers_reports_a_contract_violation ... ok
+test a_path_kind_that_changes_before_staging_refuses_without_writing ... ok
+test a_killed_commit_process_keeps_the_outcome_unknown ... ok
+test a_rejecting_hook_leaves_staged_changes_with_exact_effects ... ok
+test a_refusal_releases_the_lock_for_the_next_operation ... ok
+test a_staging_failure_reports_the_inspected_state ... ok
+test a_successful_hook_that_edits_working_files_reports_changed_effects ... ok
+test an_index_that_changes_before_staging_refuses_without_writing ... ok
+test a_writer_change_after_staging_is_reported_not_saved ... ok
+test an_invalid_message_refuses_before_anything_is_staged ... ok
+test an_ordinary_capture_reports_unchanged_working_files ... ok
+test an_output_limit_failure_after_the_commit_reports_it ... ok
+test an_uninspectable_final_working_state_reports_unknown_effects ... ok
+test checkpoints_work_in_sha256_repositories ... ok
+test checkpoints_commit_exactly_the_eligible_changes ... ok
+test detached_head_and_unadopted_workspaces_keep_their_refusals ... ok
+test the_cli_checkpoint_on_another_branch_reports_the_refusal ... ok
+test out_of_scope_dirt_stays_out_of_the_capture ... ok
+test scoped_bytes_that_change_before_staging_refuse_without_writing ... ok
+test index_flags_refuse_the_checkpoint_before_mutation ... ok
+test the_cli_checkpoint_refuses_hidden_content_with_one_envelope ... ok
+test the_cli_checkpoint_reports_one_envelope ... ok
+test the_cli_checkpoint_waits_for_a_held_mutation_lock ... ok
+test the_recovery_capture_dry_run_writes_nothing ... ok
+test the_guarded_recovery_capture_saves_inspected_staged_content ... ok
+test the_recovery_capture_refuses_moved_expected_fingerprints ... ok
+test the_recovery_capture_refuses_staged_bytes_that_differ_from_working_content ... ok
+test unborn_and_uninitialized_workspaces_refuse_without_writing ... ok
+test the_recovery_capture_refuses_unrelated_staged_content ... ok
+test unchanged_content_is_the_documented_no_op ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.75s
+
+     Running tests/cli_contract.rs (target/debug/deps/cli_contract-3437fbd396a9a17f)
+
+running 28 tests
+test a_failing_git_subprocess_is_exit_class_five ... ok
+test a_huge_argument_stays_bounded ... ok
+test a_large_export_into_an_abandoned_pipe_still_terminates ... ok
+test an_unknown_command_reports_no_command ... ok
+test commands_without_algorithms_refuse_typed_and_unchanged ... ok
+test every_json_call_emits_exactly_one_valid_envelope ... ok
+test a_git_beyond_the_budget_reports_an_unknown_outcome ... ok
+test help_and_version_stay_available_in_text_mode ... ok
+test help_json_lists_the_specified_command_inventory ... ok
+test hook_claude_answers_outside_the_envelope ... ok
+test a_checkpoint_on_another_branch_is_exit_class_three ... ok
+test hook_setup_commands_use_the_envelope ... ok
+test interactive_commands_reject_json_with_a_typed_error ... ok
+test invocation_bounds_are_typed_invalid_input ... ok
+test opposing_setup_flags_conflict ... ok
+test parser_errors_use_one_envelope_before_and_after_the_command ... ok
+test init_validates_the_editor_argv_setting ... ok
+test status_outside_any_repository_is_not_initialized ... ok
+test status_without_stored_settings_is_not_initialized ... ok
+test text_mode_reports_parser_errors_on_stderr ... ok
+test a_closed_pipe_loses_only_the_envelope ... ok
+test restore_reads_one_plan_from_standard_input ... ok
+test index_flags_never_hide_unsaved_content ... ok
+test version_json_inside_a_repository_reports_the_object_format ... ok
+test version_json_reports_build_schema_engine_and_git ... ok
+test the_recovery_capture_needs_its_expected_state_on_the_command_line ... ok
+test the_binary_answers_without_any_terminal ... ok
+test the_example_walkthrough_still_invokes_the_program ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.68s
+
+     Running tests/commit_metadata.rs (target/debug/deps/commit_metadata-046aa8c6046f9a35)
+
+running 14 tests
+test explicit_messages_cannot_inject_reserved_trailers ... ok
+test candidate_and_parent_must_agree ... ok
+test forged_result_trees_and_copied_trailers_never_validate ... ok
+test copied_trailer_counts_and_values_stay_invalid ... ok
+test hook_appending_unreserved_trailers_stays_valid ... ok
+test draft_review_and_restore_markers_validate_in_sequence ... ok
+test hook_that_changes_content_fails_verification ... ok
+test hook_that_rewrites_reserved_trailers_fails_verification ... ok
+test index_mismatch_blocks_the_commit_before_it_happens ... ok
+test rejecting_hook_leaves_no_commit ... ok
+test sha256_repositories_carry_their_own_identity_width ... ok
+test ineligible_start_entries_block_the_root_case ... ok
+test start_markers_validate_on_an_unborn_branch ... ok
+test shallow_history_and_grafts_and_replacements_never_validate ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.32s
+
+     Running tests/diff_results.rs (target/debug/deps/diff_results-eb3faedf45271565)
+
+running 10 tests
+test diff_needs_a_scope_and_an_anchor ... ok
+test one_change_selection_and_unknown_changes ... ok
+test the_byte_bound_stops_a_page_and_truncates_presentations ... ok
+test the_operation_layer_serves_the_same_pages ... ok
+test whole_scope_identity_and_totals_survive_the_path_filter ... ok
+test one_groups_own_hints_and_ranges_never_break_the_page_bound ... ok
+test working_previews_are_non_actionable_and_write_nothing ... ok
+test working_previews_see_content_hidden_by_index_flags ... ok
+test detail_pages_obey_the_default_group_bound_and_continue ... ok
+test cursors_reject_changed_context_and_edits ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.25s
+
+     Running tests/edit_handoff.rs (target/debug/deps/edit_handoff-c2e5b0b3235123f3)
+
+running 7 tests
+test an_editor_that_cannot_start_is_one_typed_failure ... ok
+test edit_hands_the_literal_path_and_reports_the_refreshed_state ... ok
+test a_failing_editor_exit_never_captures_even_under_the_policy ... ok
+test escaping_paths_are_rejected_before_anything_runs ... ok
+test edit_captures_one_draft_only_under_the_stored_policy ... ok
+test edit_refuses_without_a_terminal_and_touches_nothing ... ok
+test edit_refuses_when_no_editor_is_configured ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.86s
+
+     Running tests/editorial_log.rs (target/debug/deps/editorial_log-f0bd4c1851b4c2ae)
+
+running 13 tests
+test an_unadopted_workspace_and_both_formats_behave_typed ... ok
+test all_checkpoints_lists_every_collapsed_draft_again ... ok
+test a_short_page_keeps_baseline_discovery_whole ... ok
+test a_cursor_beyond_a_filtered_timeline_names_no_held_position ... ok
+test forged_markers_keep_their_claimed_kind_with_a_reason ... ok
+test order_is_ancestry_even_against_the_committer_clock ... ok
+test long_subjects_bound_their_entries ... ok
+test every_timeline_query_leaves_the_repository_unchanged ... ok
+test the_limit_bound_is_typed_invalid_input ... ok
+test the_path_filter_hides_entries_without_narrowing_the_walk ... ok
+test the_text_view_lists_one_line_per_entry ... ok
+test pages_carry_bound_cursors_and_refuse_every_changed_context ... ok
+test the_timeline_labels_validated_markers_in_ancestry_order ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.68s
+
+     Running tests/failure_phases.rs (target/debug/deps/failure_phases-630d53362a2c535a)
+
+running 15 tests
+test a_busy_lock_refuses_the_restoration_and_releases ... ok
+test a_failed_disposable_index_touches_no_real_state ... ok
+test a_missing_object_fails_typed_and_preserves_the_state ... ok
+test a_capture_under_a_write_quota_fails_typed_and_recovers ... ok
+test a_process_crash_after_the_commit_loses_the_response_not_the_receipt ... ok
+test a_permission_failure_during_the_apply_is_typed_and_recoverable ... ok
+test a_settings_update_over_a_locked_configuration_fails_typed ... ok
+test a_rejected_restoration_commit_retains_the_applied_result ... ok
+test a_settings_update_survives_one_concurrent_config_edit ... ok
+test a_rejected_resumption_keeps_the_retained_result_and_recovers ... ok
+test a_restoration_hook_that_edits_then_rejects_is_reported ... ok
+test a_trailer_rewrite_during_a_restoration_is_a_contract_violation ... ok
+test an_output_limit_after_the_restoration_commit_names_the_commit ... ok
+test a_timed_out_review_commit_reports_an_unknown_outcome_and_recovers ... ok
+test an_interrupted_application_leaves_the_retained_state_recoverable ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.32s
+
+     Running tests/formal_extraction.rs (target/debug/deps/formal_extraction-bf22397761f02fbd)
+
+running 1 test
+test formal_sources_match_spec_appendix_a ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/formal_mutations.rs (target/debug/deps/formal_mutations-7b37701eb08f834a)
+
+running 2 tests
+test mutation_cases_reference_real_configs_and_detectors ... ok
+test mutation_patches_still_apply_to_the_canonical_model ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/git_adapter.rs (target/debug/deps/git_adapter-0c47671d0cf25520)
+
+running 15 tests
+test child_environment_is_fixed_by_mode ... ok
+test argv_and_nul_protocols_handle_unusual_names ... ok
+test inherited_redirection_is_refused_and_overrides_are_explicit ... ok
+test both_object_formats_report_and_resolve ... ok
+test changed_path_listings_report_without_rewriting_the_index ... ok
+test literal_pathspecs_never_glob_or_apply_magic ... ok
+test nonzero_exits_are_typed ... ok
+test malformed_git_output_is_typed ... ok
+test stdin_is_closed_unless_a_protocol_feeds_it ... ok
+test output_is_bounded ... ok
+test queries_leave_a_stat_stale_index_untouched ... ok
+test version_reporting_matches_the_harness_record ... ok
+test write_tree_rewrites_the_index_it_addresses_even_in_query_mode ... ok
+test lazy_fetch_is_disabled_in_partial_clones ... FAILED
+test time_budgets_kill_a_hung_child ... ok
+
+failures:
+
+---- lazy_fetch_is_disabled_in_partial_clones stdout ----
+
+thread 'lazy_fetch_is_disabled_in_partial_clones' (4014976) panicked at tests/git_adapter.rs:705:10:
+a promisor blob must not be fetched implicitly: [98, 111, 100, 121, 10]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/result.rs:1870:5
+   3: <core::result::Result<alloc::vec::Vec<u8>, margin::git::GitError>>::expect_err
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/result.rs:1296:22
+   4: git_adapter::lazy_fetch_is_disabled_in_partial_clones
+             at ./tests/git_adapter.rs:705:10
+   5: git_adapter::lazy_fetch_is_disabled_in_partial_clones::{closure#0}
+             at ./tests/git_adapter.rs:671:46
+   6: <git_adapter::lazy_fetch_is_disabled_in_partial_clones::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    lazy_fetch_is_disabled_in_partial_clones
+
+test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
+
+error: test failed, to rerun pass `--test git_adapter`
+     Running tests/git_harness.rs (target/debug/deps/git_harness-7fa2c641e28413ea)
+
+running 10 tests
+test environment_report_records_git_and_os_versions ... ok
+test configuration_comes_only_from_the_test_environment ... ok
+test inherited_git_variables_are_scrubbed ... ok
+test fresh_repositories_are_independent_and_unborn ... ok
+test custom_configuration_variants_are_dedicated ... ok
+test sha256_repositories_are_supported ... ok
+test oracles_read_refs_index_trees_bytes_and_modes ... ok
+test out_of_scope_tree_entries_stay_comparable ... ok
+test fixture_identity_and_dates_are_deterministic ... ok
+test snapshots_compare_working_bytes_and_sentinels ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/git_matrix.rs (target/debug/deps/git_matrix-3493b06fea80b989)
+
+running 6 tests
+test a_scope_changed_after_the_review_refuses_the_pinned_plan ... ok
+test a_failing_signer_stops_typed_and_recovers ... ok
+test an_oversized_document_stays_preserved_and_unapproved ... ok
+test signed_markers_validate_and_stock_git_verifies_them ... ok
+test removing_local_configuration_keeps_every_version_readable ... ok
+test long_first_parent_histories_stay_correct_and_bounded ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.97s
+
+     Running tests/grouping.rs (target/debug/deps/grouping-84a029ef9dcc7d5c)
+
+running 11 tests
+test corpus_content_covers_opaque_bytes ... ok
+test grouping_never_touches_repository_state ... ok
+test invalid_revisions_fail_typed ... ok
+test non_utf8_content_is_opaque ... ok
+test identities_arrive_after_grouping ... ok
+test one_long_list_forms_independent_item_passages ... ok
+test presence_and_mode_transitions_are_whole_file ... ok
+test presentation_exposes_links_and_whitespace ... ok
+test sha256_repositories_group_the_same_way ... ok
+test group_patches_reproduce_recorded_restorations ... ok
+test corpus_grouping_matches_reviewed_expectations ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.87s
+
+     Running tests/hook_setup.rs (target/debug/deps/hook_setup-22797c533fa1d613)
+
+running 9 tests
+test dry_run_reports_the_patch_contract_and_capabilities_without_writing ... ok
+test a_repeated_install_is_one_clear_no_op ... ok
+test an_unusable_configuration_refuses_without_writing ... ok
+test a_repeated_remove_is_one_clear_no_op ... ok
+test install_creates_the_missing_file_with_one_entry_per_event ... ok
+test install_preserves_unrelated_keys_and_user_hooks ... ok
+test outside_any_repository_there_is_no_project_to_configure ... ok
+test install_then_remove_round_trips_the_user_configuration ... ok
+test remove_deletes_only_the_identifiable_margin_entries ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/identities.rs (target/debug/deps/identities-4dad0762fffc6049)
+
+running 9 tests
+test content_id_changes_with_every_entry_and_with_absence ... ok
+test content_id_matches_stock_git_and_pins_the_v1_encoding ... ok
+test identities_are_domain_separated ... ok
+test review_change_and_plan_ids_match_stock_git_bytes ... ok
+test scoped_content_digest_follows_the_scope_not_the_whole_tree ... ok
+test identities_work_in_sha1_and_sha256_repositories ... ok
+test unsupported_stored_entries_refuse_instead_of_narrowing ... ok
+test working_digest_hashes_raw_bytes_with_mode_and_presence ... ok
+test batched_working_hashes_match_single_blob_hashes ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.88s
+
+     Running tests/initialization.rs (target/debug/deps/initialization-1f86f38d1f2abb0b)
+
+running 36 tests
+test a_created_repository_survives_a_failed_capture ... ok
+test a_held_lock_refuses_first_use_initialization_as_busy ... ok
+test a_head_that_moves_before_init_staging_refuses_without_writing ... ok
+test a_hook_that_edits_working_files_is_reported_as_changed ... ok
+test a_changed_scope_creates_its_own_anchor ... ok
+test a_held_lock_refuses_repeat_initialization_settings_as_busy ... ok
+test a_missing_anchor_reinitializes_explicitly ... ok
+test a_rejecting_hook_leaves_staged_content_and_withholds_settings ... ok
+test a_repeat_that_supplies_nothing_writes_nothing ... ok
+test a_settings_failure_reports_the_verified_commit ... ok
+test a_repeat_dry_run_plans_only_the_supplied_settings ... ok
+test a_staging_failure_reports_the_inspected_index ... ok
+test an_already_saved_tree_yields_an_empty_start_commit ... ok
+test an_init_staging_that_diverges_from_the_intended_tree_refuses_before_committing ... ok
+test an_unborn_empty_scope_anchors_the_empty_tree ... ok
+test an_unborn_capture_failure_reports_the_observed_state ... ok
+test create_repo_dry_run_proposes_without_creating ... ok
+test an_invalid_start_marker_reports_the_created_commit ... ok
+test create_repo_initializes_the_repository_and_captures ... ok
+test create_repo_adoption_waits_for_the_mutation_lock ... ok
+test a_to_b_to_a_uses_the_new_anchor_not_the_old_approval ... ok
+test create_repo_names_the_initial_branch ... ok
+test existing_staged_changes_block_setup ... ok
+test init_without_a_repository_or_scope_fails_typed ... ok
+test dry_run_reports_the_plan_without_writing ... ok
+test missing_identity_is_an_actionable_setup_error ... ok
+test explicit_init_on_another_branch_adopts_it ... ok
+test first_use_captures_scoped_content_in_a_valid_start_commit ... ok
+test scoped_bytes_that_move_before_init_staging_refuse_without_writing ... ok
+test new_start_forces_a_fresh_anchor ... ok
+test repeat_initialization_updates_only_supplied_settings ... ok
+test retry_after_a_settings_failure_adopts_the_validated_marker ... ok
+test the_executable_initializes_through_the_shared_operation ... ok
+test the_executable_repeats_initialization_without_a_new_commit ... ok
+test unborn_initialization_creates_the_root_start_marker ... ok
+test the_expected_branch_asserts_the_adopted_branch ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.31s
+
+     Running tests/integrations.rs (target/debug/deps/integrations-e562315d9e06a9ab)
+
+running 15 tests
+test a_failed_session_boundary_is_best_effort_only ... ok
+test a_refused_prompt_capture_blocks_the_prompt_with_the_supported_response ... ok
+test a_manual_run_without_piped_input_refuses ... ok
+test a_continued_stop_never_blocks_the_agent ... ok
+test an_uninitialized_repository_keeps_preservation_manual ... ok
+test a_workspace_mismatch_refuses_without_touching_the_named_repository ... ok
+test a_refused_stop_capture_reports_without_continuing ... ok
+test outside_any_repository_the_adapter_is_silent ... ok
+test boundaries_are_silent_when_the_policy_is_off ... ok
+test missing_or_unsupported_events_never_capture_or_approve ... ok
+test an_immediate_duplicate_stop_is_one_harmless_no_op ... ok
+test prompt_submit_captures_outstanding_content_and_allows_the_prompt ... ok
+test the_json_flag_never_prints_an_envelope_into_the_protocol ... ok
+test stop_captures_the_completed_pass_while_the_agent_stops ... ok
+test session_boundaries_capture_best_effort ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.41s
+
+     Running tests/local_settings.rs (target/debug/deps/local_settings-2cd8da77605ddfd9)
+
+running 10 tests
+test an_unsupported_settings_version_blocks_reads_and_updates ... ok
+test a_failed_configuration_write_reports_honest_effects ... ok
+test first_use_capture_policies_stay_off_until_explicitly_set ... ok
+test first_use_reads_off_defaults_and_writes_nothing ... ok
+test explicit_updates_preserve_unrelated_entries_and_omitted_settings ... ok
+test invalid_updates_change_nothing ... ok
+test updates_store_the_documented_keys_in_their_documented_forms ... ok
+test stored_values_outside_the_documented_form_fail_typed ... ok
+test status_reports_the_effective_settings_without_secrets ... ok
+test the_stored_scope_reenters_the_shared_operations ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running tests/operations.rs (target/debug/deps/operations-be7815bd2193243b)
+
+running 8 tests
+test a_missing_scope_fails_typed_with_effects ... ok
+test inspection_outside_any_repository_is_not_initialized ... ok
+test inspection_of_unborn_history_reports_no_candidate ... ok
+test blockers_are_observed_data_not_query_failures ... ok
+test invalid_scope_input_fails_typed_with_effects ... ok
+test inspection_reports_the_workspace_without_writing ... ok
+test guard_refusals_write_nothing_and_report_effects ... ok
+test queries_write_nothing_and_the_resume_commits_only_the_proved_decision ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.12s
+
+     Running tests/policy_guards.rs (target/debug/deps/policy_guards-ff4fabe3ffe50b3f)
+
+running 18 tests
+test a_bisect_session_blocks ... ok
+test a_detached_head_blocks ... ok
+test a_nested_superproject_blocks ... ok
+test bare_repositories_and_git_directories_block ... ok
+test an_unfinished_merge_blocks_and_survives_the_guard ... ok
+test autocrlf_conversion_blocks_and_effective_precedence_wins ... ok
+test guards_report_every_blocker_at_once ... ok
+test identity_staging_preserves_exact_raw_bytes ... ok
+test hidden_index_flags_block_scoped_mutations_only ... ok
+test clean_repositories_pass_every_guard ... ok
+test linked_worktrees_block_from_both_sides ... ok
+test sparse_checkout_blocks ... ok
+test real_transformations_change_the_staged_bytes ... ok
+test shallow_and_partial_clones_block ... ok
+test the_guards_never_touch_the_repository ... ok
+test staged_changes_block_on_born_and_unborn_branches ... ok
+test unfinished_cherry_pick_rebase_and_revert_block ... ok
+test transformation_attributes_return_specific_blockers ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.21s
+
+     Running tests/receipts.rs (target/debug/deps/receipts-8d14eb9300c31872)
+
+running 12 tests
+test an_exact_retry_returns_the_original_verified_commit ... ok
+test a_reused_request_id_with_another_plan_conflicts ... ok
+test a_review_receipt_with_an_incorrect_recorded_baseline_is_no_receipt ... ok
+test an_incomplete_scan_blocks_instead_of_claiming_absence ... ok
+test an_unsupported_history_context_blocks_instead_of_claiming_absence ... ok
+test exact_retries_work_in_sha256_repositories ... ok
+test an_exact_retry_survives_a_scope_root_that_blocks_new_mutations ... ok
+test present_day_blockers_never_hide_the_receipt ... ok
+test request_ids_stay_scoped_to_their_operation_kind ... ok
+test the_executable_reports_the_existing_receipt ... ok
+test rewritten_history_no_longer_promises_deduplication ... ok
+test the_scan_sees_receipts_a_path_limited_log_hides ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.45s
+
+     Running tests/recovery_doctor.rs (target/debug/deps/recovery_doctor-719bc146191d241b)
+
+running 11 tests
+test doctor_refuses_typed_outside_a_repository_and_without_a_scope ... ok
+test doctor_keeps_reporting_under_a_detached_head ... ok
+test doctor_reports_no_index_tree_while_conflicts_stop_it ... ok
+test doctor_reports_recovery_state_without_writing ... ok
+test doctor_reports_staged_paths_and_safe_recovery_argv ... ok
+test doctor_reports_an_unknown_receipt_when_replacements_stop_validation ... ok
+test doctor_reports_the_index_tree_without_touching_the_index ... ok
+test the_executable_reports_doctor_in_both_modes ... ok
+test doctor_reports_the_receipt_of_a_completed_restoration ... ok
+test the_suggested_recovery_argv_captures_the_staged_state ... ok
+test doctor_reports_the_receipt_of_a_completed_review ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.75s
+
+     Running tests/refinement_map.rs (target/debug/deps/refinement_map-0e50c14db4484737)
+
+running 4 tests
+test the_map_covers_every_model_action_exactly ... ok
+test the_trace_contract_names_every_model_action_once ... ok
+test every_documented_public_code_exists_in_the_implementation ... ok
+test every_mapped_real_git_test_exists ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/refinement_trace.rs (target/debug/deps/refinement_trace-7180fe2539cedb9c)
+
+running 8 tests
+test an_uncooperative_writer_stops_the_publication ... ok
+test a_process_killed_after_publication_loses_only_its_response ... ok
+test a_failed_application_recovers_through_inspection_and_a_guarded_capture ... ok
+test an_interrupted_process_resumes_through_inspection ... ok
+test the_checker_rejects_sequences_the_model_forbids ... ok
+test keep_all_publication_follows_the_model_phases ... ok
+test restoring_application_applies_each_group_before_publication ... ok
+test receipt_and_conflict_replies_stay_reply_only ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.09s
+
+     Running tests/restoration.rs (target/debug/deps/restoration-447ac36ea7bee053)
+
+running 6 tests
+test corpus_fixtures_restore_every_subset_exactly ... ok
+test out_of_scope_changes_stay_with_the_candidate ... ok
+test sha256_repositories_restore_exactly ... ok
+test eight_independent_groups_enumerate_every_subset ... ok
+test larger_generated_manifests_restore_sampled_subsets ... ok
+test generated_manifests_restore_every_subset has been running for over 60 seconds
+test generated_manifests_restore_every_subset ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 196.58s
+
+     Running tests/restore_document.rs (target/debug/deps/restore_document-debefaec80f7429f)
+
+running 16 tests
+test a_dry_run_reports_the_intended_result_and_writes_nothing ... ok
+test a_resurrected_document_returns_to_the_working_tree ... ok
+test a_reused_request_id_under_another_fingerprint_conflicts ... ok
+test a_no_content_change_restoration_still_creates_one_receipt ... ok
+test an_exact_retry_returns_the_original_receipt ... ok
+test an_index_flag_cannot_hide_dirty_content_from_a_restoration ... ok
+test restoration_replaces_one_document_from_adopted_history ... ok
+test the_executable_refuses_an_unreadable_plan ... ok
+test restoration_restores_absence ... ok
+test restoration_restores_the_storage_mode ... ok
+test the_plan_contract_parses_strictly ... ok
+test restored_content_is_pending_review_against_the_same_baseline ... ok
+test the_restoration_applies_under_sha256 ... ok
+test unusual_paths_and_opaque_bytes_restore_exactly ... ok
+test the_guards_refuse_typed_and_unchanged ... ok
+test the_executable_restores_through_the_envelope ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.40s
+
+     Running tests/review_apply.rs (target/debug/deps/review_apply-caff7606ee2951cf)
+
+running 29 tests
+test a_dry_run_request_reports_and_writes_nothing ... ok
+test a_head_that_moves_before_the_commit_refuses_without_writing ... ok
+test a_hook_that_rewrites_trailers_reports_a_contract_violation ... ok
+test a_rejected_commit_after_the_apply_reports_the_retained_result ... ok
+test a_staged_entry_that_arrives_before_the_commit_refuses_without_writing ... ok
+test a_review_with_nothing_pending_still_completes ... ok
+test a_reused_request_id_with_another_plan_conflicts ... ok
+test a_restoring_plan_commits_the_exact_preview_result ... ok
+test an_exact_retry_after_a_restoring_review_returns_the_receipt ... ok
+test an_apply_failure_retains_and_reports_the_partial_application ... ok
+test a_successful_hook_that_edits_reports_the_newer_content ... ok
+test an_exact_retry_returns_the_receipt_without_a_second_commit ... ok
+test an_exact_retry_survives_a_scope_root_that_becomes_a_symlink ... ok
+test keep_all_creates_one_verified_empty_review_commit ... ok
+test keep_all_works_in_sha256_repositories ... ok
+test an_index_flag_cannot_hide_dirty_content_from_a_review ... ok
+test scoped_bytes_that_change_before_the_commit_refuse_without_writing ... ok
+test restoring_every_passage_recomposes_the_baseline_side ... ok
+test restoring_presence_transitions_removes_and_recreates_files ... ok
+test restoring_reviews_work_in_sha256_repositories ... ok
+test stale_plans_refuse_without_writing ... ok
+test staged_entries_and_a_foreign_branch_refuse_the_application ... ok
+test the_executable_applies_a_restoring_plan ... ok
+test the_executable_applies_the_plan_and_reports_the_commit ... ok
+test the_lock_serializes_the_application ... ok
+test uncaptured_scoped_bytes_refuse_the_application ... ok
+test the_next_writing_pass_compares_against_the_review ... ok
+test the_retained_result_of_a_rejected_review_recovers_as_one_draft ... ok
+test working_bytes_that_change_after_the_apply_refuse_before_the_commit ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.64s
+
+     Running tests/review_dry_run.rs (target/debug/deps/review_dry_run-362222417cbe84a8)
+
+running 11 tests
+test a_review_with_nothing_pending_intends_the_candidate_tree ... ok
+test dry_runs_work_in_sha256_repositories ... ok
+test keep_all_intends_the_candidate_tree_and_writes_nothing ... ok
+test restore_all_intends_the_recomposed_scope_with_the_candidate_neighbors ... ok
+test scoped_working_differences_refuse_the_dry_run ... ok
+test partial_selections_intend_the_exact_recorded_passages ... ok
+test the_dry_run_preserves_every_real_dimension ... ok
+test staged_changes_and_a_foreign_branch_refuse_the_dry_run ... ok
+test the_executable_reports_the_dry_run_once ... ok
+test unknown_and_stale_decisions_refuse_without_writing ... ok
+test corpus_fixtures_restore_their_recorded_group_through_the_dry_run ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.30s
+
+     Running tests/review_plans.rs (target/debug/deps/review_plans-b7e7882fd34f29b3)
+
+running 10 tests
+test an_oversized_plan_document_is_a_typed_limit ... ok
+test parser_fixtures_parse_or_refuse_exactly_as_recorded ... ok
+test a_plan_of_another_comparison_is_stale ... ok
+test standard_input_carries_one_plan ... ok
+test a_broken_document_refuses_typed_before_the_application ... ok
+test the_shipped_schema_is_the_one_the_parser_generates ... ok
+test a_valid_plan_passes_validation_and_reports_its_intended_result ... ok
+test the_plan_rules_are_reachable_through_the_library ... ok
+test structural_faults_are_typed_invalid_plans ... ok
+test unknown_and_undecided_changes_are_named ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.60s
+
+     Running tests/review_resume.rs (target/debug/deps/review_resume-6ef1b01e034bfa7f)
+
+running 9 tests
+test a_candidate_that_moved_refuses_the_resume ... ok
+test staged_content_outside_the_restored_passages_refuses ... ok
+test the_exact_retained_result_resumes_into_the_verified_commit ... ok
+test a_dry_run_resume_reports_the_retained_decision_without_committing ... ok
+test the_executable_refuses_an_unmatched_retained_state ... ok
+test the_executable_resumes_the_retained_result ... ok
+test the_resume_of_a_completed_request_reports_the_receipt ... ok
+test working_bytes_that_differ_from_the_retained_result_refuse ... ok
+test the_retained_result_of_another_plan_refuses_and_keeps_the_state ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.54s
+
+     Running tests/scope_resolver.rs (target/debug/deps/scope_resolver-1454edcb3334a6cf)
+
+running 15 tests
+test escaping_absolute_empty_and_nul_roots_are_rejected ... ok
+test excluded_directories_subtract_from_the_scope ... ok
+test canonical_descriptor_and_digest_are_stable ... ok
+test file_and_directory_roots_are_annotated_from_disk ... ok
+test nested_repositories_and_submodules_are_blockers ... ok
+test digests_are_object_format_qualified ... ok
+test non_utf8_scoped_paths_are_blockers ... ok
+test oddly_named_paths_resolve_literally ... ok
+test resolution_observes_without_touching_the_repository ... ok
+test symlinked_roots_and_components_are_rejected ... ok
+test toplevel_matches_stock_git ... ok
+test scoped_paths_cover_tracked_untracked_ignored_and_deleted ... ok
+test one_scope_spelled_many_ways_yields_one_digest ... ok
+test symlinks_inside_the_scope_are_blockers ... ok
+test unborn_repositories_and_absent_roots_resolve ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running tests/show_document.rs (target/debug/deps/show_document-f670fd042d36e68f)
+
+running 20 tests
+test byte_bounds_cut_at_character_boundaries ... ok
+test byte_and_line_bounds_carry_truncation_metadata ... ok
+test a_real_terminal_destination_refuses_the_raw_export ... ok
+test executable_documents_report_their_mode ... ok
+test json_and_text_output_escape_unsafe_content ... ok
+test every_show_leaves_the_repository_unchanged ... ok
+test missing_and_empty_documents_stay_distinct ... ok
+test a_document_beyond_the_per_file_ceiling_fails_typed ... ok
+test opaque_documents_use_one_bounded_hexadecimal_view ... ok
+test the_hexadecimal_view_caps_at_its_own_bound ... ok
+test revisions_are_immutable_against_later_history_and_edits ... ok
+test the_query_needs_no_adoption_and_refuses_bare_repositories ... ok
+test symbolic_links_and_gitlinks_are_not_documents ... ok
+test the_raw_export_stays_exclusive_with_the_envelope_and_bounds ... ok
+test the_raw_export_returns_every_exact_byte ... ok
+test the_sha256_object_format_reports_full_ids ... ok
+test the_shared_operation_reports_the_same_content_states ... ok
+test unresolvable_revisions_and_shapes_are_invalid_input ... ok
+test utf8_documents_report_exact_content_and_identity ... ok
+test unusual_paths_show_exactly ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+     Running tests/status_report.rs (target/debug/deps/status_report-ec1684b0b3f63181)
+
+running 9 tests
+test a_branch_mismatch_is_one_actionable_blocker ... ok
+test index_flags_cannot_hide_unsaved_content_from_status ... ok
+test interrupted_repository_state_asks_for_recovery ... ok
+test preservation_compares_working_bytes_not_index_dirt ... ok
+test storage_transformations_make_preservation_honestly_unknown ... ok
+test a_path_filter_is_presentation_only ... ok
+test text_mode_reports_the_three_states_in_one_line ... ok
+test unknown_counts_carry_reasons_instead_of_fabricated_zeros ... ok
+test the_three_states_move_on_their_own_evidence ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.93s
+
+     Running tests/terminal_smoke.rs (target/debug/deps/terminal_smoke-9fd86585046b7a14)
+
+running 3 tests
+test a_real_emulator_renders_the_surface_and_passes_it_a_resize ... ok
+test color_off_draws_no_decoration_codes ... ok
+test every_term_profile_draws_and_restores ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.58s
+
+     Running tests/tmux_desk.rs (target/debug/deps/tmux_desk-7a741d501375e929)
+
+running 14 tests
+test a_tmux_that_names_no_release_or_is_absent_is_reported ... ok
+test a_desk_without_a_terminal_refuses_typed ... ok
+test an_agent_that_exits_at_once_leaves_nothing_behind ... ok
+test inside_tmux_a_narrow_desk_puts_margin_in_its_own_window ... ok
+test a_new_desk_session_never_lands_on_an_existing_margin_session ... ok
+test inside_tmux_the_desk_adds_one_window_and_touches_nothing_else ... ok
+test missing_tmux_explains_the_two_tab_alternative ... ok
+test parse_release_reads_the_reports_tmux_prints ... ok
+test parse_release_rejects_words_that_name_no_release ... ok
+test closing_the_last_window_while_attached_reports_the_ended_session ... ok
+test the_desk_floor_is_tmux_3_1 ... ok
+test outside_tmux_a_narrow_desk_keeps_one_command_per_window ... ok
+test quitting_margin_leaves_the_agent_running ... ok
+test outside_tmux_the_desk_composes_an_agent_pane_and_a_margin_pane ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s
+
+     Running tests/tui_access.rs (target/debug/deps/tui_access-5454d633ec4d518d)
+
+running 15 tests
+test edit_requests_the_configured_editor_and_reloads_on_return ... ok
+test bracketed_paste_is_text_inside_a_field_and_ignored_outside ... ok
+test color_off_renders_every_state_in_words_and_symbols ... ok
+test ctrl_c_keeps_the_clean_quit_inside_text_entry ... ok
+test edit_without_an_editor_is_refused_with_the_reason ... ok
+test focus_cycles_three_stops_both_ways_and_shows_itself ... ok
+test help_lists_the_keys_and_the_current_blockers ... ok
+test reduced_updates_redraw_only_when_the_frame_changed ... ok
+test search_moves_within_every_view_without_changing_content ... ok
+test the_action_menu_lists_every_action_with_bindings_and_disabled_reasons ... ok
+test text_entry_takes_precedence_over_the_keymap ... ok
+test the_document_picker_finds_and_opens_documents ... ok
+test the_new_surface_options_parse_on_the_command_line ... ok
+test the_editor_capture_policy_saves_one_draft_and_approves_nothing ... ok
+test the_menu_runs_the_selected_action_and_refuses_disabled_ones ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.49s
+
+     Running tests/tui_changes.rs (target/debug/deps/tui_changes-1a34441c2c130fca)
+
+running 8 tests
+test opaque_changes_keep_an_exact_source_fallback ... ok
+test k_and_r_change_only_the_in_memory_plan ... ok
+test quit_warns_once_about_unapplied_selections ... ok
+test the_source_view_shows_the_exact_markdown_changes ... ok
+test stale_arrivals_relabel_every_group_and_refuse_decisions ... ok
+test unavailable_decisions_when_no_comparison_can_be_built ... ok
+test unvisited_scope_counts_stay_available ... ok
+test every_group_renders_its_context_across_the_detail_pages ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.11s
+
+     Running tests/tui_finish.rs (target/debug/deps/tui_finish-7a6b5670c3e9aa1f)
+
+running 6 tests
+test a_stale_comparison_refuses_to_open_a_finish ... ok
+test cancel_and_quit_never_commit_a_selection ... ok
+test a_finish_without_restorations_records_the_empty_review_commit ... ok
+test a_second_enter_applies_the_plan_through_the_shared_operation ... ok
+test the_summary_states_the_entire_scope_and_requires_explicit_intent ... ok
+test equivalent_cli_and_tui_plans_agree_on_tree_marker_errors_and_effects ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.67s
+
+     Running tests/tui_history.rs (target/debug/deps/tui_history-99c5fdf8c5690c41)
+
+running 8 tests
+test enter_previews_the_document_against_the_current_candidate ... ok
+test cancel_and_quit_never_restore ... ok
+test a_second_enter_restores_through_the_shared_operation ... ok
+test the_selected_revision_and_document_survive_view_switches ... ok
+test equivalent_cli_and_tui_restore_plans_agree ... ok
+test missing_and_empty_documents_stay_distinct_in_the_preview ... ok
+test the_timeline_lists_starts_drafts_reviews_and_restorations ... ok
+test uncaptured_changes_offer_save_draft_then_preview ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.42s
+
+     Running tests/tui_lifecycle.rs (target/debug/deps/tui_lifecycle-ae49b35468fdea82)
+
+running 9 tests
+test a_failing_editor_child_is_stated_and_the_surface_survives ... ok
+test a_normal_quit_restores_the_terminal ... ok
+test a_resize_redraws_and_keeps_quit_working ... ok
+test a_terminal_error_still_restores_the_terminal ... ok
+test a_stale_arrival_reaches_the_frame_without_a_key_press ... ok
+test ctrl_c_quits_cleanly_and_restores_the_terminal ... ok
+test reduced_updates_and_color_off_run_the_same_lifecycle ... ok
+test the_editor_handoff_suspends_the_terminal_and_takes_it_back ... ok
+test a_selection_and_finish_sequence_applies_through_the_keys ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.42s
+
+     Running tests/tui_refresh.rs (target/debug/deps/tui_refresh-5096bbe68b44887b)
+
+running 8 tests
+test a_failed_inspection_claims_no_arrival ... ok
+test a_reply_from_a_superseded_generation_is_discarded ... ok
+test polling_detects_a_moved_candidate_without_a_key_press ... ok
+test polling_detects_new_working_edits_and_disables_application ... ok
+test explicit_refresh_rebuilds_the_review_and_resets_selections ... ok
+test refresh_preserves_the_reading_anchor_and_position ... ok
+test staged_changes_arrive_as_their_own_category ... ok
+test the_worker_coalesces_a_burst_into_two_inspections ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.04s
+
+     Running tests/tui_shell.rs (target/debug/deps/tui_shell-7d3605188832c8fa)
+
+running 11 tests
+test a_plain_folder_without_a_repository_still_opens_read_only ... ok
+test before_adoption_opens_read_only_with_discovery_and_a_setup_action ... ok
+test an_invalid_initial_document_is_a_typed_refusal ... ok
+test a_resize_restores_the_reading_position_from_the_anchor ... ok
+test below_the_useful_minimum_the_surface_explains_and_keeps_quit ... ok
+test document_and_source_context_survive_view_switches ... ok
+test the_command_line_refuses_redirected_streams_with_a_typed_error ... ok
+test navigation_keys_change_no_repository_bytes ... ok
+test the_layout_earns_its_width_class ... ok
+test the_read_view_shows_the_document_with_saved_and_review_state ... ok
+test unusual_content_states_label_themselves_honestly ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.74s
+
+     Running unittests bench/perf/main.rs (target/debug/examples/benchrun-e2aa613f346f183d)
+
+running 18 tests
+test perf::envrec::tests::rfc3339_matches_known_moments ... ok
+test perf::hash::tests::known_vectors ... ok
+test perf::metric::tests::the_example_record_of_spec_17_8_carries_its_budget ... ok
+test perf::metric::tests::the_table_matches_spec_17_4 ... ok
+test perf::oracle::tests::a_broken_envelope_is_rejected_for_the_right_reason ... ok
+test perf::record::tests::a_not_measured_resource_metric_has_no_latency_budget ... ok
+test perf::envrec::tests::the_unassigned_record_invents_nothing ... ok
+test perf::record::tests::every_status_and_oracle_state_round_trips ... ok
+test perf::record::tests::the_initial_record_matches_the_spec_17_8_example ... ok
+test perf::runner::tests::an_unassigned_environment_refuses_to_measure ... ok
+test perf::samples::tests::a_round_trip_keeps_every_run ... ok
+test perf::stats::tests::nearest_rank_matches_the_policy ... ok
+test perf::stats::tests::the_same_seed_repeats_the_same_interval ... ok
+test perf::timing::tests::a_nonzero_exit_is_reported_not_hidden ... ok
+test perf::stats::tests::a_large_increase_blocks_and_a_small_one_does_not ... ok
+test perf::timing::tests::the_window_spans_creation_sleep_and_full_delivery ... ok
+test perf::envrec::tests::probing_this_machine_records_actual_details ... ok
+test perf::envrec::tests::a_registered_record_round_trips ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running unittests bench/corpus/main.rs (target/debug/examples/corpusgen-f6f0ac35914b6e0c)
+
+running 15 tests
+test corpus::build::tests::hunk_counting_reads_headers ... ok
+test corpus::build::tests::conflicting_lines_differ_same_length ... ok
+test corpus::edits::tests::claim_and_link_edits_keep_line_length ... ok
+test corpus::edits::tests::word_swap_requires_whole_words ... ok
+test corpus::plan::tests::exact_totals_allocate_exactly ... ok
+test corpus::plan::tests::full_definitions_match_spec_17_2 ... ok
+test corpus::edits::tests::edits_land_apart_and_change_content ... ok
+test corpus::plan::tests::layouts_fill_their_budgets ... ok
+test corpus::plan::tests::test_scales_keep_their_invariants ... ok
+test corpus::rng::tests::splitmix64_reference_sequence ... ok
+test corpus::text::tests::repeated_lines_hit_the_exact_total ... ok
+test corpus::text::tests::swap_pairs_keep_their_lengths ... ok
+test corpus::text::tests::tail_hits_the_exact_total ... ok
+test corpus::text::tests::wrap_respects_the_width ... ok
+test corpus::rng::tests::same_seed_same_sequence ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 1 target failed:
+    `--test git_adapter`

@@ -1,0 +1,162 @@
+name: Nightly tier
+
+# The nightly tier of SPEC 18.3. Failures here become release blockers for
+# claimed support:
+#
+#   git-os-matrix  the deterministic gates under every claimed Git/OS
+#                  variant: Ubuntu 24.04 with its system Git, with the
+#                  pinned floor 2.45.0 and the latest upstream 2.56.0
+#                  built from the official tarball, and macOS with its
+#                  Command Line Tools Git.
+#   property       the 10,000-case generated property budget of SPEC 16.4
+#                  and the 400-commit matrix history.
+#   formal         all five TLC profiles, including the larger
+#                  MarginReviewNightly profile, plus the mutation checks.
+#   stress         the full-scale benchmark corpora (C1, C2, and the
+#                  1 GiB C3 stress corpus) of SPEC 17.2.
+#
+# Each job records the tool versions it ran with under ci/artifacts/ and
+# uploads them every run, so the claimed support matrix of
+# docs/verification-tiers.md stays tied to observed evidence. Failed runs
+# upload their complete logs (SPEC 18.4).
+
+on:
+  schedule:
+    # 02:17 UTC daily; off the busy round minutes.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  git-os-matrix:
+    name: ${{ matrix.os }} with Git ${{ matrix.git }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            git: system
+          - os: ubuntu-24.04
+            git: floor-2.45.0
+            build_git: "2.45.0"
+          - os: ubuntu-24.04
+            git: latest-2.56.0
+            build_git: "2.56.0"
+          - os: macos-15
+            git: system-clt
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned tmux
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install libevent ncurses bison pkg-config
+          else
+            sudo apt-get update -q
+            sudo apt-get install -y -q libevent-dev ncurses-dev bison
+          fi
+          ci/install-tmux.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build the pinned Git
+        if: matrix.build_git != ''
+        run: |
+          sudo apt-get install -y -q zlib1g-dev
+          echo "$(ci/install-git.sh "${{ matrix.build_git }}")" >> "$GITHUB_PATH"
+          git --version
+      - name: Record the variant
+        run: |
+          git --version
+          uname -srm
+      - name: Deterministic test gate
+        run: ci/run-tier.sh tests pr
+      - name: Retain the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-matrix-${{ matrix.os }}-${{ matrix.git }}-failure
+          path: ci/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore
+      - name: Record the observed versions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-matrix-${{ matrix.os }}-${{ matrix.git }}-versions
+          path: ci/artifacts/*/environment.txt
+          retention-days: 90
+          if-no-files-found: ignore
+
+  property:
+    name: 10,000 generated property cases
+    runs-on: ubuntu-24.04
+    # The 10,000-case gate measured 168 min on the development machine;
+    # the budget leaves room for a slower shared runner.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned tmux
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libevent-dev ncurses-dev bison
+          ci/install-tmux.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Nightly property gate
+        run: ci/run-tier.sh tests nightly
+      - name: Retain the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-property-failure
+          path: ci/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  formal:
+    name: All TLC profiles and the mutation checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Formal profile gate
+        run: ci/run-tier.sh formal nightly
+      - name: Formal mutation gate
+        run: ci/run-tier.sh mutations nightly
+      - name: Retain the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-formal-failure
+          path: ci/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  stress:
+    name: Full-scale benchmark corpora
+    runs-on: ubuntu-24.04
+    # C3 builds its 10,000-commit corpus twice; the repaired gate measured
+    # 207 min on a loaded development machine. The budget leaves room for
+    # slower shared runners rather than cutting a reproducibility build
+    # short.
+    timeout-minutes: 420
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stress corpus gate
+        run: ci/run-tier.sh stress nightly
+      - name: Retain the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-stress-failure
+          path: ci/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore

@@ -93,10 +93,16 @@ impl GitOracle {
 
     /// The first-parent ancestry of `HEAD`, newest first.
     pub fn ancestry(&self, limit: usize) -> Vec<String> {
-        self.ok(&["rev-list", "--first-parent", "-n", &limit.to_string(), "HEAD"])
-            .lines()
-            .map(str::to_string)
-            .collect()
+        self.ok(&[
+            "rev-list",
+            "--first-parent",
+            "-n",
+            &limit.to_string(),
+            "HEAD",
+        ])
+        .lines()
+        .map(str::to_string)
+        .collect()
     }
 
     /// The raw commit object bytes of `revision`.
@@ -191,8 +197,8 @@ impl GitOracle {
 pub fn envelope(stdout: &[u8], stderr: &[u8]) -> Result<Value, String> {
     let text = std::str::from_utf8(stdout)
         .map_err(|error| format!("the response is not UTF-8: {error}"))?;
-    let value: Value =
-        serde_json::from_str(text).map_err(|error| format!("the response is not one JSON envelope: {error}"))?;
+    let value: Value = serde_json::from_str(text)
+        .map_err(|error| format!("the response is not one JSON envelope: {error}"))?;
     let map = value
         .as_object()
         .ok_or_else(|| "the response is not a JSON object".to_string())?;
@@ -248,8 +254,14 @@ pub fn manifest_facts(manifest: &Value) -> ManifestFacts {
         .map(|entry| {
             (
                 entry["path"].as_str().expect("a path").to_string(),
-                entry["before_blob"].as_str().expect("a baseline blob").to_string(),
-                entry["after_blob"].as_str().expect("a candidate blob").to_string(),
+                entry["before_blob"]
+                    .as_str()
+                    .expect("a baseline blob")
+                    .to_string(),
+                entry["after_blob"]
+                    .as_str()
+                    .expect("a candidate blob")
+                    .to_string(),
             )
         })
         .collect();
@@ -270,8 +282,12 @@ pub fn manifest_facts(manifest: &Value) -> ManifestFacts {
             .as_str()
             .expect("a baseline tree")
             .to_string(),
-        changed_documents: manifest["layout"]["changed_documents"].as_u64().expect("a count") as usize,
-        changed_groups: manifest["expected"]["changed_groups"].as_u64().expect("a count"),
+        changed_documents: manifest["layout"]["changed_documents"]
+            .as_u64()
+            .expect("a count") as usize,
+        changed_groups: manifest["expected"]["changed_groups"]
+            .as_u64()
+            .expect("a count"),
         selected_path: manifest["layout"]["selected"]["path"]
             .as_str()
             .expect("a selected path")
@@ -316,8 +332,12 @@ pub fn verify_status(
 ) -> Result<(), String> {
     let data = envelope(stdout, stderr)?;
     let head = data["head"].as_str().ok_or("no head")?;
-    let baseline = data["baseline"]["commit"].as_str().ok_or("no baseline commit")?;
-    let pending = data["counts"]["pending_files"].as_u64().ok_or("no pending count")?;
+    let baseline = data["baseline"]["commit"]
+        .as_str()
+        .ok_or("no baseline commit")?;
+    let pending = data["counts"]["pending_files"]
+        .as_u64()
+        .ok_or("no pending count")?;
     let git_head = oracle.head();
     if head != git_head {
         return Err(format!("reported head {head} but Git says {git_head}"));
@@ -356,7 +376,9 @@ pub fn verify_diff(
     let data = envelope(stdout, stderr)?;
     let candidate = data["candidate_oid"].as_str().ok_or("no candidate")?;
     let baseline = data["baseline_oid"].as_str().ok_or("no baseline")?;
-    let groups = data["scope_totals"]["groups"].as_u64().ok_or("no group total")?;
+    let groups = data["scope_totals"]["groups"]
+        .as_u64()
+        .ok_or("no group total")?;
     if candidate != oracle.head() {
         return Err(format!(
             "reported candidate {candidate} but Git says HEAD is {}",
@@ -490,6 +512,9 @@ pub fn verify_checkpoint(
 /// P-APPLY: exactly one review marker moved `HEAD` onto the fixture's
 /// independently derived selective result tree, restoring exactly the
 /// planned documents in the working tree.
+// The parameter list mirrors the oracle facts of the SPEC 17.7.6 checks;
+// grouping them into a struct would only rename the same eight values.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_review(
     oracle: &GitOracle,
     facts: &ManifestFacts,
@@ -543,9 +568,7 @@ pub fn verify_review(
             .ok_or_else(|| format!("the restored document {path} vanished"))?;
         let expected = oracle.blob_bytes(blob);
         if working != expected {
-            return Err(format!(
-                "{path} was not restored to its baseline bytes"
-            ));
+            return Err(format!("{path} was not restored to its baseline bytes"));
         }
     }
     for (path, blob) in kept {
@@ -554,9 +577,7 @@ pub fn verify_review(
             .ok_or_else(|| format!("the kept document {path} vanished"))?;
         let expected = oracle.blob_bytes(blob);
         if working != expected {
-            return Err(format!(
-                "{path} did not keep its candidate bytes"
-            ));
+            return Err(format!("{path} did not keep its candidate bytes"));
         }
     }
     Ok(())

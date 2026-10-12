@@ -133,11 +133,31 @@ fn parse(args: &[String]) -> Result<Options, String> {
             std::process::exit(0);
         }
         let takes_value = [
-            "--metric", "--corpus", "--corpus-dir", "--output", "--scale", "--executable",
-            "--baseline", "--candidate", "--environment", "--results", "--warmups", "--blocks",
-            "--runs-per-block", "--events-per-session", "--window-seconds", "--seed",
-            "--commit", "--note", "--id", "--probe-path", "--conditions", "--samples",
-            "--block", "--reason", "--record",
+            "--metric",
+            "--corpus",
+            "--corpus-dir",
+            "--output",
+            "--scale",
+            "--executable",
+            "--baseline",
+            "--candidate",
+            "--environment",
+            "--results",
+            "--warmups",
+            "--blocks",
+            "--runs-per-block",
+            "--events-per-session",
+            "--window-seconds",
+            "--seed",
+            "--commit",
+            "--note",
+            "--id",
+            "--probe-path",
+            "--conditions",
+            "--samples",
+            "--block",
+            "--reason",
+            "--record",
         ]
         .contains(&argument.as_str());
         if takes_value {
@@ -152,10 +172,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         index += 1;
     }
-    Ok(Options {
-        command,
-        values,
-    })
+    Ok(Options { command, values })
 }
 
 impl Options {
@@ -242,7 +259,10 @@ fn init_results(options: &Options) -> Result<(), String> {
             count += 1;
         }
     }
-    println!("benchrun: wrote {count} not_measured records into {}", results.display());
+    println!(
+        "benchrun: wrote {count} not_measured records into {}",
+        results.display()
+    );
     Ok(())
 }
 
@@ -374,24 +394,23 @@ fn measure(options: &Options) -> Result<(), String> {
         path.canonicalize()
             .map_err(|error| format!("{} cannot be resolved: {error}", path.display()))
     };
-    let sides = match (
-        options.value("--executable"),
-        options.value("--baseline"),
-        options.value("--candidate"),
-    ) {
-        (Some(single), None, None) => Sides::Single(resolve(single)?),
-        (None, Some(baseline), Some(candidate)) => Sides::Paired {
-            baseline: resolve(baseline)?,
-            candidate: resolve(candidate)?,
-        },
-        _ => {
-            return Err(
+    let sides =
+        match (
+            options.value("--executable"),
+            options.value("--baseline"),
+            options.value("--candidate"),
+        ) {
+            (Some(single), None, None) => Sides::Single(resolve(single)?),
+            (None, Some(baseline), Some(candidate)) => Sides::Paired {
+                baseline: resolve(baseline)?,
+                candidate: resolve(candidate)?,
+            },
+            _ => return Err(
                 "pass either --executable for one absolute measurement, or both --baseline and \
                  --candidate for a paired comparison"
                     .to_string(),
-            )
-        }
-    };
+            ),
+        };
 
     let corpus_root = ensure_corpus(options)?;
     let scratch = results.join(format!("scratch.{}.{}", metric_id, corpus));

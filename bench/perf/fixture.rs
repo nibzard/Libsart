@@ -98,8 +98,12 @@ impl Fixture {
         let manifest_path = root.join("manifest.json");
         let manifest_bytes = fs::read(&manifest_path)
             .map_err(|error| format!("{} cannot be read: {error}", manifest_path.display()))?;
-        let manifest: Value = serde_json::from_slice(&manifest_bytes)
-            .map_err(|error| format!("{} is not the manifest JSON: {error}", manifest_path.display()))?;
+        let manifest: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+            format!(
+                "{} is not the manifest JSON: {error}",
+                manifest_path.display()
+            )
+        })?;
         let repo = root.join("repo");
         if !repo.join(".git").exists() {
             return Err(format!(
@@ -180,7 +184,7 @@ impl Fixture {
             let mode = self
                 .oracle
                 .tree_entry(&self.facts.candidate, path)
-                .and_then(|(mode, _)| Some(mode))
+                .map(|(mode, _)| mode)
                 .ok_or_else(|| format!("the candidate tree lacks {path}"))?;
             let blob = self.oracle.hash_object(bytes);
             replacements.push((mode, blob, path.clone()));
@@ -204,11 +208,15 @@ impl Fixture {
                 .tree_entry(&self.facts.candidate, path)
                 .ok_or_else(|| format!("the candidate tree lacks {path}"))?;
             if path == &self.facts.selected_path {
-                kept.push((path.clone(), self.facts.changed_after_blobs
-                    .iter()
-                    .find(|(candidate_path, _)| candidate_path == path)
-                    .map(|(_, blob)| blob.clone())
-                    .ok_or_else(|| format!("no candidate blob for {path}"))?));
+                kept.push((
+                    path.clone(),
+                    self.facts
+                        .changed_after_blobs
+                        .iter()
+                        .find(|(candidate_path, _)| candidate_path == path)
+                        .map(|(_, blob)| blob.clone())
+                        .ok_or_else(|| format!("no candidate blob for {path}"))?,
+                ));
                 continue;
             }
             restored.push((path.clone(), before.clone()));
@@ -317,7 +325,9 @@ impl Fixture {
     /// corpus, or below them at the test scale.
     pub fn test_scale(&self) -> bool {
         let documents = self.manifest["layout"]["documents"].as_u64().unwrap_or(0);
-        let bytes = self.manifest["layout"]["total_document_bytes"].as_u64().unwrap_or(0);
+        let bytes = self.manifest["layout"]["total_document_bytes"]
+            .as_u64()
+            .unwrap_or(0);
         let full = match self.manifest["corpus"].as_str().unwrap_or("") {
             "C1" => Some((100u64, 100 * 20 * 1024)),
             "C2" => Some((1_000, 100 * 1024 * 1024)),
@@ -349,7 +359,10 @@ impl Fixture {
         plan.insert("branch_ref".to_string(), context["branch_ref"].clone());
         plan.insert("scope_id".to_string(), context["scope_id"].clone());
         plan.insert("baseline_oid".to_string(), context["baseline_oid"].clone());
-        plan.insert("candidate_oid".to_string(), context["candidate_oid"].clone());
+        plan.insert(
+            "candidate_oid".to_string(),
+            context["candidate_oid"].clone(),
+        );
         plan.insert(
             "restore".to_string(),
             serde_json::to_value(&restore)
@@ -434,7 +447,9 @@ impl Fixture {
             );
         }
         if ids.is_empty() {
-            return Err("no group to restore: the fixture cannot express a selective review".to_string());
+            return Err(
+                "no group to restore: the fixture cannot express a selective review".to_string(),
+            );
         }
         Ok(ids)
     }

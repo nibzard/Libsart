@@ -173,11 +173,17 @@ with a notice where no usable tmux exists. The CI tiers install the
 pinned release with `ci/install-tmux.sh` and set `MARGIN_REQUIRE_TMUX=1`,
 which turns a missing tmux into a failure. See [CI tier support](ci/README.md).
 
+The repository runs two verification tiers, a pull-request tier and a
+nightly tier, through `ci/run-tier.sh`; the claimed Rust, Git, Linux,
+and macOS versions and the evidence behind them are recorded in
+[Verification tiers and support matrix](docs/verification-tiers.md).
+
 For more detail, see:
 
 - [Examples and demonstration](examples/README.md)
 - [Behavior and design specification](SPEC.md)
 - [Supported terminal smoke matrix](docs/terminal-smoke-matrix.md)
+- [Verification tiers and support matrix](docs/verification-tiers.md)
 - [Review plan schema](schemas/review-plan-v1.json)
 - [Formal model](formal/MarginReview.tla)
 - [Formal mutation checks](formal/mutations/README.md)
