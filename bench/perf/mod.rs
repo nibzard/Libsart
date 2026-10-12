@@ -20,7 +20,9 @@ pub mod fixture;
 pub mod hash;
 pub mod metric;
 pub mod oracle;
+pub mod pty;
 pub mod record;
+pub mod resource;
 pub mod runner;
 pub mod samples;
 pub mod stats;
@@ -29,4 +31,4 @@ pub mod timing;
 /// The revision of this harness, recorded in every environment and
 /// result record. Bump when measurement, reset, oracle, or statistics
 /// behavior changes.
-pub const HARNESS_REVISION: &str = "margin-benchrun/1";
+pub const HARNESS_REVISION: &str = "margin-benchrun/2";

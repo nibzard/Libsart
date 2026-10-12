@@ -67,9 +67,13 @@ pub struct RefreshWorker {
 }
 
 impl RefreshWorker {
-    /// Starts the worker over one adapter clone. `None` when the thread
-    /// cannot start: the surface then runs without polling, and its keys
-    /// keep working exactly as they do.
+    /// Starts the worker over one adapter clone. The worker builds its
+    /// operations once and reuses their shared history walk for every
+    /// poll, so an idle surface pays for what changed since the last
+    /// tick, not for the whole history again every two seconds
+    /// (SPEC 13.3, 17.4). `None` when the thread cannot start: the
+    /// surface then runs without polling, and its keys keep working
+    /// exactly as they do.
     pub fn spawn(git: Git) -> Option<RefreshWorker> {
         let (job_sender, jobs) = mpsc::channel::<u64>();
         let (reply_sender, replies) = mpsc::channel::<InspectionReply>();
@@ -79,8 +83,8 @@ impl RefreshWorker {
                 // One loop over the job channel: a job is one inspection
                 // through the shared operation, and the reply channel
                 // closing means the surface left.
+                let operations = Operations::new(&git);
                 for generation in jobs {
-                    let operations = Operations::new(&git);
                     let outcome = operations.inspect_workspace(&InspectRequest {
                         scope: None,
                         path_filter: Vec::new(),

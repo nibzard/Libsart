@@ -1,0 +1,3 @@
+benchrun: P-APPLY on C1 — failed (100 counted samples, median 693.8 ms, p95 1044.5 ms, budget 750 ms)
+benchrun: oracle passed, raw samples /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/raw/P-APPLY.C1/2026-10-12T005116Z/samples.jsonl
+benchrun: record /home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/P-APPLY.C1.json

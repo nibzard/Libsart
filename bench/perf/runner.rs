@@ -2,21 +2,32 @@
 //! blocks of fresh-process runs, recorded order randomization, per-run
 //! oracle verification, and the honest status decision.
 //!
-//! Policy defaults are the SPEC numbers: five warmups and twenty blocks
-//! of five runs per version. Below-policy runs are reported as
-//! `inconclusive`, never silently promoted.
+//! Three sampler families meet here. The CLI metrics time one fresh
+//! process per run (SPEC 17.3). The PTY metrics drive a real
+//! pseudo-terminal session per run — launch-to-frame, key-to-bytes,
+//! edit-to-indicator (SPEC 17.4) — and the resource metrics read the
+//! kernel's accounting of the session's process tree. Paired comparison
+//! stays a CLI-only shape: the SPEC 17.7 regression gate is defined over
+//! paired fresh-process blocks, and a PTY or resource pairing would need
+//! its own design, so the harness refuses one instead of faking it.
+//!
+//! Policy defaults are the SPEC numbers per metric kind. Below-policy
+//! runs are reported as `inconclusive`, never silently promoted.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use super::envrec::{EnvironmentRecord, now_utc};
 use super::fixture::Fixture;
 use super::metric::{self, Kind};
 use super::oracle;
+use super::pty::{self, PtySession};
 use super::record::{
     self, Comparison, CorpusSummary, Details, EnvironmentSummary, ExecutableSummary, Gate,
     InvalidatedBlock, OracleState, ResultRecord, Sampling, Statistics, Status,
 };
+use super::resource;
 use super::samples::{SAMPLES_SCHEMA_VERSION, Sample};
 use super::stats;
 use super::timing::time_child;
@@ -67,10 +78,17 @@ pub struct RunPlan {
     pub warmups: usize,
     /// Independent blocks.
     pub blocks: usize,
-    /// Fresh-process runs per block per version.
+    /// Fresh-process runs per block per version. For P-KEY one run is
+    /// one whole session of events; for P-CPU one run is one window.
     pub runs_per_block: usize,
     /// The seed of the order randomization, recorded with the samples.
     pub order_seed: u64,
+    /// Counted navigation events per P-KEY session (SPEC 17.4: at least
+    /// 10,000 over the recorded sessions). Zero for every other metric.
+    pub events_per_session: usize,
+    /// The length of one P-CPU idle window in seconds (SPEC 17.4: five
+    /// minutes). Zero for every other metric.
+    pub window_seconds: u64,
     /// The commit the executable was built from, when known.
     pub implementation_commit: Option<String>,
     /// Operator notes recorded verbatim.
@@ -78,13 +96,68 @@ pub struct RunPlan {
 }
 
 impl RunPlan {
-    /// The sampling parameters this plan implies.
+    /// The sampling parameters this plan implies. The boundary and
+    /// session sentences follow the metric's kind, so a PTY record never
+    /// claims the CLI process boundary and a resource record never
+    /// claims a latency at all.
     fn sampling(&self) -> Sampling {
+        let kind = metric::by_id(self.metric)
+            .map(|definition| definition.kind)
+            .unwrap_or(Kind::Cli);
+        let (boundary, cache_method) = match kind {
+            Kind::Cli => (
+                "wall time from before process creation through exit and full response \
+                 delivery (SPEC 17.3)"
+                    .to_string(),
+                "warm filesystem caches, fresh process per run".to_string(),
+            ),
+            Kind::Pty => (
+                match self.metric {
+                    "P-OPEN" => {
+                        "wall time from immediately before the surface spawns until the first \
+                         frame that shows identity, content, save state, and actions has flushed"
+                            .to_string()
+                    }
+                    "P-KEY" => {
+                        "wall time from immediately before one key's bytes are written until the \
+                         first answering bytes arrive from the surface"
+                            .to_string()
+                    }
+                    _ => {
+                        "wall time from an external edit's write returning until the arrival \
+                         notice flushes"
+                            .to_string()
+                    }
+                },
+                format!(
+                    "one fresh surface session per run on a {}-column, {}-row xterm-256color \
+                     pseudo-terminal, driven with --reduced-updates so bytes mean a frame change",
+                    pty::SESSION_COLUMNS,
+                    pty::SESSION_ROWS
+                ),
+            ),
+            Kind::Resource => (
+                "a kernel-accounted quantity of the session's process tree, not a wall \
+                 latency: VmHWM, the concurrent tree sum, or utime+stime"
+                    .to_string(),
+                format!(
+                    "one fresh surface session per run on a {}-column, {}-row xterm-256color \
+                     pseudo-terminal, driven with --reduced-updates through the fixed \
+                     open/review/history sequence",
+                    pty::SESSION_COLUMNS,
+                    pty::SESSION_ROWS
+                ),
+            ),
+        };
         Sampling {
             warmups: self.warmups,
             blocks: self.blocks,
             runs_per_block: self.runs_per_block,
             order_seed: self.order_seed,
+            boundary,
+            cache_method,
+            events_per_session: self.events_per_session,
+            window_seconds: self.window_seconds,
             ..Sampling::policy()
         }
     }
@@ -299,6 +372,7 @@ fn sample_of(
         order_index,
         warmup,
         elapsed_ms,
+        unit: None,
         exit_code,
         stdout_bytes: timed.stdout.len() as u64,
         stderr_bytes: timed.stderr.len() as u64,
@@ -309,6 +383,443 @@ fn sample_of(
         invalidation_reason: None,
         at: now_utc(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The PTY and resource samplers (SPEC 17.4)
+// ---------------------------------------------------------------------------
+
+/// How long one PTY session may take to reach its first useful frame or
+/// its arrival notice. A timeout is a failed sample with its elapsed
+/// recorded, never a hang. The limit is honesty headroom, not budget: a
+/// debug build under load can need ten seconds to reach its first frame,
+/// and the budget gate reads the measured p95, not this ceiling.
+const FRAME_LIMIT: Duration = Duration::from_secs(30);
+
+/// How long one P-KEY event may take to answer. SPEC 17.4 fails missing
+/// responses and event timeouts; the sample keeps the timeout as its
+/// elapsed and an oracle failure.
+const KEY_LIMIT: Duration = Duration::from_secs(2);
+
+/// How long a session gets to exit after its quit key before the harness
+/// kills it and records the run as failed.
+const QUIT_LIMIT: Duration = Duration::from_secs(10);
+
+/// The quiet gap that ends one frame's bytes, so no stray byte of one
+/// answer can pose as the next event's response.
+const FRAME_QUIET: Duration = Duration::from_millis(30);
+
+/// After how many consecutive unanswered events a P-KEY session counts
+/// as dead: the event script provably changes the frame every time, so a
+/// silent surface is a broken session, and the harness stops feeding it.
+const DEAD_AFTER_TIMEOUTS: usize = 3;
+
+/// The paragraph the P-REFRESH edit appends to the selected document's
+/// working file. The bytes are read untimed; the write itself is the
+/// trigger the clock starts from.
+const REFRESH_PARAGRAPH: &[u8] =
+    b"\n\nThe bench refresh edit appends this paragraph to the working file. The next inspection \
+      must discover it and state the arrival.\n";
+
+/// One point of evidence one measured unit produced. For the latency
+/// metrics the value is milliseconds; a resource metric stores its own
+/// quantity and names the unit.
+struct MeasuredPoint {
+    /// The measured quantity.
+    value: f64,
+    /// The unit sentence, `None` for milliseconds.
+    unit: Option<&'static str>,
+    /// What this point's checks found wanting.
+    failures: Vec<String>,
+}
+
+/// One executed PTY session or resource run, before it becomes raw
+/// samples. A P-KEY session contributes one point per event; every other
+/// unit contributes exactly one.
+struct MeasuredUnit {
+    /// The measured points, in execution order.
+    points: Vec<MeasuredPoint>,
+    /// The child's exit code, or -1 when it had to be killed.
+    exit_code: i32,
+    /// What the unit's own checks found wanting.
+    failures: Vec<String>,
+    /// The bytes the child flushed to its terminal.
+    stdout_bytes: u64,
+}
+
+/// Runs one planned unit — one CLI run, one PTY session, or one resource
+/// run — and appends its raw samples. `order_index` advances by exactly
+/// the number of samples the unit produced.
+#[allow(clippy::too_many_arguments)]
+fn unit_samples(
+    plan: &RunPlan,
+    executable: &Path,
+    version: &str,
+    block: usize,
+    run_in_block: usize,
+    warmup: bool,
+    iteration: usize,
+    fixture: &Fixture,
+    order_index: &mut usize,
+) -> Result<Vec<Sample>, String> {
+    let kind = metric::by_id(plan.metric).expect("validated").kind;
+    let unit = match kind {
+        Kind::Cli => {
+            let sample = one_run(
+                plan,
+                executable,
+                version,
+                block,
+                run_in_block,
+                *order_index,
+                warmup,
+                iteration,
+                fixture,
+            )?;
+            *order_index += 1;
+            return Ok(vec![sample]);
+        }
+        Kind::Pty => pty_unit(plan, executable, fixture)?,
+        Kind::Resource => resource_unit(plan, executable, fixture)?,
+    };
+    let start = *order_index;
+    let rows = unit
+        .points
+        .iter()
+        .enumerate()
+        .map(|(event, point)| {
+            let mut failures = unit.failures.clone();
+            failures.extend(point.failures.iter().cloned());
+            if unit.exit_code != 0 {
+                failures.insert(0, format!("the session ended with exit code {}", unit.exit_code));
+            }
+            Sample {
+                schema_version: SAMPLES_SCHEMA_VERSION,
+                metric: plan.metric.to_string(),
+                corpus: plan.corpus.to_string(),
+                version: version.to_string(),
+                // SPEC 17.4 P-KEY: every event is one sample; the block is
+                // its session's block and the run index is the event's
+                // place inside the session.
+                block,
+                run_in_block: event,
+                order_index: start + event,
+                warmup,
+                elapsed_ms: point.value,
+                unit: point.unit.map(str::to_string),
+                exit_code: unit.exit_code,
+                stdout_bytes: unit.stdout_bytes,
+                stderr_bytes: 0,
+                oracle: if failures.is_empty() { "passed".to_string() } else { "failed".to_string() },
+                oracle_failures: failures,
+                cache_method: "warm".to_string(),
+                invalidated: false,
+                invalidation_reason: None,
+                at: now_utc(),
+            }
+        })
+        .collect::<Vec<_>>();
+    *order_index += rows.len();
+    Ok(rows)
+}
+
+/// The arguments every measured surface session runs with: the fixed
+/// 120x40 terminal comes from the driver, the selected document pins the
+/// first frame to the corpus fact, and `--reduced-updates` makes the
+/// surface draw only changed frames — so bytes arriving at the master
+/// mean the surface answered, which is the P-KEY boundary.
+fn session_args(fixture: &Fixture) -> Vec<String> {
+    vec![
+        "tui".to_string(),
+        "--reduced-updates".to_string(),
+        "--path".to_string(),
+        fixture.facts.selected_path.clone(),
+    ]
+}
+
+/// The needles the first useful frame must show (SPEC 17.4): the header
+/// fragment that names the branch and the review head, the document's
+/// own opening heading, one saved-state label, and the footer that names
+/// the views. A spinner or a blank frame shows none of them.
+///
+/// Every needle is written for one terminal row. The surface draws its
+/// panes side by side, so the flattened stream interleaves the panes row
+/// by row: a needle longer than one row would span foreign text. The
+/// first frame is a full paint of an empty screen, so its rows arrive
+/// complete; later frames are diffs that skip unchanged cells, which is
+/// why only the first frame is needle-verified.
+fn useful_frame_needles(fixture: &Fixture) -> Result<(String, String, Vec<String>), String> {
+    let facts = &fixture.facts;
+    let short_head: String = facts.candidate.chars().take(7).collect();
+    let identity = pty::collapse(&format!("· main @ {short_head}"));
+    let working = std::fs::read(fixture.repo.join(&facts.selected_path))
+        .map_err(|error| format!("the selected document cannot be read: {error}"))?;
+    let text = String::from_utf8_lossy(&working);
+    let first_line = text.lines().next().unwrap_or_default();
+    let source = if first_line.chars().count() >= 4 { first_line } else { &text };
+    let content: String = pty::collapse(source).chars().take(40).collect();
+    let saved = [
+        "Saved",
+        "Unsaved draft",
+        "Saved, working file gone",
+    ]
+    .iter()
+    .map(|label| pty::collapse(label))
+    .collect();
+    Ok((identity, content, saved))
+}
+
+/// Whether one frame's visible text is the useful first frame of SPEC
+/// 17.4: identity, meaningful content, freshness state, and actions.
+fn frame_is_useful(text: &str, identity: &str, content: &str, saved: &[String]) -> bool {
+    text.contains(identity)
+        && text.contains(content)
+        && text.contains(&pty::collapse("1 Read 2 Changes 3 History"))
+        && saved.iter().any(|label| text.contains(label))
+}
+
+/// Runs one PTY metric session: P-OPEN, P-KEY, or P-REFRESH.
+fn pty_unit(plan: &RunPlan, executable: &Path, fixture: &Fixture) -> Result<MeasuredUnit, String> {
+    // Every iteration begins from the intended state (SPEC 17.7.2); a
+    // P-REFRESH run leaves its edit behind, so the reset matters between
+    // runs, not only before the first.
+    fixture.reset_to_candidate()?;
+    fixture.assert_reviewable()?;
+    match plan.metric {
+        "P-OPEN" => open_unit(executable, fixture),
+        "P-KEY" => key_unit(plan, executable, fixture),
+        "P-REFRESH" => refresh_unit(executable, fixture),
+        other => Err(format!("the PTY sampler does not measure {other}")),
+    }
+}
+
+/// P-OPEN: launch to the first useful document frame (SPEC 17.4). The
+/// clock starts immediately before the child is spawned and stops when
+/// the bytes that complete the useful frame arrive at the master.
+fn open_unit(executable: &Path, fixture: &Fixture) -> Result<MeasuredUnit, String> {
+    let (identity, content, saved) = useful_frame_needles(fixture)?;
+    let args = session_args(fixture);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let started = Instant::now();
+    let mut session = PtySession::spawn(executable, &arg_refs, &fixture.vars, &fixture.repo)
+        .map_err(|error| format!("the surface cannot start on its terminal: {error}"))?;
+    let (elapsed_ms, _reached) = session.wait_useful(started, FRAME_LIMIT, |text| {
+        frame_is_useful(text, &identity, &content, &saved)
+    });
+    let exit_code = session.quit(QUIT_LIMIT);
+    let mut failures = Vec::new();
+    // The oracle repeats the frame check outside timing, on everything
+    // the session ever flushed: a fast run whose frame never showed
+    // identity, content, state, and actions fails the benchmark.
+    if !frame_is_useful(&session.visible_text(), &identity, &content, &saved) {
+        failures.push(
+            "the flushed frames never showed identity, content, a saved-state label, and the \
+             footer actions together"
+                .to_string(),
+        );
+    }
+    Ok(MeasuredUnit {
+        points: vec![MeasuredPoint {
+            value: elapsed_ms,
+            unit: None,
+            failures,
+        }],
+        exit_code,
+        failures: Vec::new(),
+        stdout_bytes: session.bytes_written(),
+    })
+}
+
+/// P-KEY: input injection to answering bytes, one sample per event
+/// (SPEC 17.4).
+///
+/// The event script is deterministic: alternating `j`/`k` reading steps
+/// from the top of the selected document. Every event provably changes
+/// the frame, because the reading offset starts at the top row and each
+/// step moves it by one row, so a step that drew nothing is a real
+/// missing response. Timing starts immediately before the key bytes are
+/// written — queued input, polling, decoding, and rendering are all
+/// inside (SPEC 17.4) — and stops at the first answering byte.
+fn key_unit(plan: &RunPlan, executable: &Path, fixture: &Fixture) -> Result<MeasuredUnit, String> {
+    let clean_before = fixture.oracle.status_porcelain();
+    let args = session_args(fixture);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut session = PtySession::spawn(executable, &arg_refs, &fixture.vars, &fixture.repo)
+        .map_err(|error| format!("the surface cannot start on its terminal: {error}"))?;
+    let (identity, content, saved) = useful_frame_needles(fixture)?;
+    let mut failures = Vec::new();
+    if !session.wait_until(FRAME_LIMIT, |text| {
+        frame_is_useful(text, &identity, &content, &saved)
+    }) {
+        failures.push("the session never showed its useful first frame".to_string());
+    }
+    session.drain_frame(FRAME_QUIET.max(Duration::from_millis(100)));
+
+    let mut points = Vec::with_capacity(plan.events_per_session);
+    let mut consecutive_timeouts = 0usize;
+    let mut dead = false;
+    for event in 0..plan.events_per_session {
+        if dead {
+            // The session stopped answering; the remaining events never
+            // ran, and their rows say so instead of borrowing a number.
+            points.push(MeasuredPoint {
+                value: 0.0,
+                unit: None,
+                failures: vec![format!(
+                    "the session stopped answering before event {event} ran; the event was \
+                     never injected"
+                )],
+            });
+            continue;
+        }
+        let key: &[u8] = if event % 2 == 0 { b"j" } else { b"k" };
+        let (elapsed_ms, answered) = session.send_key_timed(key, KEY_LIMIT);
+        let mut event_failures = Vec::new();
+        if answered {
+            consecutive_timeouts = 0;
+        } else {
+            event_failures.push(format!(
+                "event {event} ({}) drew no bytes within its {} ms timeout",
+                if event % 2 == 0 { 'j' } else { 'k' },
+                KEY_LIMIT.as_millis()
+            ));
+            consecutive_timeouts += 1;
+            if consecutive_timeouts >= DEAD_AFTER_TIMEOUTS {
+                dead = true;
+            }
+        }
+        session.drain_frame(FRAME_QUIET);
+        points.push(MeasuredPoint {
+            value: elapsed_ms,
+            unit: None,
+            failures: event_failures,
+        });
+    }
+    let exit_code = session.quit(QUIT_LIMIT);
+
+    // The read-only session touched nothing: stock Git confirms it
+    // outside timing (SPEC 17.7.6).
+    if !clean_before.is_empty() {
+        failures.push(format!("the repository was dirty before the session: {clean_before}"));
+    }
+    let after = fixture.oracle.status_porcelain();
+    if !after.is_empty() {
+        failures.push(format!("the session left changes behind: {after}"));
+    }
+    Ok(MeasuredUnit {
+        points,
+        exit_code,
+        failures,
+        stdout_bytes: session.bytes_written(),
+    })
+}
+
+/// P-REFRESH: a selected-file external edit to the explicit arrival
+/// notice (SPEC 17.4, 13.3).
+///
+/// The session launches untimed and shows its useful frame first. The
+/// paragraph bytes are prepared untimed; the clock starts the moment the
+/// write returns, and stops when the collapsed output first carries the
+/// arrival sentence. Discovery and display are measured, never durable
+/// saving — the old candidate stays pinned.
+fn refresh_unit(executable: &Path, fixture: &Fixture) -> Result<MeasuredUnit, String> {
+    let facts = &fixture.facts;
+    let target = fixture.repo.join(&facts.selected_path);
+    let mut dirty = std::fs::read(&target)
+        .map_err(|error| format!("the selected document cannot be read: {error}"))?;
+    dirty.extend_from_slice(REFRESH_PARAGRAPH);
+
+    let args = session_args(fixture);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut session = PtySession::spawn(executable, &arg_refs, &fixture.vars, &fixture.repo)
+        .map_err(|error| format!("the surface cannot start on its terminal: {error}"))?;
+    let (identity, content, saved) = useful_frame_needles(fixture)?;
+    let mut failures = Vec::new();
+    if !session.wait_until(FRAME_LIMIT, |text| {
+        frame_is_useful(text, &identity, &content, &saved)
+    }) {
+        failures.push("the session never showed its useful first frame".to_string());
+    }
+    session.drain_frame(FRAME_QUIET.max(Duration::from_millis(100)));
+
+    std::fs::write(&target, &dirty)
+        .map_err(|error| format!("the external edit cannot land: {error}"))?;
+    let started = Instant::now();
+    // The needle is the notice's own tail, not its opening words. The
+    // notice replaces the short status line at the foot of the reading
+    // pane, and a diff frame skips every cell the status line already
+    // held — an early needle can straddle a skipped cell and never match
+    // the flattened stream even though the frame shows the notice. The
+    // status text ends near the row's start, while the notice's tail sits
+    // past column 90 of a 120-column row, so its cells are always new.
+    let notice = pty::collapse("this review never saw");
+    let (elapsed_ms, appeared) = session.wait_useful(started, FRAME_LIMIT, |text| {
+        text.contains(&notice)
+    });
+    let exit_code = session.quit(QUIT_LIMIT);
+    if !appeared {
+        failures.push(
+            "the arrival notice never reached the frame within its limit; the 2 s polling window \
+             and the draw belong inside this metric"
+                .to_string(),
+        );
+    }
+    // The pinned state survived: exactly the appended edit is dirty and
+    // HEAD never moved (SPEC 17.4: the candidate stays pinned until a
+    // refresh). The porcelain line's leading space is the index column,
+    // and the oracle's `ok` trims the whole output, so the expected line
+    // carries no leading space either.
+    let dirty_state = fixture.oracle.status_porcelain();
+    let expected_line = format!("M {}", facts.selected_path);
+    if dirty_state.trim_end() != expected_line {
+        failures.push(format!(
+            "the working tree was expected to hold exactly the appended edit ({expected_line}), \
+             but holds: {dirty_state}"
+        ));
+    }
+    let head = fixture.oracle.head();
+    if head != facts.candidate {
+        failures.push(format!(
+            "HEAD moved to {head} during a refresh measurement; the old candidate must stay pinned"
+        ));
+    }
+    Ok(MeasuredUnit {
+        points: vec![MeasuredPoint {
+            value: elapsed_ms,
+            unit: None,
+            failures,
+        }],
+        exit_code,
+        failures: Vec::new(),
+        stdout_bytes: session.bytes_written(),
+    })
+}
+
+/// Runs one resource metric session: P-CPU, P-RSS, or P-TREE-MEM.
+fn resource_unit(plan: &RunPlan, executable: &Path, fixture: &Fixture) -> Result<MeasuredUnit, String> {
+    fixture.reset_to_candidate()?;
+    fixture.assert_reviewable()?;
+    let run = match plan.metric {
+        "P-RSS" => resource::run_rss(executable, &fixture.vars, &fixture.repo)?,
+        "P-TREE-MEM" => resource::run_tree_memory(executable, &fixture.vars, &fixture.repo)?,
+        "P-CPU" => resource::run_cpu(
+            executable,
+            &fixture.vars,
+            &fixture.repo,
+            Duration::from_secs(plan.window_seconds.max(1)),
+        )?,
+        other => return Err(format!("the resource sampler does not measure {other}")),
+    };
+    Ok(MeasuredUnit {
+        points: vec![MeasuredPoint {
+            value: run.value,
+            unit: Some(run.unit),
+            failures: run.failures,
+        }],
+        exit_code: run.exit_code,
+        failures: Vec::new(),
+        stdout_bytes: run.stdout_bytes,
+    })
 }
 
 /// Runs one whole measurement and writes the raw samples and record.
@@ -322,13 +833,20 @@ pub fn run(
     require_registered(environment)?;
     let definition = metric::by_id(plan.metric)
         .ok_or_else(|| format!("unknown metric {}", plan.metric))?;
-    if definition.kind != Kind::Cli {
-        return Err(format!(
-            "{} is a {} metric; this harness times fresh CLI processes only, \
-             and the metric stays not_measured",
-            plan.metric,
-            definition.kind.as_str()
-        ));
+    match definition.kind {
+        Kind::Cli => {}
+        Kind::Pty | Kind::Resource => {
+            if !matches!(plan.sides, Sides::Single(_)) {
+                return Err(format!(
+                    "{} is a {} metric; the SPEC 17.7 paired comparison is defined for primary \
+                     CLI metrics, and a PTY or resource pairing would need its own paired \
+                     design; measure one side with --executable or leave the metric \
+                     not_measured",
+                    plan.metric,
+                    definition.kind.as_str()
+                ));
+            }
+        }
     }
     // Return the fixture to C before anything derives from it: a
     // previous measurement may have left its last mutation behind
@@ -349,18 +867,17 @@ pub fn run(
     for version in plan.sides.versions() {
         let executable = executable_of(&plan.sides, version)?;
         for warmup in 0..plan.warmups {
-            samples.push(one_run(
+            samples.extend(unit_samples(
                 plan,
                 &executable,
                 version,
                 0,
                 warmup,
-                order_index,
                 true,
                 order_index,
                 fixture,
+                &mut order_index,
             )?);
-            order_index += 1;
         }
     }
 
@@ -375,18 +892,17 @@ pub fn run(
         for version in versions {
             let executable = executable_of(&plan.sides, version)?;
             for run_in_block in 0..plan.runs_per_block {
-                samples.push(one_run(
+                samples.extend(unit_samples(
                     plan,
                     &executable,
                     version,
                     block,
                     run_in_block,
-                    order_index,
                     false,
                     iteration,
                     fixture,
+                    &mut order_index,
                 )?);
-                order_index += 1;
                 iteration += 1;
             }
         }
@@ -481,15 +997,8 @@ pub fn invalidate_block(
         record.p95_ms = None;
         details.statistics = None;
     } else {
-        let (min_ms, max_ms) = stats::range(&counted);
-        let statistics = Statistics {
-            sample_count: counted.len(),
-            median_ms: stats::median(&counted),
-            p95_ms: stats::p95(&counted),
-            min_ms,
-            max_ms,
-            method: "nearest-rank; all samples retained including slow ones".to_string(),
-        };
+        let statistics = statistics_of(&record.metric, &counted)
+            .expect("a non-empty series produces statistics");
         record.sample_count = statistics.sample_count;
         record.median_ms = Some(statistics.median_ms);
         record.p95_ms = Some(statistics.p95_ms);
@@ -530,6 +1039,8 @@ pub fn invalidate_block(
             blocks: details.sampling.blocks,
             runs_per_block: details.sampling.runs_per_block,
             order_seed: details.sampling.order_seed,
+            events_per_session: details.sampling.events_per_session,
+            window_seconds: details.sampling.window_seconds,
             implementation_commit: record.implementation_commit.clone(),
             notes: Vec::new(),
         };
@@ -557,6 +1068,110 @@ fn executable_of(sides: &Sides, version: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// The statistics block of one counted series. Shared by the run and the
+/// invalidate paths, so a recomputed record can never disagree with a
+/// fresh one. The method sentence names the unit the numbers carry,
+/// because a resource quantity in unlabeled fields is not evidence.
+pub fn statistics_of(metric_id: &str, measured: &[f64]) -> Option<Statistics> {
+    if measured.is_empty() {
+        return None;
+    }
+    let (min_ms, max_ms) = stats::range(measured);
+    Some(Statistics {
+        sample_count: measured.len(),
+        median_ms: stats::median(measured),
+        p95_ms: stats::p95(measured),
+        // A p99 is evidence only in the large event series P-KEY's
+        // policy produces (SPEC 17.7.5); a smaller series would borrow a
+        // rank it cannot support, so it stays absent.
+        p99_ms: if metric_id == "P-KEY" && measured.len() >= 10_000 {
+            Some(stats::nearest_rank(measured, 99.0))
+        } else {
+            None
+        },
+        min_ms,
+        max_ms,
+        method: match metric::by_id(metric_id).map(|definition| definition.kind) {
+            Some(Kind::Resource) if metric_id == "P-CPU" => {
+                "nearest-rank over percent-of-one-core values; every counted run retained; the \
+                 gate is the maximum sample against the ceiling"
+                    .to_string()
+            }
+            Some(Kind::Resource) => {
+                "nearest-rank over MiB values; every counted run retained; the gate is the \
+                 maximum sample against the ceiling"
+                    .to_string()
+            }
+            _ => "nearest-rank; all samples retained including slow ones".to_string(),
+        },
+    })
+}
+
+/// The unit sentence of one metric's samples, for notes that must quote a
+/// number next to its unit.
+fn unit_of(metric_id: &str) -> &'static str {
+    match metric_id {
+        "P-CPU" => "percent-of-one-core",
+        "P-RSS" | "P-TREE-MEM" => "MiB",
+        _ => "ms",
+    }
+}
+
+/// Whether this plan met the sampling policy its metric kind declares
+/// (SPEC 17.7.3, 17.4). The floors differ per kind: the event series for
+/// P-KEY, the five-minute window for P-CPU, the lighter repeat count for
+/// the resource quantities. A run below its floor is diagnostic and its
+/// verdict is `inconclusive`, never a pass.
+fn below_policy(plan: &RunPlan, counted_samples: usize) -> bool {
+    match plan.metric {
+        "P-KEY" => {
+            plan.warmups < 5
+                || plan.blocks < 20
+                || plan.runs_per_block < 5
+                || counted_samples < 10_000
+        }
+        "P-CPU" => plan.blocks < 2 || plan.window_seconds < 300,
+        "P-RSS" | "P-TREE-MEM" => plan.warmups < 1 || plan.blocks < 4 || plan.runs_per_block < 3,
+        _ => plan.warmups < 5 || plan.blocks < 20 || plan.runs_per_block < 5,
+    }
+}
+
+/// The note that names which policy floor a run fell short of, so an
+/// `inconclusive` verdict always carries its reason.
+fn below_policy_note(plan: &RunPlan, counted_samples: usize) -> String {
+    match plan.metric {
+        "P-KEY" => format!(
+            "{} counted events sit below the SPEC 17.4 floor of 10,000 over the policy session \
+             count (5 warmup sessions, then 20 blocks of 5 sessions of 100 events); the verdict \
+             is inconclusive",
+            counted_samples
+        ),
+        "P-CPU" => format!(
+            "{} idle window{} of {} s sit below the five-minute definition of SPEC 17.4; the run \
+             is diagnostic and its verdict is inconclusive",
+            plan.blocks,
+            if plan.blocks == 1 { "" } else { "s" },
+            plan.window_seconds
+        ),
+        "P-RSS" | "P-TREE-MEM" => format!(
+            "the resource policy asks at least 4 blocks of 3 runs after 1 warmup; this plan ran \
+             {} warmup{} and {} block{} of {} run{}, so the verdict is inconclusive",
+            plan.warmups,
+            if plan.warmups == 1 { "" } else { "s" },
+            plan.blocks,
+            if plan.blocks == 1 { "" } else { "s" },
+            plan.runs_per_block,
+            if plan.runs_per_block == 1 { "" } else { "s" },
+        ),
+        _ => format!(
+            "{} counted samples over {} blocks sit below the SPEC 17.7.3 policy \
+             (at least 20 independent block pairs); the comparison evidence is inconclusive",
+            counted_samples,
+            plan.blocks
+        ),
+    }
+}
+
 /// Computes statistics, gates, and the final status from the retained
 /// samples. Shared by the run and the invalidate paths, so marking a
 /// block invalidated and recomputing can never disagree with a fresh
@@ -575,17 +1190,7 @@ pub fn finish_record(
         Sides::Paired { .. } => "candidate",
     };
     let measured = record::counted_values(samples, gated_version);
-    let statistics = (!measured.is_empty()).then(|| {
-        let (min_ms, max_ms) = stats::range(&measured);
-        Statistics {
-            sample_count: measured.len(),
-            median_ms: stats::median(&measured),
-            p95_ms: stats::p95(&measured),
-            min_ms,
-            max_ms,
-            method: "nearest-rank; all samples retained including slow ones".to_string(),
-        }
-    });
+    let statistics = statistics_of(plan.metric, &measured);
 
     // Correctness first: one incorrect run fails the benchmark
     // regardless of speed (SPEC 17.7.6).
@@ -602,10 +1207,28 @@ pub fn finish_record(
 
     let budget = definition.budget(&plan.corpus);
     let budget_p95 = budget.as_ref().and_then(|budget| budget.p95_ms());
-    let mut budget_exceeded = false;
-    if let (Some(limit), Some(stats_block)) = (budget_p95, &statistics) {
-        budget_exceeded = stats_block.p95_ms > limit as f64;
-    }
+    let budget_p99 = record::budget_p99_ms(plan.metric, &plan.corpus);
+    let ceiling = record::resource_ceiling(plan.metric, &plan.corpus);
+    // The gate shape follows the metric kind. A latency budget compares
+    // the nearest-rank p95, and P-KEY adds its p99 once the event series
+    // is large enough to carry one. A resource ceiling compares the
+    // maximum counted sample, because one wild run is exactly what a
+    // ceiling exists to catch, and a percentile would hide it.
+    let p95_exceeded = match (&statistics, budget_p95) {
+        (Some(stats_block), Some(limit)) => stats_block.p95_ms > limit as f64,
+        _ => false,
+    };
+    let p99_exceeded = match (&statistics, budget_p99) {
+        (Some(stats_block), Some(limit)) => {
+            stats_block.p99_ms.is_some_and(|p99| p99 > limit as f64)
+        }
+        _ => false,
+    };
+    let ceiling_exceeded = match (&statistics, ceiling) {
+        (Some(stats_block), Some(limit)) => stats_block.max_ms > limit,
+        _ => false,
+    };
+    let budget_exceeded = p95_exceeded || p99_exceeded || ceiling_exceeded;
 
     let comparison = comparison_of(plan, samples);
     let regression_blocked = comparison
@@ -632,15 +1255,19 @@ pub fn finish_record(
 
     let policy = plan.sampling();
     // The SPEC 17.7.3 minimums decide, not the knobs: a shortened run is
-    // diagnostic and its verdict is inconclusive, never a pass.
-    let below_policy =
-        plan.warmups < 5 || plan.blocks < 20 || plan.runs_per_block < 5;
+    // diagnostic and its verdict is inconclusive, never a pass. Each kind
+    // carries its own floor.
+    let short_of_policy = below_policy(plan, measured.len());
 
-    let status = if oracle_state == OracleState::Failed || exits_broken {
+    // Correctness failures and gate failures share one verdict: a fast but
+    // wrong run and an over-budget run both fail, never pass by speed.
+    let status = if oracle_state == OracleState::Failed
+        || exits_broken
+        || budget_exceeded
+        || regression_blocked
+    {
         Status::Failed
-    } else if budget_exceeded || regression_blocked {
-        Status::Failed
-    } else if below_policy {
+    } else if short_of_policy {
         Status::Inconclusive
     } else if statistics.is_some() {
         Status::Passed
@@ -649,20 +1276,53 @@ pub fn finish_record(
     };
 
     let mut notes = plan.notes.clone();
-    if below_policy {
-        notes.push(format!(
-            "{} counted samples over {} blocks sit below the SPEC 17.7.3 policy \
-             (at least 20 independent block pairs); the comparison evidence is inconclusive",
-            measured.len(),
-            plan.blocks
-        ));
+    if short_of_policy {
+        notes.push(below_policy_note(plan, measured.len()));
     }
-    if budget_exceeded {
+    match definition.kind {
+        Kind::Pty => {
+            // The session shape is part of the metric's meaning: record
+            // it, so a number is never read without its terminal.
+            notes.push(format!(
+                "each session ran the surface on a {}-column, {}-row xterm-256color \
+                 pseudo-terminal with --reduced-updates",
+                pty::SESSION_COLUMNS,
+                pty::SESSION_ROWS
+            ));
+            if plan.metric == "P-KEY" {
+                notes.push(format!(
+                    "the event script alternated j/k reading steps, so every one of the {} \
+                     events per session provably changed the frame",
+                    plan.events_per_session
+                ));
+            }
+        }
+        Kind::Resource => notes.push(resource::sequence_sentence().to_string()),
+        Kind::Cli => {}
+    }
+    if p95_exceeded {
         notes.push(
             "the p95 exceeded its budget: SPEC 17.7 requires one declared confirmation run \
              of both versions, preserved, before the failure blocks release"
                 .to_string(),
         );
+    }
+    if p99_exceeded {
+        notes.push(
+            "the p99 exceeded its budget: the key-to-bytes tail is what the P-KEY p99 exists \
+             to catch, and one declared confirmation run must precede any release"
+                .to_string(),
+        );
+    }
+    if ceiling_exceeded {
+        let (value, unit) = statistics
+            .as_ref()
+            .map(|stats_block| (stats_block.max_ms, unit_of(plan.metric)))
+            .expect("an exceeded ceiling implies statistics");
+        notes.push(format!(
+            "the maximum counted sample ({value:.1} {unit}) exceeded its ceiling: a resource \
+             gate reads the maximum, never a percentile"
+        ));
     }
     if regression_blocked {
         notes.push(
@@ -702,7 +1362,13 @@ pub fn finish_record(
             confirmation_required: budget_exceeded || regression_blocked,
         },
         process_counts: None,
-        memory_definition: None,
+        // Every resource record states what its numbers summed and where
+        // the kernel kept them (SPEC 17.8); a latency record carries none.
+        memory_definition: if definition.kind == Kind::Resource {
+            Some(resource::memory_definition(plan.metric))
+        } else {
+            None
+        },
         invalidated_blocks,
         notes,
     };
@@ -717,8 +1383,19 @@ pub fn finish_record(
         executable_hash: executable.as_ref().map(|summary| summary.sha256.clone()),
         corpus_manifest_hash: Some(fixture.manifest_sha256.clone()),
         sample_count: statistics.as_ref().map_or(0, |stats_block| stats_block.sample_count),
-        median_ms: statistics.as_ref().map(|stats_block| stats_block.median_ms),
-        p95_ms: statistics.as_ref().map(|stats_block| stats_block.p95_ms),
+        // A resource quantity is not a latency: the base fields stay
+        // empty and the numbers live in `details.statistics`, whose
+        // method sentence names their unit (SPEC 17.8).
+        median_ms: if definition.kind == Kind::Resource {
+            None
+        } else {
+            statistics.as_ref().map(|stats_block| stats_block.median_ms)
+        },
+        p95_ms: if definition.kind == Kind::Resource {
+            None
+        } else {
+            statistics.as_ref().map(|stats_block| stats_block.p95_ms)
+        },
         budget_p95_ms: budget_p95,
         correctness_oracle: oracle_state,
         raw_samples_path: Some(raw_path.to_path_buf()),
