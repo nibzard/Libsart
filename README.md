@@ -128,7 +128,8 @@ missing files stay distinct from empty ones.
 
 The keyboard contract of the interface is complete: `Tab` and `Shift-Tab`
 cycle focus between the document list, the reading column, and the standing
-action menu, and the footer names the focused element in words; `:` opens
+action menu, and the footer names the focused element in words; `PgUp` and
+`PgDn` move one viewport, less one held row, in the focused element; `:` opens
 every action with its binding and the reason a disabled action cannot run;
 `?` lists the contextual keys and the current blockers; `/` searches within
 the current view and `f` opens the document picker, and inside those fields
@@ -137,7 +138,11 @@ finishing a review and one bracketed paste never fires a sequence of global
 actions. `e` hands the displayed document to the configured editor (set one
 with `margin init --editor-argv-json`), the editor meets a cooked terminal,
 and its return reloads the document. An editor exit never approves; it
-captures one draft only while `--capture-after-edit` is stored.
+captures one draft only while `--capture-after-edit` is stored. While the
+surface is open, its two-second polling keeps the displayed document and
+the document list current with the working tree: changed bytes reload in
+place with the reading position kept, and arrived or deleted documents
+join and leave the list; a pinned review comparison never re-pins itself.
 Every state is labeled in words and symbols, never hue alone, and
 `--color never` draws a plain monochrome surface. `--reduced-updates`
 redraws only when the frame changed, for terminals and assistive setups

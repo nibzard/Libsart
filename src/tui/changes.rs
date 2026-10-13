@@ -25,7 +25,7 @@ use crate::app::{
     BoundedExcerpt, ChangeDetail, DiffRequest, Operations, ReviewOutcome, ScopeTotals,
 };
 use crate::tui::render;
-use crate::tui::wrap::{self, DisplayRow};
+use crate::tui::wrap::{self, ComposedLine, DisplayRow};
 
 /// How many detail pages one load follows. The page contract bounds each
 /// page, not the whole comparison, so this bound keeps one load finite;
@@ -636,25 +636,25 @@ impl ChangesView {
     fn compose(&mut self, width: u16) {
         let counts = self.counts();
         let mut lines = Vec::new();
-        lines.push(format!(
+        lines.push(ComposedLine::meta(format!(
             "B {} → C {} · review {}",
             render::short(&self.baseline_oid),
             render::short(&self.candidate_oid),
             render::short(&self.review_id),
-        ));
-        lines.push(format!(
+        )));
+        lines.push(ComposedLine::meta(format!(
             "{} changed document{} · {} passage group{}",
             self.totals.files,
             plural(self.totals.files),
             self.totals.groups,
             plural(self.totals.groups),
-        ));
-        lines.push(format!(
+        )));
+        lines.push(ComposedLine::meta(format!(
             "Plan in memory: {} kept · {} restored · {} undecided · {} unvisited",
             counts.kept, counts.restored, counts.undecided, counts.unvisited,
-        ));
+        )));
         if counts.unvisited_documents > 0 {
-            lines.push(format!(
+            lines.push(ComposedLine::meta(format!(
                 "{} document{} hold{} no visited passage yet",
                 counts.unvisited_documents,
                 plural(counts.unvisited_documents),
@@ -663,43 +663,52 @@ impl ChangesView {
                 } else {
                     ""
                 },
-            ));
+            )));
         }
         if !self.actionable {
-            lines.push("Decisions unavailable: the comparison is not actionable.".to_string());
+            lines.push(ComposedLine::warning(
+                "Decisions unavailable: the comparison is not actionable.",
+            ));
         }
         if let Some(why) = &self.incomplete {
-            lines.push(format!("Decisions unavailable: {why}"));
+            lines.push(ComposedLine::warning(format!(
+                "Decisions unavailable: {why}"
+            )));
         }
         if let Some(why) = &self.stale {
-            lines.push(format!("Stale: {why}"));
-            lines.push("New edits arrived. Refresh before applying.".to_string());
+            lines.push(ComposedLine::warning(format!("Stale: {why}")));
+            lines.push(ComposedLine::warning(
+                "New edits arrived. Refresh before applying.",
+            ));
         }
-        lines.push(String::new());
-        lines.push("Changed documents:".to_string());
+        lines.push(ComposedLine::text(String::new()));
+        lines.push(ComposedLine::meta("Changed documents:"));
         let documents = self.changed_documents();
         let listed = documents.len().min(MAX_LISTED_DOCUMENTS);
         for (path, count) in documents.iter().take(listed) {
-            lines.push(format!("  {path} · {count} group{}", plural(*count)));
+            lines.push(ComposedLine::text(format!(
+                "  {path} · {count} group{}",
+                plural(*count)
+            )));
         }
         if documents.len() > listed {
-            lines.push(format!(
+            lines.push(ComposedLine::text(format!(
                 "  and {} more changed documents",
                 documents.len() - listed,
-            ));
+            )));
         }
-        lines.push(String::new());
+        lines.push(ComposedLine::text(String::new()));
         if self.groups.is_empty() {
-            lines.push("No pending changes.".to_string());
+            lines.push(ComposedLine::text("No pending changes."));
         }
         let mut starts = Vec::with_capacity(self.groups.len());
         for index in 0..self.groups.len() {
             // The header lands on the next composed line, one-based.
             starts.push((lines.len() + 1) as u32);
             lines.extend(self.group_block(index));
-            lines.push(String::new());
+            lines.push(ComposedLine::text(String::new()));
         }
-        self.rows = wrap::wrap_text(&lines.join("\n"), width);
+        self.rows = wrap::wrap_rows(&lines, width);
         self.starts = starts
             .into_iter()
             .map(|line| wrap::row_for_anchor(&self.rows, line))
@@ -717,8 +726,9 @@ impl ChangesView {
 
     /// Composes one group's block: the header with its state label, the
     /// source coordinates, the deciding keys, and the passage view or the
-    /// source view (SPEC 5.2, 10.4, 11.3-11.4).
-    fn group_block(&self, index: usize) -> Vec<String> {
+    /// source view (SPEC 5.2, 10.4, 11.3-11.4). The header draws as a
+    /// heading, or as a warning while no decision can exist.
+    fn group_block(&self, index: usize) -> Vec<ComposedLine> {
         let group = &self.groups[index];
         let state = self.state_of(index);
         let marker = if index == self.selection {
@@ -726,14 +736,19 @@ impl ChangesView {
         } else {
             "  "
         };
+        let header = if matches!(state, GroupState::Stale | GroupState::Unavailable) {
+            ComposedLine::warning
+        } else {
+            ComposedLine::heading
+        };
         let mut lines = Vec::new();
-        lines.push(format!(
+        lines.push(header(format!(
             "{marker}Group {} of {} · {}",
             index + 1,
             self.groups.len(),
             state.label(),
-        ));
-        lines.push(format!(
+        )));
+        lines.push(ComposedLine::meta(format!(
             "{} · {}{}{}",
             group.path,
             group.kind,
@@ -743,9 +758,14 @@ impl ChangesView {
                 ""
             },
             if group.opaque { " · opaque bytes" } else { "" },
+        )));
+        lines.push(ComposedLine::meta(format!(
+            "Why one decision: {}",
+            group.reason
+        )));
+        lines.push(ComposedLine::meta(
+            "r Restore previous passage · K Keep passage · s source view",
         ));
-        lines.push(format!("Why one decision: {}", group.reason));
-        lines.push("r Restore previous passage · K Keep passage · s source view".to_string());
         if self.source {
             self.source_block(group, &mut lines);
         } else {
@@ -756,14 +776,21 @@ impl ChangesView {
 
     /// The passage view of one group: the exact excerpts of both sides,
     /// placed by line range, with the word hints the pairing supports
-    /// (SPEC 5.2, 10.4).
-    fn passage_block(&self, group: &ChangeDetail, lines: &mut Vec<String>) {
+    /// (SPEC 5.2, 10.4). Each side draws in its own role; the `Before`
+    /// and `After` labels keep naming the sides in words (SPEC 11.4).
+    fn passage_block(&self, group: &ChangeDetail, lines: &mut Vec<ComposedLine>) {
         let presentation = &group.presentation;
-        lines.push(format!("Before · {}:", line_span(&presentation.before)));
-        excerpt_lines(&presentation.before, None, lines);
+        lines.push(ComposedLine::removed(format!(
+            "Before · {}:",
+            line_span(&presentation.before)
+        )));
+        excerpt_lines(&presentation.before, None, ComposedLine::removed, lines);
         bounded_notice("before", &presentation.before, lines);
-        lines.push(format!("After · {}:", line_span(&presentation.after)));
-        excerpt_lines(&presentation.after, None, lines);
+        lines.push(ComposedLine::added(format!(
+            "After · {}:",
+            line_span(&presentation.after)
+        )));
+        excerpt_lines(&presentation.after, None, ComposedLine::added, lines);
         bounded_notice("after", &presentation.after, lines);
         let shown = presentation
             .word_hints
@@ -771,9 +798,9 @@ impl ChangesView {
             .take(MAX_SHOWN_WORD_HINTS)
             .count();
         if shown > 0 {
-            lines.push("Changed words:".to_string());
+            lines.push(ComposedLine::meta("Changed words:"));
             for hint in presentation.word_hints.iter().take(MAX_SHOWN_WORD_HINTS) {
-                lines.push(format!(
+                lines.push(ComposedLine::text(format!(
                     "  line {} to {}: {}[{} → {}]{}",
                     hint.before_line,
                     hint.after_line,
@@ -781,53 +808,59 @@ impl ChangesView {
                     hint.removed,
                     hint.added,
                     hint.suffix,
-                ));
+                )));
             }
             let more = presentation.word_hints.len() - shown + presentation.word_hints_omitted;
             if more > 0 {
-                lines.push(format!("  and {more} more word hints"));
+                lines.push(ComposedLine::meta(format!(
+                    "  and {more} more word hints"
+                )));
             }
         } else if presentation.word_hints_omitted > 0 {
-            lines.push(format!(
+            lines.push(ComposedLine::meta(format!(
                 "{} word hints are omitted by the detail bound",
                 presentation.word_hints_omitted,
-            ));
+            )));
         }
     }
 
     /// The source view of one group (SPEC 11.3 `s`): the `@@` coordinates
     /// of every range and the exact bytes of both sides, so the reader
     /// always holds the exact Markdown changes even where the passage view
-    /// was bounded.
-    fn source_block(&self, group: &ChangeDetail, lines: &mut Vec<String>) {
+    /// was bounded. The `-` and `+` signs keep naming the sides, so the
+    /// hue only reinforces them (SPEC 11.4).
+    fn source_block(&self, group: &ChangeDetail, lines: &mut Vec<ComposedLine>) {
         for range in &group.ranges {
-            lines.push(format!(
+            lines.push(ComposedLine::meta(format!(
                 "@@ -{},{} +{},{} @@",
                 range.old_start, range.old_count, range.new_start, range.new_count,
-            ));
+            )));
         }
         if group.ranges_omitted > 0 {
-            lines.push(format!(
+            lines.push(ComposedLine::meta(format!(
                 "{} more ranges are omitted by the detail bound",
                 group.ranges_omitted,
-            ));
+            )));
         }
         if group.ranges.is_empty() && group.ranges_omitted == 0 {
             // An opaque change emits no readable hunks, so no line range
             // exists to state; the exact bytes of both sides are the
             // source, and the view says so instead of implying a loss.
-            lines.push(
-                "no line ranges apply; the exact bytes of both sides are the source".to_string(),
-            );
+            lines.push(ComposedLine::meta(
+                "no line ranges apply; the exact bytes of both sides are the source",
+            ));
         }
-        lines.push(format!(
+        lines.push(ComposedLine::removed(format!(
             "Before · {}:",
             line_span(&group.presentation.before)
-        ));
-        excerpt_lines(&group.presentation.before, Some('-'), lines);
+        )));
+        excerpt_lines(&group.presentation.before, Some('-'), ComposedLine::removed, lines);
         bounded_notice("before", &group.presentation.before, lines);
-        lines.push(format!("After · {}:", line_span(&group.presentation.after)));
-        excerpt_lines(&group.presentation.after, Some('+'), lines);
+        lines.push(ComposedLine::added(format!(
+            "After · {}:",
+            line_span(&group.presentation.after)
+        )));
+        excerpt_lines(&group.presentation.after, Some('+'), ComposedLine::added, lines);
         bounded_notice("after", &group.presentation.after, lines);
     }
 }
@@ -842,9 +875,15 @@ fn line_span(excerpt: &BoundedExcerpt) -> String {
 }
 
 /// Renders the exact lines of one excerpt side, indented for the passage
-/// view or prefixed for the source view. Opaque bytes render as one
-/// bounded hexadecimal view with the true byte length (SPEC 6.3, 7.2).
-fn excerpt_lines(excerpt: &BoundedExcerpt, prefix: Option<char>, lines: &mut Vec<String>) {
+/// view or prefixed for the source view, every line in the side's own
+/// role. Opaque bytes render as one bounded hexadecimal view with the
+/// true byte length (SPEC 6.3, 7.2).
+fn excerpt_lines(
+    excerpt: &BoundedExcerpt,
+    prefix: Option<char>,
+    build: fn(String) -> ComposedLine,
+    lines: &mut Vec<ComposedLine>,
+) {
     let lead = |text: &str| match prefix {
         Some(sign) => format!("{sign}{text}"),
         None => format!("  {text}"),
@@ -852,7 +891,7 @@ fn excerpt_lines(excerpt: &BoundedExcerpt, prefix: Option<char>, lines: &mut Vec
     match (&excerpt.text, &excerpt.hex) {
         (Some(text), _) => {
             for line in text.lines() {
-                lines.push(lead(line));
+                lines.push(build(lead(line)));
             }
         }
         (None, Some(hex)) => {
@@ -860,26 +899,27 @@ fn excerpt_lines(excerpt: &BoundedExcerpt, prefix: Option<char>, lines: &mut Vec
             if hex.chars().count() > MAX_HEX_CHARS {
                 shown.push('…');
             }
-            lines.push(lead(&format!(
+            lines.push(build(lead(&format!(
                 "{shown} ({} bytes, not valid UTF-8)",
                 excerpt.total_bytes,
-            )));
+            ))));
         }
-        _ => lines.push(lead("no readable lines")),
+        _ => lines.push(build(lead("no readable lines"))),
     }
 }
 
 /// States what a bounded excerpt hid, when it hid something. The source
 /// coordinates stay exact, so the notice names the bytes, never the
-/// position (SPEC 7.2).
-fn bounded_notice(side: &str, excerpt: &BoundedExcerpt, lines: &mut Vec<String>) {
+/// position (SPEC 7.2). The notice draws as a warning: the writer must
+/// know the passage is not whole.
+fn bounded_notice(side: &str, excerpt: &BoundedExcerpt, lines: &mut Vec<ComposedLine>) {
     if excerpt.truncated && excerpt.text.is_some() {
         let shown = excerpt.text.as_ref().map_or(0, |text| text.len());
-        lines.push(format!(
+        lines.push(ComposedLine::warning(format!(
             "the {side} excerpt is bounded: {shown} of {} bytes shown; \
              the source coordinates stay exact",
             excerpt.total_bytes,
-        ));
+        )));
     }
 }
 

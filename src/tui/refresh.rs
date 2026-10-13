@@ -1,6 +1,6 @@
-//! The refresh slice: polling that observes arrivals, and the worker
-//! that keeps the observation off the input loop (SPEC 5.3, 13.3; task
-//! T045).
+//! The refresh slice: polling that observes arrivals and rereads the
+//! open surface, and the worker that keeps both off the input loop
+//! (SPEC 5.3, 13.3; task T045).
 //!
 //! The displayed B/C pair is immutable, so the only honest way to treat
 //! the repository that keeps moving around it is to observe it and say
@@ -11,7 +11,10 @@
 //! names one arrival of SPEC 5.3: a new head, a dirty scoped file, a
 //! scope change, or changed eligibility. An arrival relabels every group
 //! and disables application; the text stays readable, and one explicit
-//! refresh re-pins over the rebuilt review.
+//! refresh re-pins over the rebuilt review. Beside that observation, each
+//! job rereads the displayed document and rebuilds the document list, so
+//! the surface shows current disk state while the pinned comparison
+//! stands.
 //!
 //! The observation runs on one worker thread, because a blocking Git
 //! read must not stall a key press (SPEC 13.3, 17.4 P-KEY). The worker
@@ -24,15 +27,17 @@
 //! behind each other. Polling discovers state; it saves nothing (SPEC
 //! 13.3).
 
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::app::{InspectRequest, InspectResult, Operations, PolicyBlocker};
+use crate::app::{InspectRequest, InspectResult, Operations, PolicyBlocker, ShowOutcome, ShowRequest};
 use crate::domain::OperationState;
+use crate::domain::ScopeInput;
 use crate::git::Git;
 use crate::tui::render;
-use crate::tui::shell::WorkspaceSnapshot;
+use crate::tui::shell::{self, WorkspaceSnapshot};
 
 /// The default inspection interval of one open surface (SPEC 13.3).
 pub const INSPECTION_INTERVAL: Duration = Duration::from_secs(2);
@@ -40,30 +45,106 @@ pub const INSPECTION_INTERVAL: Duration = Duration::from_secs(2);
 /// How many characters one arrival sentence occupies.
 const NOTICE_CHARS: usize = 200;
 
+/// What one job asks the worker to reread beside the workspace (SPEC
+/// 13.3): the displayed document and the document list, so the surface
+/// shows current disk state without one blocking read on the input loop.
+#[derive(Clone, Debug)]
+pub struct Watch {
+    /// The repository root the paths resolve against.
+    pub root: PathBuf,
+    /// The displayed document's repository-relative path; `None` when no
+    /// document stands.
+    pub document: Option<String>,
+    /// How the document list rebuilds: the adopted scope's input, or the
+    /// discovery walk of one unadopted folder.
+    pub list: WatchList,
+}
+
+impl Watch {
+    /// One watch of nothing but the root: no document, one unadopted
+    /// list.
+    pub fn new(root: PathBuf) -> Watch {
+        Watch {
+            root,
+            document: None,
+            list: WatchList::Unadopted,
+        }
+    }
+}
+
+/// How the document list of one watch rebuilds.
+#[derive(Clone, Debug)]
+pub enum WatchList {
+    /// The adopted scope: the worker resolves the stored input.
+    Adopted(ScopeInput),
+    /// The unadopted folder: the worker repeats the discovery walk.
+    Unadopted,
+}
+
+/// One job for the worker: the generation that asked, and what to reread
+/// (SPEC 13.3).
+#[derive(Clone, Debug)]
+pub struct WatchJob {
+    /// The generation of the requesting shell state.
+    pub generation: u64,
+    /// What the job rereads beside the workspace.
+    pub watch: Watch,
+}
+
+/// The working file of one watched document, as the worker read it.
+#[derive(Clone, Debug)]
+pub enum WatchedFile {
+    /// The bounded working bytes and the complete byte length.
+    Bytes(Vec<u8>, u64),
+    /// The working file no longer exists.
+    Gone,
+    /// The working file could not be read; no claim is honest about it.
+    Unread,
+}
+
+/// One watched document's reread: its path, its working file, and the
+/// candidate content at `HEAD` when one exists. The shell rebuilds its
+/// view from these pieces through the same rule an interactive load uses,
+/// so the two can never disagree about the label.
+#[derive(Clone, Debug)]
+pub struct WatchedDocument {
+    /// The repository-relative path the job watched.
+    pub path: String,
+    /// The working file as the worker read it.
+    pub file: WatchedFile,
+    /// The candidate content at `HEAD`; `None` before adoption and when
+    /// no candidate exists.
+    pub candidate: Option<ShowOutcome>,
+}
+
 /// One answered inspection: the generation of the shell state that asked
-/// for it, and the outcome of the one shared `inspect_workspace`
-/// operation (SPEC 13.2, 13.3).
+/// for it, the outcome of the one shared `inspect_workspace` operation,
+/// and what the watched document and list held (SPEC 13.2, 13.3).
 pub struct InspectionReply {
     /// The generation of the requesting shell state.
     pub generation: u64,
     /// The inspection outcome; a failure observes and claims nothing.
     pub outcome: InspectResult,
+    /// The watched document's reread, when the job watched one.
+    pub document: Option<WatchedDocument>,
+    /// The rebuilt document list, when the job could build one.
+    pub documents: Option<Vec<String>>,
 }
 
 /// The one worker of the terminal surface (SPEC 13.3): one thread that
 /// runs the blocking Git reads of inspection polling off the input loop.
 pub struct RefreshWorker {
     /// Where jobs go; dropping it ends the thread.
-    jobs: Sender<u64>,
+    jobs: Sender<WatchJob>,
     /// Where answers come back.
     replies: Receiver<InspectionReply>,
     /// The thread, joined on shutdown.
     handle: JoinHandle<()>,
     /// Whether one job is running.
     running: bool,
-    /// The one waiting job: the newest generation asked for while a job
-    /// ran. One slot is the whole queue, so redundant polls coalesce.
-    queued: Option<u64>,
+    /// The one waiting job: the newest job asked for while one ran. One
+    /// slot is the whole queue, so redundant polls coalesce.
+    queued: Option<WatchJob>,
 }
 
 impl RefreshWorker {
@@ -75,24 +156,51 @@ impl RefreshWorker {
     /// surface then runs without polling, and its keys keep working
     /// exactly as they do.
     pub fn spawn(git: Git) -> Option<RefreshWorker> {
-        let (job_sender, jobs) = mpsc::channel::<u64>();
+        let (job_sender, jobs) = mpsc::channel::<WatchJob>();
         let (reply_sender, replies) = mpsc::channel::<InspectionReply>();
         let handle = thread::Builder::new()
             .name("margin-inspection".to_string())
             .spawn(move || {
                 // One loop over the job channel: a job is one inspection
-                // through the shared operation, and the reply channel
-                // closing means the surface left.
+                // through the shared operation plus the watch's rereads,
+                // and the reply channel closing means the surface left.
                 let operations = Operations::new(&git);
-                for generation in jobs {
+                for job in jobs {
                     let outcome = operations.inspect_workspace(&InspectRequest {
                         scope: None,
                         path_filter: Vec::new(),
                     });
+                    let document = job.watch.document.map(|path| {
+                        let file =
+                            match shell::read_working(&job.watch.root, &path, shell::READ_VIEW_BYTES)
+                            {
+                                Ok((bytes, total)) => WatchedFile::Bytes(bytes, total),
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                    WatchedFile::Gone
+                                }
+                                Err(_) => WatchedFile::Unread,
+                            };
+                        let candidate = candidate_at_head(&operations, &outcome, &path);
+                        WatchedDocument {
+                            path,
+                            file,
+                            candidate,
+                        }
+                    });
+                    let documents = match &job.watch.list {
+                        WatchList::Adopted(input) => {
+                            crate::app::resolve_scope(operations.git(), input)
+                                .ok()
+                                .map(|resolved| shell::document_paths(&resolved))
+                        }
+                        WatchList::Unadopted => Some(shell::discover_documents(&job.watch.root)),
+                    };
                     if reply_sender
                         .send(InspectionReply {
-                            generation,
+                            generation: job.generation,
                             outcome,
+                            document,
+                            documents,
                         })
                         .is_err()
                     {
@@ -110,16 +218,17 @@ impl RefreshWorker {
         })
     }
 
-    /// Requests one inspection of the state at `generation` (SPEC 13.3).
+    /// Requests one inspection of the state the job names, rereading what
+    /// its watch holds (SPEC 13.3).
     ///
     /// The request never blocks: it either sends one job or replaces the
     /// one waiting job, so a burst of requests costs one running plus one
     /// waiting inspection, whatever the burst held.
-    pub fn request(&mut self, generation: u64) {
+    pub fn request(&mut self, job: WatchJob) {
         if self.running {
-            self.queued = Some(generation);
+            self.queued = Some(job);
         } else {
-            self.running = self.jobs.send(generation).is_ok();
+            self.running = self.jobs.send(job).is_ok();
         }
     }
 
@@ -160,8 +269,8 @@ impl RefreshWorker {
     /// Frees the running slot and sends the waiting job, when one stands.
     fn settled(&mut self) {
         self.running = false;
-        if let Some(generation) = self.queued.take() {
-            self.running = self.jobs.send(generation).is_ok();
+        if let Some(job) = self.queued.take() {
+            self.running = self.jobs.send(job).is_ok();
         }
     }
 
@@ -170,6 +279,32 @@ impl RefreshWorker {
     pub fn shutdown(self) {
         drop(self.jobs);
         let _ = self.handle.join();
+    }
+}
+
+/// Reads the candidate content of `path` at `HEAD` through the shared
+/// show operation, under the same guard the shell's interactive load
+/// uses: only one inspection that succeeded — an adopted repository —
+/// with a standing head has a candidate (SPEC 5.4). The read runs on the
+/// worker, so the input loop never blocks on it.
+fn candidate_at_head(
+    operations: &Operations<'_>,
+    outcome: &InspectResult,
+    path: &str,
+) -> Option<ShowOutcome> {
+    let data = outcome.data.as_ref()?;
+    data.head.as_ref()?;
+    let shown = operations.show_document(&ShowRequest {
+        path: path.to_string(),
+        revision: "HEAD".to_string(),
+        max_bytes: Some(shell::READ_VIEW_BYTES),
+        max_lines: None,
+        raw: false,
+    });
+    if shown.ok() {
+        shown.data
+    } else {
+        None
     }
 }
 

@@ -22,10 +22,10 @@ use std::process::Output;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use margin::app::Operations;
 use margin::git::Git;
-use margin::tui::{Action, ColorMode, Shell, TuiOptions, View, render};
+use margin::tui::{Action, ColorMode, Focus, Shell, TuiOptions, View, render};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier};
 use support::oracle;
 use support::repo::TestRepo;
 
@@ -88,6 +88,25 @@ fn page_of(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
                 .to_string()
         })
         .collect()
+}
+
+/// The foreground color and modifier of every cell run that renders
+/// `needle`, so one case asserts the hue a rendered passage carries even
+/// beside another column on the same screen row (SPEC 11.4).
+fn styles_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Vec<(Option<Color>, Modifier)> {
+    let width = buffer.area.width as usize;
+    let mut found = Vec::new();
+    for row in buffer.content.chunks(width) {
+        let text: String = row.iter().map(|cell| cell.symbol()).collect();
+        let mut from = 0;
+        while let Some(at) = text[from..].find(needle) {
+            let chars = text[..from + at].chars().count();
+            let cell = &row[chars];
+            found.push((Some(cell.fg), cell.modifier));
+            from = from + at + needle.len();
+        }
+    }
+    found
 }
 
 /// Joins rows for substring assertions.
@@ -161,6 +180,7 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
         );
     }
     assert!(screen.contains("Tab / Shift-Tab · Cycle focus"));
+    assert!(screen.contains("PgUp / PgDn · Page"));
     assert!(screen.contains("q / Ctrl-C · Quit"));
     // A disabled action carries its reason in words (SPEC 11.3).
     assert!(
@@ -570,6 +590,69 @@ fn the_document_picker_finds_and_opens_documents() {
 }
 
 #[test]
+fn page_keys_follow_focus_and_move_one_viewport() {
+    // `PgUp` and `PgDn` move one viewport, less one held row, in the
+    // focused element: the document list pages the selection, and the
+    // reading column pages its rows (SPEC 11.3).
+    let repo = TestRepo::init();
+    let mut first = String::from("# First\n\nA long document.\n");
+    for line in 1..=150 {
+        first.push_str(&format!("Line {line} of the long document.\n"));
+    }
+    repo.write_file("notes/a01.md", first.as_bytes());
+    for number in 2..=30 {
+        let path = format!("notes/a{number:02}.md");
+        let body = format!("# Document {number}\n\nA short passage.\n");
+        repo.write_file(&path, body.as_bytes());
+    }
+    repo.commit_all("import");
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    // One draw at 110x30 prepares the frame: the reading column and the
+    // list share 27 rows, so one page is 26 rows.
+    draw(&mut shell, 110, 30);
+
+    // Focus the document list: one page moves the selection by 26 rows
+    // and keeps the selected document loaded.
+    shell.handle_event(&key(KeyCode::Tab));
+    assert_eq!(shell.focus(), Focus::Documents);
+    shell.handle_event(&key(KeyCode::PageDown));
+    assert_eq!(shell.selection(), 26, "one page lands 26 documents down");
+    shell.handle_event(&key(KeyCode::PageDown));
+    assert_eq!(
+        shell.selection(),
+        29,
+        "a second page clamps at the last document",
+    );
+    shell.handle_event(&key(KeyCode::PageUp));
+    assert_eq!(shell.selection(), 3, "one page up lands 26 documents up");
+    shell.handle_event(&key(KeyCode::PageUp));
+    assert_eq!(shell.selection(), 0, "a second page up clamps at the first");
+
+    // Focus the reading column: the same keys page its rows by the same
+    // measure, less one held row. One draw first wraps the reloaded
+    // document, so the page has its rows.
+    draw(&mut shell, 110, 30);
+    shell.handle_event(&key(KeyCode::Tab));
+    assert_eq!(shell.focus(), Focus::Reading);
+    assert_eq!(shell.reading_offset(), 0);
+    shell.handle_event(&key(KeyCode::PageDown));
+    assert_eq!(shell.reading_offset(), 26, "one page scrolls 26 rows");
+    shell.handle_event(&key(KeyCode::PageUp));
+    assert_eq!(shell.reading_offset(), 0, "one page up returns to the top");
+
+    // The key list names the paging keys (SPEC 11.3).
+    shell.handle_event(&key(KeyCode::Char('?')));
+    let page = draw(&mut shell, 110, 30);
+    assert!(
+        joined(&page).contains("PgUp / PgDn · Page"),
+        "the help lists the paging keys: {}",
+        joined(&page),
+    );
+}
+
+#[test]
 fn help_lists_the_keys_and_the_current_blockers() {
     let repo = three_group_repo();
     let git = adapter_for(&repo);
@@ -583,6 +666,7 @@ fn help_lists_the_keys_and_the_current_blockers() {
     let screen = joined(&page);
     assert!(screen.contains("Margin keys"));
     assert!(screen.contains("Tab / Shift-Tab · Cycle focus"));
+    assert!(screen.contains("PgUp / PgDn · Page"));
     assert!(screen.contains(": · Action menu"));
     assert!(screen.contains("/ · Search within current view"));
     assert!(screen.contains("Current blockers"));
@@ -685,6 +769,62 @@ fn color_off_renders_every_state_in_words_and_symbols() {
     assert!(
         screen.contains("Unsaved draft") || screen.contains("Saved"),
         "the saved state stays a word under color-off",
+    );
+}
+
+#[test]
+fn color_on_marks_headings_and_both_diff_sides_with_hue() {
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let options = TuiOptions {
+        view: View::Changes,
+        color: ColorMode::Always,
+        ..TuiOptions::default()
+    };
+    let mut shell = Shell::open(repo.path(), &operations, &options);
+    let mut terminal =
+        Terminal::new(TestBackend::new(110, 60)).expect("a test backend always initializes");
+
+    // The source view states both sides with signs; the hue only
+    // reinforces the signs and the words (SPEC 11.4).
+    shell.handle_event(&key(KeyCode::Char('s')));
+    terminal
+        .draw(|frame| render::draw(&mut shell, frame))
+        .expect("a test backend never fails to draw");
+    let buffer = terminal.backend().buffer();
+    let styles = styles_of(buffer, "Group 1 of");
+    assert_eq!(
+        styles.as_slice(),
+        [(Some(Color::Blue), Modifier::BOLD)],
+        "a group header draws as a heading"
+    );
+    let styles = styles_of(buffer, "-First passage.");
+    assert_eq!(
+        styles.as_slice(),
+        [(Some(Color::Red), Modifier::empty())],
+        "the before side draws red"
+    );
+    let styles = styles_of(buffer, "+First passage, edited.");
+    assert_eq!(
+        styles.as_slice(),
+        [(Some(Color::Green), Modifier::empty())],
+        "the after side draws green"
+    );
+
+    // The Read view draws one Markdown heading in the heading role; the
+    // `#` marker itself stays visible. The section breadcrumb names the
+    // same heading in dim chrome, so only the body occurrence carries
+    // the heading role.
+    shell.handle_event(&key(KeyCode::Char('1')));
+    terminal
+        .draw(|frame| render::draw(&mut shell, frame))
+        .expect("a test backend never fails to draw");
+    let buffer = terminal.backend().buffer();
+    let styles = styles_of(buffer, "# One");
+    assert!(
+        styles.contains(&(Some(Color::Blue), Modifier::BOLD)),
+        "a Markdown heading draws as a heading, but the styles were {styles:?}"
     );
 }
 
@@ -822,13 +962,17 @@ fn edit_requests_the_configured_editor_and_reloads_on_return() {
     draw(&mut shell, 110, 30);
 
     // `e` requests the handoff: the explicit argv and the literal path of
-    // the displayed document (SPEC 11.3, 12.5).
+    // the displayed document (SPEC 11.3, 12.5). The expected path is
+    // canonicalized with it: a platform can keep the working tree under
+    // a symlinked folder, and the handoff resolves that link.
     shell.handle_event(&key(KeyCode::Char('e')));
     let handoff = shell.take_editor_request().expect("the handoff");
     assert_eq!(handoff.argv, vec![editor.display().to_string()]);
+    let expected_path = std::fs::canonicalize(repo.file_path("notes/a.md"))
+        .expect("the document path canonicalizes");
     assert_eq!(
         handoff.path,
-        repo.path().join("notes/a.md"),
+        expected_path,
         "the path is the displayed document's literal path",
     );
     assert!(shell.take_editor_request().is_none(), "the request is once");

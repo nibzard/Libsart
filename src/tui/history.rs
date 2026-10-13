@@ -33,7 +33,7 @@ use crate::app::{
 use crate::domain::{CommitKind, RESTORE_PLAN_OPERATION, RESTORE_PLAN_VERSION, RestoreIdentity};
 use crate::git::{Git, Mode};
 use crate::tui::render;
-use crate::tui::wrap::{self, DisplayRow};
+use crate::tui::wrap::{self, ComposedLine, DisplayRow};
 
 /// The request slot of the digest that names one restoration. The real
 /// identifier cannot hash itself, so the digest holds this fixed placeholder
@@ -191,39 +191,49 @@ impl RestorePreview {
 
     /// The lines of the preview page: both sides of the comparison, the
     /// proved intended result, and the action that answers it (SPEC 5.5).
-    pub fn lines(&self) -> Vec<String> {
+    pub fn lines(&self) -> Vec<ComposedLine> {
         let mut lines = Vec::new();
-        lines.push(format!("Restore preview · {}", self.path));
-        lines.push(format!(
+        lines.push(ComposedLine::heading(format!(
+            "Restore preview · {}",
+            self.path
+        )));
+        lines.push(ComposedLine::meta(format!(
             "From {} {} · {}",
             self.kind,
             render::short(&self.revision_oid),
             self.subject,
-        ));
-        lines.push(timestamp_line(&self.local_date, self.committer_time));
-        lines.push(format!(
+        )));
+        lines.push(ComposedLine::meta(timestamp_line(
+            &self.local_date,
+            self.committer_time,
+        )));
+        lines.push(ComposedLine::meta(format!(
             "Against the current candidate {}",
             render::short(&self.candidate_oid),
-        ));
-        lines.push(String::new());
+        )));
+        lines.push(ComposedLine::text(String::new()));
         side_lines("At the selected revision", &self.at_revision, &mut lines);
-        lines.push(String::new());
+        lines.push(ComposedLine::text(String::new()));
         side_lines("At the current candidate C", &self.at_candidate, &mut lines);
-        lines.push(String::new());
+        lines.push(ComposedLine::text(String::new()));
         self.proof_lines(&mut lines);
-        lines.push(String::new());
+        lines.push(ComposedLine::text(String::new()));
         if self.save_offer() {
-            lines.push("s or Enter  Save current draft, then preview restoration".to_string());
+            lines.push(ComposedLine::meta(
+                "s or Enter  Save current draft, then preview restoration",
+            ));
         } else if self.proved() {
-            lines.push("Enter  Restore this document from the selected revision".to_string());
+            lines.push(ComposedLine::meta(
+                "Enter  Restore this document from the selected revision",
+            ));
         }
-        lines.push("Esc  Cancel; nothing is applied".to_string());
+        lines.push(ComposedLine::meta("Esc  Cancel; nothing is applied"));
         lines
     }
 
     /// The intended-result half of the page: what the read-only proof
     /// proved, or the typed refusal that stopped it.
-    fn proof_lines(&self, lines: &mut Vec<String>) {
+    fn proof_lines(&self, lines: &mut Vec<ComposedLine>) {
         if !self.proof.ok() {
             let error = self
                 .proof
@@ -231,11 +241,19 @@ impl RestorePreview {
                 .as_ref()
                 .expect("a failed outcome carries its error");
             if self.save_offer() {
-                lines.push("The preview cannot run while uncaptured changes exist:".to_string());
+                lines.push(ComposedLine::warning(
+                    "The preview cannot run while uncaptured changes exist:",
+                ));
             } else {
-                lines.push("The restoration cannot be proved right now:".to_string());
+                lines.push(ComposedLine::warning(
+                    "The restoration cannot be proved right now:",
+                ));
             }
-            lines.push(format!("{}: {}", error.code, bounded(&error.message)));
+            lines.push(ComposedLine::warning(format!(
+                "{}: {}",
+                error.code,
+                bounded(&error.message)
+            )));
             return;
         }
         let data = self
@@ -243,20 +261,29 @@ impl RestorePreview {
             .data
             .as_ref()
             .expect("a successful proof carries data");
-        lines.push("Intended result, proved by one read-only preview:".to_string());
+        lines.push(ComposedLine::text(
+            "Intended result, proved by one read-only preview:",
+        ));
         if data.paths.is_empty() {
-            lines.push(
-                "Files rewritten: none; the restoration records one receipt commit.".to_string(),
-            );
+            lines.push(ComposedLine::meta(
+                "Files rewritten: none; the restoration records one receipt commit.",
+            ));
         } else {
-            lines.push(format!("Files rewritten: {}", data.paths.join(", ")));
+            lines.push(ComposedLine::meta(format!(
+                "Files rewritten: {}",
+                data.paths.join(", ")
+            )));
         }
-        lines.push(format!(
+        lines.push(ComposedLine::meta(format!(
             "Result tree {}",
             render::short(&data.expected_tree)
+        )));
+        lines.push(ComposedLine::text(
+            "The review baseline stays unchanged; this approves nothing else.",
         ));
-        lines.push("The review baseline stays unchanged; this approves nothing else.".to_string());
-        lines.push("The Changes view reviews the restored scope as usual.".to_string());
+        lines.push(ComposedLine::text(
+            "The Changes view reviews the restored scope as usual.",
+        ));
     }
 }
 
@@ -549,35 +576,37 @@ impl HistoryView {
     /// as long as it stands (SPEC 5.5).
     fn compose(&mut self, width: u16) {
         if let Some(preview) = &self.preview {
-            self.display = wrap::wrap_text(&preview.lines().join("\n"), width);
+            self.display = wrap::wrap_rows(&preview.lines(), width);
             self.starts = Vec::new();
             return;
         }
         let mut lines = Vec::new();
-        lines.push("History · the writing timeline, in ancestry order".to_string());
-        lines.push(
-            "Times show the local clock; the value in parentheses is the exact Unix timestamp."
-                .to_string(),
-        );
+        lines.push(ComposedLine::heading(
+            "History · the writing timeline, in ancestry order",
+        ));
+        lines.push(ComposedLine::meta(
+            "Times show the local clock; the value in parentheses is the exact Unix timestamp.",
+        ));
         if self.all_checkpoints {
-            lines.push("Every draft checkpoint is listed.".to_string());
+            lines.push(ComposedLine::meta("Every draft checkpoint is listed."));
         } else {
-            lines.push(
-                "A count marks the checkpoints of one collapsed writing pass; a lists them all."
-                    .to_string(),
-            );
+            lines.push(ComposedLine::meta(
+                "A count marks the checkpoints of one collapsed writing pass; a lists them all.",
+            ));
         }
         if let Some(why) = &self.truncated {
-            lines.push(format!("This page is bounded: {why}."));
+            lines.push(ComposedLine::warning(format!(
+                "This page is bounded: {why}."
+            )));
         }
-        lines.push(String::new());
+        lines.push(ComposedLine::text(String::new()));
         let mut starts = Vec::with_capacity(self.rows.len());
         for index in 0..self.rows.len() {
             // The entry lands on the next composed line, one-based.
             starts.push((lines.len() + 1) as u32);
             lines.push(self.row_line(index));
         }
-        self.display = wrap::wrap_text(&lines.join("\n"), width);
+        self.display = wrap::wrap_rows(&lines, width);
         self.starts = starts
             .into_iter()
             .map(|line| wrap::row_for_anchor(&self.display, line))
@@ -585,8 +614,10 @@ impl HistoryView {
     }
 
     /// One timeline row: the selection marker, the kind label, the commit,
-    /// the timestamps, the subject, and the checkpoint count.
-    fn row_line(&self, index: usize) -> String {
+    /// the timestamps, the subject, and the checkpoint count. The selected
+    /// row draws with weight; the marker keeps naming the selection
+    /// (SPEC 11.4).
+    fn row_line(&self, index: usize) -> ComposedLine {
         let row = &self.rows[index];
         let marker = if index == self.selection {
             "› "
@@ -604,12 +635,17 @@ impl HistoryView {
         } else {
             String::new()
         };
-        format!(
+        let text = format!(
             "{marker}{:<8}{}  {when}  {}{passes}",
             row.kind,
             render::short(&row.commit),
             row.subject,
-        )
+        );
+        if index == self.selection {
+            ComposedLine::emphasis(text)
+        } else {
+            ComposedLine::text(text)
+        }
     }
 }
 
@@ -802,31 +838,34 @@ fn timestamp_line(local: &Option<String>, exact: Option<i64>) -> String {
 
 /// The lines of one comparison side: the document's content state, with
 /// missing and empty kept distinct (SPEC 5.5).
-fn side_lines(label: &str, shown: &Option<ShowOutcome>, lines: &mut Vec<String>) {
-    lines.push(format!("{label}:"));
+fn side_lines(label: &str, shown: &Option<ShowOutcome>, lines: &mut Vec<ComposedLine>) {
+    lines.push(ComposedLine::meta(format!("{label}:")));
     let Some(outcome) = shown else {
-        lines.push("  the document view failed; no honest preview exists".to_string());
+        lines.push(ComposedLine::warning(
+            "  the document view failed; no honest preview exists",
+        ));
         return;
     };
     match &outcome.content {
-        DocumentContent::Missing => lines.push(
-            "  missing: no document exists at this revision; restoring removes the file"
-                .to_string(),
-        ),
+        DocumentContent::Missing => lines.push(ComposedLine::warning(
+            "  missing: no document exists at this revision; restoring removes the file",
+        )),
         DocumentContent::Empty { .. } => {
-            lines.push("  empty: the document exists here and holds zero bytes".to_string())
+            lines.push(ComposedLine::meta(
+                "  empty: the document exists here and holds zero bytes",
+            ))
         }
         DocumentContent::Text(text) => {
             let escaped = crate::cli::display_escape(&text.text);
             for line in escaped.lines() {
-                lines.push(format!("  {line}"));
+                lines.push(ComposedLine::text(format!("  {line}")));
             }
             if text.truncated {
-                lines.push(format!(
+                lines.push(ComposedLine::warning(format!(
                     "  the preview is bounded: {} of {} bytes shown",
                     text.text.len(),
                     text.total_bytes,
-                ));
+                )));
             }
         }
         DocumentContent::Opaque(view) => {
@@ -834,14 +873,14 @@ fn side_lines(label: &str, shown: &Option<ShowOutcome>, lines: &mut Vec<String>)
             if view.hex.chars().count() > MAX_HEX_CHARS {
                 shown.push('…');
             }
-            lines.push(format!(
+            lines.push(ComposedLine::text(format!(
                 "  {shown} ({} bytes, not valid UTF-8)",
                 view.total_bytes,
-            ));
+            )));
         }
-        DocumentContent::Exact { .. } => {
-            lines.push("  the exact bytes of a raw export cannot preview here".to_string())
-        }
+        DocumentContent::Exact { .. } => lines.push(ComposedLine::text(
+            "  the exact bytes of a raw export cannot preview here",
+        )),
     }
 }
 
@@ -912,9 +951,9 @@ mod tests {
             &Some(shown(DocumentContent::Missing)),
             &mut lines,
         );
-        assert_eq!(lines[0], "At the selected revision:");
-        assert!(lines[1].contains("missing: no document exists at this revision"));
-        assert!(lines[1].contains("restoring removes the file"));
+        assert_eq!(lines[0].text, "At the selected revision:");
+        assert!(lines[1].text.contains("missing: no document exists at this revision"));
+        assert!(lines[1].text.contains("restoring removes the file"));
 
         let mut lines = Vec::new();
         side_lines(
@@ -925,9 +964,9 @@ mod tests {
             })),
             &mut lines,
         );
-        assert_eq!(lines[0], "At the current candidate C:");
+        assert_eq!(lines[0].text, "At the current candidate C:");
         assert_eq!(
-            lines[1],
+            lines[1].text,
             "  empty: the document exists here and holds zero bytes",
         );
 
@@ -937,14 +976,14 @@ mod tests {
             &Some(shown(DocumentContent::Text(text_of("first\n\nsecond")))),
             &mut lines,
         );
-        assert_eq!(lines[1], "  first");
-        assert!(lines[2].trim().is_empty(), "the blank line stays blank");
-        assert_eq!(lines[3], "  second");
+        assert_eq!(lines[1].text, "  first");
+        assert!(lines[2].text.trim().is_empty(), "the blank line stays blank");
+        assert_eq!(lines[3].text, "  second");
 
         let mut lines = Vec::new();
         side_lines("At the selected revision", &None, &mut lines);
         assert_eq!(
-            lines[1],
+            lines[1].text,
             "  the document view failed; no honest preview exists",
         );
     }

@@ -22,6 +22,8 @@ pub enum Action {
     HistoryView,
     /// Move within the focused element.
     Move,
+    /// Move one viewport in the focused element.
+    PageMove,
     /// Move to the next change group.
     NextGroup,
     /// Move to the previous change group.
@@ -50,13 +52,14 @@ pub enum Action {
 
 impl Action {
     /// Every action in SPEC 11.3 table order.
-    pub const ALL: [Action; 18] = [
+    pub const ALL: [Action; 19] = [
         Action::CycleFocus,
         Action::ActionMenu,
         Action::ReadView,
         Action::ChangesView,
         Action::HistoryView,
         Action::Move,
+        Action::PageMove,
         Action::NextGroup,
         Action::PreviousGroup,
         Action::KeepGroup,
@@ -80,6 +83,7 @@ impl Action {
             Action::ChangesView => "Changes view",
             Action::HistoryView => "History view",
             Action::Move => "Move",
+            Action::PageMove => "Page",
             Action::NextGroup => "Next change group",
             Action::PreviousGroup => "Previous change group",
             Action::KeepGroup => "Keep selected group",
@@ -104,6 +108,7 @@ impl Action {
             Action::ChangesView => "2",
             Action::HistoryView => "3",
             Action::Move => "j / k or arrows",
+            Action::PageMove => "PgUp / PgDn",
             Action::NextGroup => "n",
             Action::PreviousGroup => "p",
             Action::KeepGroup => "K",

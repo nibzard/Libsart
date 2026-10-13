@@ -30,9 +30,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::app::Operations;
-use crate::tui::refresh::{INSPECTION_INTERVAL, RefreshWorker};
+use crate::tui::refresh::{INSPECTION_INTERVAL, RefreshWorker, WatchJob};
 use crate::tui::render;
-use crate::tui::shell::{Shell, TuiOptions};
+use crate::tui::shell::{ColorMode, Shell, TuiOptions};
 
 /// How long the input wait shrinks to while the worker runs or holds a
 /// waiting job, so an answered inspection reaches the next frame instead
@@ -62,6 +62,28 @@ impl LaunchError {
 /// through the typed contract of the command line.
 pub fn has_terminal() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal()
+}
+
+/// Says whether the environment lets `auto` decorate: `NO_COLOR`, set to
+/// one non-empty value, and `TERM=dumb` are the two conventions that turn
+/// decoration off (SPEC 11.4).
+fn auto_color_allowed(no_color: Option<&std::ffi::OsStr>, term: Option<&str>) -> bool {
+    let no_color_set = no_color.is_some_and(|value| !value.is_empty());
+    !no_color_set && term != Some("dumb")
+}
+
+/// Resolves the `auto` color mode of one launch against the environment;
+/// `always` and `never` pass through unchanged.
+fn resolved_color(mode: ColorMode) -> ColorMode {
+    if mode == ColorMode::Auto
+        && !auto_color_allowed(
+            std::env::var_os("NO_COLOR").as_deref(),
+            std::env::var("TERM").ok().as_deref(),
+        )
+    {
+        return ColorMode::Never;
+    }
+    mode
 }
 
 /// The mode the terminal is in, as the guard tracks it.
@@ -191,7 +213,11 @@ pub fn launch(
              without redirection",
         ));
     }
-    let mut shell = Shell::open_for_launch(root, operations, options);
+    // `auto` resolves once, here, against the environment of this launch;
+    // the shell and the renderer then hold one decided mode (SPEC 11.4).
+    let mut options = options.clone();
+    options.color = resolved_color(options.color);
+    let mut shell = Shell::open_for_launch(root, operations, &options);
     let mut guard = TerminalGuard::enter().map_err(|error| {
         LaunchError::new(format!(
             "the terminal cannot enter its interactive modes: {error}"
@@ -309,7 +335,10 @@ fn drive(
         let now = Instant::now();
         if now >= next_inspection {
             if let Some(worker) = worker.as_mut() {
-                worker.request(shell.generation());
+                worker.request(WatchJob {
+                    generation: shell.generation(),
+                    watch: shell.watch(),
+                });
             }
             next_inspection = now + INSPECTION_INTERVAL;
         }
@@ -329,8 +358,32 @@ fn drive(
             let resize = matches!(event, Event::Resize(_, _));
             shell.handle_event(&event);
             if !resize && let Some(worker) = worker.as_mut() {
-                worker.request(shell.generation());
+                worker.request(WatchJob {
+                    generation: shell.generation(),
+                    watch: shell.watch(),
+                });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_color_follows_the_no_color_and_dumb_term_conventions() {
+        // An empty `NO_COLOR` is absent in effect; any non-empty value
+        // turns decoration off (SPEC 11.4).
+        use std::ffi::OsStr;
+        assert!(auto_color_allowed(None, None));
+        assert!(auto_color_allowed(Some(OsStr::new("")), None));
+        assert!(!auto_color_allowed(Some(OsStr::new("1")), None));
+        assert!(!auto_color_allowed(
+            Some(OsStr::new("1")),
+            Some("xterm-256color")
+        ));
+        assert!(!auto_color_allowed(None, Some("dumb")));
+        assert!(auto_color_allowed(None, Some("xterm-256color")));
     }
 }

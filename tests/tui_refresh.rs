@@ -20,7 +20,7 @@ use std::time::Duration;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use margin::app::Operations;
 use margin::git::Git;
-use margin::tui::{InspectionReply, RefreshWorker, Shell, TuiOptions, View};
+use margin::tui::{InspectionReply, RefreshWorker, Shell, TuiOptions, View, WatchJob};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use support::oracle;
@@ -159,7 +159,10 @@ fn three_group_repo() -> TestRepo {
 /// and delivers its answer, exactly as the event loop does every two
 /// seconds (SPEC 13.3).
 fn poll_once(worker: &mut RefreshWorker, shell: &mut Shell<'_>) {
-    worker.request(shell.generation());
+    worker.request(WatchJob {
+        generation: shell.generation(),
+        watch: shell.watch(),
+    });
     let reply = worker
         .wait_for(ANSWER_LIMIT)
         .expect("one requested inspection answers");
@@ -285,6 +288,8 @@ fn a_reply_from_a_superseded_generation_is_discarded() {
     shell.observe_inspection(InspectionReply {
         generation: live - 1,
         outcome,
+        document: None,
+        documents: None,
     });
     assert!(
         joined(&draw(&mut shell, 110, 30)).contains("· Undecided"),
@@ -305,6 +310,8 @@ fn a_reply_from_a_superseded_generation_is_discarded() {
     shell.observe_inspection(InspectionReply {
         generation: live,
         outcome,
+        document: None,
+        documents: None,
     });
     assert!(
         joined(&draw(&mut shell, 110, 30)).contains("Stale"),
@@ -546,7 +553,10 @@ fn the_worker_coalesces_a_burst_into_two_inspections() {
     // Five requests while one job runs: one runs, the newest waits, and
     // the other three are coalesced away (SPEC 13.3).
     for _ in 0..5 {
-        worker.request(7);
+        worker.request(WatchJob {
+            generation: 7,
+            watch: margin::tui::Watch::new(repo.path().to_path_buf()),
+        });
     }
     let mut answers = 0;
     while worker.wait_for(ANSWER_LIMIT).is_some() {
@@ -558,6 +568,310 @@ fn the_worker_coalesces_a_burst_into_two_inspections() {
     assert_eq!(
         answers, 2,
         "one running job plus one waiting job answered the burst"
+    );
+    worker.shutdown();
+}
+
+/// One adopted repository with one long document to read.
+fn long_doc_repo() -> TestRepo {
+    let repo = TestRepo::init();
+    let mut document = String::from("# Long\n\n");
+    for line in 1..=120 {
+        document.push_str(&format!("Passage {line} of the long document.\n\n"));
+    }
+    repo.write_file("notes/a.md", document.as_bytes());
+    repo.commit_all("import");
+    let output = margin(
+        repo.env(),
+        repo.path(),
+        &["init", "--scope", "notes/", "--json"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "init must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    repo
+}
+
+#[test]
+fn polling_reloads_the_displayed_document_without_a_key_press() {
+    let repo = adopted_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    let screen = joined(&draw(&mut shell, 110, 30));
+    assert!(screen.contains("First passage, edited."), "the draft reads");
+
+    // The agent writes new bytes while the surface stays open.
+    repo.write_file("notes/a.md", b"# One\n\nFirst passage, edited once more.\n");
+    let before = oracle::snapshot(&repo);
+    let mut worker = RefreshWorker::spawn(git.clone()).expect("the worker starts");
+    poll_once(&mut worker, &mut shell);
+    let screen = joined(&draw(&mut shell, 110, 30));
+    assert!(
+        screen.contains("First passage, edited once more."),
+        "the displayed document shows the new bytes: {screen}"
+    );
+    assert!(
+        screen.contains("Unsaved draft"),
+        "the working bytes differ from the candidate, so the label says so"
+    );
+    // The same poll also saw an arrival, and the arrival notice keeps its
+    // place over the reload notice (SPEC 5.3; the interplay is proven
+    // below by a_live_reload_does_not_displace_the_arrival_notice).
+    assert!(
+        screen.contains("New edits arrived. Refresh before applying."),
+        "the arrival notice stands"
+    );
+    worker.shutdown();
+    before.assert_unchanged(&oracle::snapshot(&repo), "the live reload");
+}
+
+#[test]
+fn polling_keeps_the_reading_position_across_a_live_reload() {
+    let repo = long_doc_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    draw(&mut shell, 110, 30);
+    for _ in 0..24 {
+        shell.handle_event(&key(KeyCode::Char('j')));
+    }
+    let offset = shell.reading_offset();
+    let anchor = shell.current_anchor().expect("an anchor stands").line;
+    assert!(offset > 0, "the reader scrolled into the document");
+
+    // New passages arrive below the reading position.
+    let mut document = String::from("# Long\n\n");
+    for line in 1..=140 {
+        document.push_str(&format!("Passage {line} of the long document.\n\n"));
+    }
+    repo.write_file("notes/a.md", document.as_bytes());
+    let mut worker = RefreshWorker::spawn(git.clone()).expect("the worker starts");
+    poll_once(&mut worker, &mut shell);
+    draw(&mut shell, 110, 30);
+    assert!(
+        shell
+            .document()
+            .expect("a document stands")
+            .text
+            .contains("Passage 140"),
+        "the view holds the appended passage"
+    );
+    assert_eq!(
+        shell.reading_offset(),
+        offset,
+        "the live reload keeps the reading row"
+    );
+    assert_eq!(
+        shell.current_anchor().expect("an anchor stands").line,
+        anchor,
+        "the live reload keeps the source anchor"
+    );
+    worker.shutdown();
+}
+
+#[test]
+fn polling_updates_the_document_list_without_a_key_press() {
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    assert_eq!(
+        shell.documents(),
+        &["notes/a.md".to_string(), "notes/b.md".to_string()]
+    );
+
+    // One document arrives and another leaves while the surface stays open.
+    repo.write_file("notes/new.md", b"# New\n\nA late passage.\n");
+    std::fs::remove_file(repo.file_path("notes/b.md")).expect("the deletion runs");
+    let mut worker = RefreshWorker::spawn(git.clone()).expect("the worker starts");
+    poll_once(&mut worker, &mut shell);
+    assert_eq!(
+        shell.documents(),
+        &["notes/a.md".to_string(), "notes/new.md".to_string()],
+        "the list holds what the scope holds now: the untracked arrival is\
+         \nlisted and the deleted path left"
+    );
+    assert_eq!(
+        shell.documents().get(shell.selection()).map(String::as_str),
+        Some("notes/a.md"),
+        "the selection stays on its document"
+    );
+    worker.shutdown();
+}
+
+#[test]
+fn a_reply_of_a_document_no_longer_displayed_is_ignored() {
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+
+    // The job watches the first document; the writer switches before the
+    // slow answer lands.
+    let mut worker = RefreshWorker::spawn(git.clone()).expect("the worker starts");
+    worker.request(WatchJob {
+        generation: shell.generation(),
+        watch: shell.watch(),
+    });
+    repo.write_file("notes/a.md", b"# One\n\nFirst passage, rewritten.\n");
+    shell.handle_event(&key(KeyCode::Tab));
+    shell.handle_event(&key(KeyCode::Char('j')));
+    assert_eq!(
+        shell.document().expect("a document stands").path,
+        "notes/b.md",
+        "the reader switched documents"
+    );
+    let reply = worker.wait_for(ANSWER_LIMIT).expect("one answer lands");
+    shell.observe_inspection(reply);
+    assert_eq!(
+        shell.document().expect("a document stands").path,
+        "notes/b.md",
+        "a reply for another document changes nothing"
+    );
+    let screen = joined(&draw(&mut shell, 110, 30));
+    assert!(
+        screen.contains("Other passage"),
+        "the switched document still reads: {screen}"
+    );
+    worker.shutdown();
+}
+
+#[test]
+fn polling_marks_a_deleted_displayed_document_gone() {
+    let repo = adopted_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+
+    // The working file leaves while the surface stays open; the candidate
+    // still reads and the list stops naming the path.
+    std::fs::remove_file(repo.file_path("notes/a.md")).expect("the deletion runs");
+    let mut worker = RefreshWorker::spawn(git.clone()).expect("the worker starts");
+    poll_once(&mut worker, &mut shell);
+    let screen = joined(&draw(&mut shell, 110, 30));
+    assert!(
+        screen.contains("Saved, working file gone"),
+        "the label states the deletion: {screen}"
+    );
+    // The deletion is one working edit, so the arrival notice keeps its
+    // place; the label above carries the deletion persistently.
+    assert!(
+        screen.contains("New edits arrived. Refresh before applying."),
+        "the arrival notice stands"
+    );
+    assert!(
+        !shell.documents().iter().any(|path| path == "notes/a.md"),
+        "the list drops the deleted path"
+    );
+    worker.shutdown();
+}
+
+#[test]
+fn polling_live_reloads_an_unadopted_folder() {
+    let repo = TestRepo::init();
+    repo.write_file("docs/one.md", b"# One\n\nFirst passage.\n");
+    repo.write_file("docs/two.md", b"# Two\n\nSecond passage.\n");
+    repo.commit_all("import");
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    let screen = joined(&draw(&mut shell, 110, 30));
+    assert!(screen.contains("First passage."), "discovery reads the file");
+
+    // No adoption stands, so the workspace part of the reply fails; the
+    // document and the list still live-reload.
+    repo.write_file("docs/one.md", b"# One\n\nFirst passage, rewritten.\n");
+    repo.write_file("docs/three.md", b"# Three\n\nA late passage.\n");
+    let mut worker = RefreshWorker::spawn(git.clone()).expect("the worker starts");
+    poll_once(&mut worker, &mut shell);
+    let screen = joined(&draw(&mut shell, 110, 30));
+    assert!(
+        screen.contains("First passage, rewritten."),
+        "the displayed document shows the new bytes: {screen}"
+    );
+    assert!(
+        screen.contains("docs/one.md changed on disk; reloaded"),
+        "with no review pinned, the reload notice stands: {screen}"
+    );
+    assert!(
+        shell.documents().iter().any(|path| path == "docs/three.md"),
+        "the discovered list names the new document"
+    );
+    worker.shutdown();
+}
+
+#[test]
+fn identical_bytes_leave_the_surface_undisturbed() {
+    let repo = adopted_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    draw(&mut shell, 110, 30);
+    shell.take_redraw();
+
+    let mut worker = RefreshWorker::spawn(git.clone()).expect("the worker starts");
+    poll_once(&mut worker, &mut shell);
+    assert!(
+        shell.notice().is_none(),
+        "an unchanged document raises no notice"
+    );
+    assert_eq!(shell.reading_offset(), 0, "the reading row never moved");
+    assert!(
+        !shell.needs_redraw(),
+        "nothing the frame shows changed, so nothing redraws"
+    );
+    worker.shutdown();
+}
+
+#[test]
+fn a_live_reload_does_not_displace_the_arrival_notice() {
+    let repo = adopted_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let options = TuiOptions {
+        view: View::Changes,
+        ..TuiOptions::default()
+    };
+    let mut shell = Shell::open(repo.path(), &operations, &options);
+    draw(&mut shell, 110, 30);
+
+    // The same poll sees an arrival and changed bytes; the arrival states
+    // itself, because the review cannot apply over it (SPEC 5.3).
+    repo.write_file("notes/a.md", b"# One\n\nFirst passage, edited again.\n");
+    let mut worker = RefreshWorker::spawn(git.clone()).expect("the worker starts");
+    poll_once(&mut worker, &mut shell);
+    let screen = joined(&draw(&mut shell, 110, 30));
+    assert!(
+        screen.contains("New edits arrived. Refresh before applying."),
+        "the arrival notice stands"
+    );
+    assert!(
+        !screen.contains("changed on disk"),
+        "the arrival keeps its place over the reload notice"
+    );
+    worker.shutdown();
+}
+
+#[test]
+fn a_live_reload_of_changed_content_raises_the_redraw_flag() {
+    let repo = adopted_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    draw(&mut shell, 110, 30);
+    shell.take_redraw();
+    assert!(!shell.needs_redraw(), "nothing changed yet");
+
+    repo.write_file("notes/a.md", b"# One\n\nFirst passage, edited once more.\n");
+    let mut worker = RefreshWorker::spawn(git.clone()).expect("the worker starts");
+    poll_once(&mut worker, &mut shell);
+    assert!(
+        shell.needs_redraw(),
+        "changed content must redraw, also in reduced-updates mode"
     );
     worker.shutdown();
 }

@@ -298,7 +298,7 @@ Refresh rebuilds the review and resets unapplied selections with a notice. Selec
 | Read | Read C or an explicitly labeled working preview | Document and nearest source anchor |
 | History | Browse Git revisions and compare or restore a document | Document, selected revision, and nearest source anchor |
 
-Uncaptured working content is labeled **Unsaved draft** and has no actionable review ID. **Save draft** invokes checkpoint. The TUI never pretends its polling saved the file.
+Uncaptured working content is labeled **Unsaved draft** and has no actionable review ID. **Save draft** invokes checkpoint. The TUI never pretends its polling saved the file. While the surface is open, polling keeps the displayed document and the document list current with the working tree: new bytes reload in place through the same label rule an interactive load uses, and the reading position survives the swap (SPEC 13.3).
 
 ### 5.5 History and restoration
 
@@ -807,6 +807,7 @@ Resizing must not reset a plan or mutate content. Preserve position using source
 | Action menu | `:` outside text entry | Open all actions, including Finish review, with visible disabled reasons |
 | Read / Changes / History | `1` / `2` / `3` | Switch views with document context retained |
 | Move | Arrows or `j` / `k` | Navigate visible items/lines according to focus |
+| Page | `PgUp` / `PgDn` | Move one viewport, less one held row, according to focus |
 | Next / previous change | `n` / `p` | Move between canonical change groups |
 | Keep selected group | `K` | Record a proposed decision; lowercase `k` remains navigation |
 | Restore selected group | `r` | Toggle proposed restoration, no disk write |
@@ -950,7 +951,7 @@ Use a synchronous TUI event loop with one worker for blocking Git operations. Co
 
 Serialize Margin mutations through the shared lock. The TUI can continue reading an immutable review while a background query runs. It cannot apply a plan while another mutation is outstanding.
 
-Start with a default 2-second inspection interval while the TUI is open, plus immediate refresh on explicit user actions and completed local operations. Polling discovers state; it does not save versions. No filesystem watcher or daemon is necessary in release 0.1.
+Start with a default 2-second inspection interval while the TUI is open, plus immediate refresh on explicit user actions and completed local operations. Polling discovers state; it does not save versions. Each interval the worker also rereads the displayed document and rebuilds the document list, so the surface shows current disk state — new working bytes, a deleted file, an arrived document — while the reading position survives the swap and the pinned comparison re-pins only through one explicit refresh. No filesystem watcher or daemon is necessary in release 0.1.
 
 Cache by B/C/scope/engine and limit memory by bytes, not only entry count. Read blob data through batched Git protocols when beneficial. Avoid a Git process per document. Baseline/receipt indexes are rebuilt from an unfiltered batched history stream and keyed to observed HEAD; a cache miss may be slower but cannot change correctness.
 

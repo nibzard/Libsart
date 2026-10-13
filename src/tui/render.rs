@@ -10,7 +10,7 @@
 //! carry everything on their own.
 
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, widgets};
@@ -19,18 +19,29 @@ use crate::tui::actions::Action;
 use crate::tui::history::PreviewState;
 use crate::tui::layout::{self, WidthClass};
 use crate::tui::shell::{Focus, Overlay, Shell, View};
-use crate::tui::wrap;
+use crate::tui::wrap::{self, RowKind};
 
 /// The styles of one frame (SPEC 11.4). Color-off mode replaces every
 /// style with the plain one, so a terminal or an assistive setup that
 /// cannot carry decoration still reads every state from its words and
-/// symbols.
+/// symbols. The palette stays restrained: one hue per role, basic
+/// terminal colors only, so the writer's own theme keeps deciding the
+/// exact shades.
 #[derive(Clone, Copy)]
 struct Palette {
     /// The style of chrome rows.
     dim: Style,
     /// The style of emphasized rows.
     bold: Style,
+    /// The style of headings: view titles, group headers, Markdown
+    /// headings.
+    heading: Style,
+    /// The style of after-side passages.
+    added: Style,
+    /// The style of before-side passages.
+    removed: Style,
+    /// The style of states the writer must notice.
+    warning: Style,
 }
 
 impl Palette {
@@ -40,12 +51,33 @@ impl Palette {
             Palette {
                 dim: Style::new(),
                 bold: Style::new(),
+                heading: Style::new(),
+                added: Style::new(),
+                removed: Style::new(),
+                warning: Style::new(),
             }
         } else {
             Palette {
                 dim: Style::new().dim(),
                 bold: Style::new().bold(),
+                heading: Style::new().bold().fg(Color::Blue),
+                added: Style::new().fg(Color::Green),
+                removed: Style::new().fg(Color::Red),
+                warning: Style::new().fg(Color::Yellow),
             }
+        }
+    }
+
+    /// The style one row role draws in (SPEC 11.4).
+    fn style(&self, kind: RowKind) -> Style {
+        match kind {
+            RowKind::Text => Style::new(),
+            RowKind::Heading => self.heading,
+            RowKind::Added => self.added,
+            RowKind::Removed => self.removed,
+            RowKind::Meta => self.dim,
+            RowKind::Warning => self.warning,
+            RowKind::Emphasis => self.bold,
         }
     }
 }
@@ -185,7 +217,7 @@ fn draw_reading(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
         height: area.bottom().saturating_sub(body_top),
         ..area
     };
-    render_reading_body(frame, body, shell);
+    render_reading_body(frame, body, shell, palette);
 }
 
 /// Draws the title row of the displayed document: the path, the section
@@ -210,7 +242,7 @@ fn draw_document_title(
             ..area
         },
     );
-    let mut spans = vec![ratatui::text::Span::styled(path.to_string(), palette.bold)];
+    let mut spans = vec![ratatui::text::Span::styled(path.to_string(), palette.heading)];
     if let Some(section) = shell.current_section() {
         spans.push(ratatui::text::Span::styled(
             format!(" › {}", fit_to(&section, 40)),
@@ -221,14 +253,15 @@ fn draw_document_title(
     frame.render_widget(Paragraph::new(label).style(palette.dim), right);
 }
 
-/// Draws the wrapped rows of the reading column.
-fn render_reading_body(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>) {
+/// Draws the wrapped rows of the reading column, each in the role its
+/// composed line carries (SPEC 11.4).
+fn render_reading_body(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
     let rows = shell.display_rows();
     let offset = shell.reading_offset();
     let shown = &rows[offset.min(rows.len())..];
     let mut lines = Vec::with_capacity(area.height as usize);
     for row in shown.iter().take(area.height as usize) {
-        lines.push(Line::raw(row.text.clone()));
+        lines.push(Line::styled(row.text.clone(), palette.style(row.kind)));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
@@ -251,8 +284,9 @@ fn draw_changes(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
     };
     let mut lines = Vec::new();
     if !workspace.adopted {
-        lines.push(Line::from(
+        lines.push(Line::styled(
             "No review exists: Margin is not set up for this folder.",
+            palette.warning,
         ));
         lines.push(Line::styled(
             "The setup action in the Read view adopts it.",
@@ -262,7 +296,10 @@ fn draw_changes(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
         return;
     }
     let Some(changes) = shell.changes() else {
-        lines.push(Line::from("The comparison is unavailable right now."));
+        lines.push(Line::styled(
+            "The comparison is unavailable right now.",
+            palette.warning,
+        ));
         if let Some(note) = &workspace.note {
             lines.push(Line::styled(fit_to(note, area.width as usize), palette.dim));
         }
@@ -275,7 +312,7 @@ fn draw_changes(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
         // intent (SPEC 5.2). The footer keeps naming the two keys that
         // answer it, so no action is lost to a short frame.
         for row in shell.finish_rows().iter().take(body.height as usize) {
-            lines.push(Line::raw(row.text.clone()));
+            lines.push(Line::styled(row.text.clone(), palette.style(row.kind)));
         }
         frame.render_widget(Paragraph::new(Text::from(lines)), body);
         return;
@@ -284,7 +321,7 @@ fn draw_changes(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
     let offset = changes.offset();
     let shown = &rows[offset.min(rows.len())..];
     for row in shown.iter().take(body.height as usize) {
-        lines.push(Line::raw(row.text.clone()));
+        lines.push(Line::styled(row.text.clone(), palette.style(row.kind)));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), body);
 }
@@ -294,7 +331,7 @@ fn draw_changes(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
 /// them, or the standing restoration preview that `Enter` answers.
 fn draw_history(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
     let workspace = shell.workspace();
-    let mut lines = vec![Line::styled("History", palette.bold)];
+    let mut lines = vec![Line::styled("History", palette.heading)];
     if let Some(branch) = &workspace.branch {
         lines.push(Line::styled(format!("on {branch}"), palette.dim));
     }
@@ -311,8 +348,9 @@ fn draw_history(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
     }
     lines.push(Line::from(""));
     if !workspace.adopted {
-        lines.push(Line::from(
+        lines.push(Line::styled(
             "No timeline exists: Margin is not set up for this folder.",
+            palette.warning,
         ));
         lines.push(Line::styled(
             "The setup action in the Read view adopts it.",
@@ -322,7 +360,10 @@ fn draw_history(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
         return;
     }
     let Some(history) = shell.history() else {
-        lines.push(Line::from("The timeline is unavailable right now."));
+        lines.push(Line::styled(
+            "The timeline is unavailable right now.",
+            palette.warning,
+        ));
         if let Some(note) = &workspace.note {
             lines.push(Line::styled(fit_to(note, area.width as usize), palette.dim));
         }
@@ -335,12 +376,12 @@ fn draw_history(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
         return;
     }
     // The composed column: the timeline, or the preview that stands over
-    // it (SPEC 5.5).
+    // it (SPEC 5.5), each row in the role its composed line carries.
     let rows = history.display_rows();
     let offset = history.offset();
     let shown = &rows[offset.min(rows.len())..];
     for row in shown.iter().take(area.height as usize) {
-        lines.push(Line::raw(row.text.clone()));
+        lines.push(Line::styled(row.text.clone(), palette.style(row.kind)));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
@@ -373,7 +414,13 @@ fn draw_menu(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pale
     let shown = &rows[top.min(rows.len())..];
     let mut lines = Vec::with_capacity(height);
     for row in shown.iter().take(height) {
-        lines.push(Line::raw(row.text.clone()));
+        // The first source line of the page is the overlay's title.
+        let style = if row.source_line == 1 {
+            palette.heading
+        } else {
+            Style::new()
+        };
+        lines.push(Line::styled(row.text.clone(), style));
     }
     if shown.len() > height {
         lines.push(Line::styled(
@@ -386,7 +433,7 @@ fn draw_menu(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pale
 
 /// Draws the help overlay (SPEC 11.3 `?`): the contextual key list and
 /// the current blockers, each in words.
-fn draw_help(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, _palette: Palette) {
+fn draw_help(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
     let mut text = String::from("Margin keys\n\n");
     for action in Action::ALL {
         text.push_str(&format!("  {} · {}\n", action.binding(), action.name()));
@@ -404,14 +451,20 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, _palette: Pal
     let rows = wrap::wrap_text(&text, area.width.max(1));
     let mut lines = Vec::with_capacity(area.height as usize);
     for row in rows.iter().take(area.height as usize) {
-        lines.push(Line::raw(row.text.clone()));
+        // The first source line of the page is the overlay's title.
+        let style = if row.source_line == 1 {
+            palette.heading
+        } else {
+            Style::new()
+        };
+        lines.push(Line::styled(row.text.clone(), style));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
 /// Draws the document picker (SPEC 11.3 `f`): the filter and every
 /// document it matches. The first match is the document `Enter` opens.
-fn draw_picker(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, _palette: Palette) {
+fn draw_picker(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
     let Some(Overlay::Picker { filter }) = shell.overlay() else {
         return;
     };
@@ -429,7 +482,13 @@ fn draw_picker(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, _palette: P
     let rows = wrap::wrap_text(&text, area.width.max(1));
     let mut lines = Vec::with_capacity(area.height as usize);
     for row in rows.iter().take(area.height as usize) {
-        lines.push(Line::raw(row.text.clone()));
+        // The first source line of the page is the overlay's title.
+        let style = if row.source_line == 1 {
+            palette.heading
+        } else {
+            Style::new()
+        };
+        lines.push(Line::styled(row.text.clone(), style));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }

@@ -34,6 +34,7 @@
 //! refresh, because the anchor is the position, not a row count.
 
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
@@ -56,7 +57,7 @@ use crate::tui::wrap::{self, DisplayRow};
 
 /// How many content bytes the Read view carries at once. The view states
 /// the bound when it truncates; it never invents an ending.
-const READ_VIEW_BYTES: u64 = 256 * 1024;
+pub(crate) const READ_VIEW_BYTES: u64 = 256 * 1024;
 
 /// How many characters one status notice may occupy.
 const NOTICE_CHARS: usize = 200;
@@ -435,6 +436,10 @@ pub struct Shell<'a> {
     drift: usize,
     viewport_rows: usize,
     anchor: Option<SourceAnchor>,
+    /// The adopted scope descriptor the document list resolved against,
+    /// held so the polling watch can name the same input without one Git
+    /// query per tick; `None` before adoption.
+    descriptor: Option<ScopeDescriptor>,
     workspace: WorkspaceSnapshot,
     changes: Option<ChangesView>,
     history: Option<HistoryView>,
@@ -533,6 +538,7 @@ impl<'a> Shell<'a> {
             drift: 0,
             viewport_rows: 0,
             anchor: None,
+            descriptor: None,
             workspace: WorkspaceSnapshot::unadopted(&folder, None),
             changes: None,
             history: None,
@@ -593,6 +599,7 @@ impl<'a> Shell<'a> {
     /// at that frame, so nothing it does not show may delay it).
     fn load_visible(&mut self, descriptor: ScopeDescriptor) {
         self.regenerate();
+        self.descriptor = Some(descriptor.clone());
         self.workspace.adopted = true;
         let inspection = self.operations.inspect_workspace(&InspectRequest {
             scope: None,
@@ -736,14 +743,7 @@ impl<'a> Shell<'a> {
         let Ok(resolved) = app::resolve_scope(self.operations.git(), &input) else {
             return;
         };
-        self.documents = resolved
-            .paths
-            .into_iter()
-            .filter(|(_, state)| {
-                matches!(state, ScopedPathState::Tracked | ScopedPathState::Untracked)
-            })
-            .map(|(path, _)| path.to_string_lossy().into_owned())
-            .collect();
+        self.documents = document_paths(&resolved);
         // BTreeMap iteration is already sorted by path bytes.
         self.workspace.documents = self.documents.len();
     }
@@ -752,6 +752,7 @@ impl<'a> Shell<'a> {
     /// (SPEC 5.1).
     fn load_unadopted(&mut self, folder: &str) {
         self.regenerate();
+        self.descriptor = None;
         self.documents = discover_documents(&self.root);
         let note = self.workspace.note.take();
         self.workspace = WorkspaceSnapshot::unadopted(folder, note);
@@ -792,73 +793,10 @@ impl<'a> Shell<'a> {
         self.drift = 0;
         let shown = self.show_candidate(path);
         let working = read_working(&self.root, path, READ_VIEW_BYTES);
-        let mut document = DocumentView {
-            path: path.to_string(),
-            candidate: None,
-            saved: SavedState::UnsavedDraft,
-            text: String::new(),
-            total_bytes: None,
-            truncated: false,
-        };
-        match working {
-            Ok((bytes, total)) => {
-                document.total_bytes = Some(total);
-                document.truncated = total > READ_VIEW_BYTES;
-                match &shown {
-                    Some(outcome) => {
-                        document.candidate = Some(outcome.revision_oid.clone());
-                        if working_matches(&outcome.content, &bytes, total) {
-                            document.saved = SavedState::Saved;
-                            document.text = display_text(&outcome.content);
-                        } else if matches!(outcome.content, DocumentContent::Opaque(_)) {
-                            // Opaque bytes cannot pair with a working
-                            // preview, so the honest label is unknown.
-                            document.saved = SavedState::Unknown;
-                            document.text = display_text(&outcome.content);
-                            document.truncated = content_truncated(&outcome.content);
-                        } else {
-                            // The working bytes differ, or the candidate
-                            // is absent: the view is a labeled preview.
-                            document.saved = SavedState::UnsavedDraft;
-                            document.text = String::from_utf8_lossy(&bytes).into_owned();
-                        }
-                    }
-                    None => {
-                        // No candidate exists to compare with.
-                        document.saved = SavedState::UnsavedDraft;
-                        document.text = String::from_utf8_lossy(&bytes).into_owned();
-                    }
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => match &shown {
-                Some(outcome) => {
-                    document.candidate = Some(outcome.revision_oid.clone());
-                    document.saved = match outcome.content {
-                        DocumentContent::Missing => SavedState::Unknown,
-                        _ => SavedState::WorkingFileGone,
-                    };
-                    document.text = display_text(&outcome.content);
-                    document.total_bytes = content_bytes(&outcome.content);
-                    document.truncated = content_truncated(&outcome.content);
-                }
-                None => {
-                    document.saved = SavedState::Unknown;
-                    self.notice = Some(bounded(&format!("no document exists at {path}")));
-                }
-            },
-            Err(error) => {
-                document.saved = SavedState::Unknown;
-                self.notice = Some(bounded(&format!(
-                    "the working file cannot be read: {error}"
-                )));
-                if let Some(outcome) = &shown {
-                    document.candidate = Some(outcome.revision_oid.clone());
-                    document.text = display_text(&outcome.content);
-                    document.total_bytes = content_bytes(&outcome.content);
-                }
-            }
+        let (document, notice) = document_view(path, &working, shown.as_ref());
+        if let Some(text) = notice {
+            self.notice = Some(text);
         }
-        document.text = prepare_display(&document.text);
         self.absorb_document(document);
     }
 
@@ -911,8 +849,7 @@ impl<'a> Shell<'a> {
             View::Changes => match (&mut self.finish, &mut self.changes) {
                 (Some(panel), _) => {
                     if width != panel.width || panel.rows.is_empty() {
-                        let text = panel.summary.lines().join("\n");
-                        panel.rows = wrap::wrap_text(&text, width);
+                        panel.rows = wrap::wrap_rows(&panel.summary.lines(), width);
                         panel.width = width;
                     }
                 }
@@ -939,7 +876,7 @@ impl<'a> Shell<'a> {
                 .map(|document| document.text.clone())
                 .unwrap_or_default();
             let anchor = self.current_anchor().map(|anchor| anchor.line).unwrap_or(1);
-            self.display = wrap::wrap_text(&text, width);
+            self.display = wrap::wrap_document(&text, width);
             self.display_width = width;
             let anchored = wrap::row_for_anchor(&self.display, anchor);
             let span = wrap::rows_of_source(&self.display, anchored, anchor);
@@ -1483,10 +1420,11 @@ impl<'a> Shell<'a> {
             Action::ReadView => self.view = View::Read,
             Action::ChangesView => self.enter_changes(),
             Action::HistoryView => self.view = View::History,
-            // `Move` is `j` and `k` together; the menu entry states the
-            // binding rather than running one step. `Cancel` from the menu
-            // is the menu's own closing, which already ran.
-            Action::Move => {}
+            // `Move` is `j` and `k` together and `PageMove` is `PgUp` and
+            // `PgDn` together; the menu entries state the binding rather
+            // than running one step. `Cancel` from the menu is the menu's
+            // own closing, which already ran.
+            Action::Move | Action::PageMove => {}
             Action::Cancel => {
                 self.notice = Some("the overlay closed; nothing was applied".to_string())
             }
@@ -1636,14 +1574,21 @@ impl<'a> Shell<'a> {
             .document
             .as_ref()
             .map_or("none".to_string(), |document| {
+                // The text hashes in, because one edit can keep every
+                // countable field and still change every frame row.
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                document.text.hash(&mut hasher);
                 format!(
-                    "{}|{:?}|{}|{}",
+                    "{}|{:?}|{}|{}|{:x}",
                     document.path,
                     document.saved,
                     document.truncated,
                     document.total_bytes.unwrap_or(0),
+                    hasher.finish(),
                 )
             });
+        let mut documents_hasher = std::collections::hash_map::DefaultHasher::new();
+        self.documents.hash(&mut documents_hasher);
         let changes = self.changes.as_ref().map_or("none".to_string(), |changes| {
             format!(
                 "{:?}|{}|{}|{}|{}",
@@ -1668,6 +1613,7 @@ impl<'a> Shell<'a> {
             format!("{:?}", workspace.branch),
             format!("{:?}", workspace.head),
             document,
+            format!("{:x}", documents_hasher.finish()),
             format!("{}", self.selection),
             format!("{}", self.offset),
             format!("{}", self.drift),
@@ -2118,26 +2064,133 @@ impl<'a> Shell<'a> {
     ///
     /// A reply whose generation the shell left behind is discarded whole:
     /// the state it describes is not the state on screen. A failed query
-    /// observes nothing, because it cannot claim an arrival. One
+    /// observes nothing, because it cannot claim an arrival — but its
+    /// watch parts still absorb, because the working file and the
+    /// document list are honest whatever the workspace query said. One
     /// successful answer refreshes the workspace summary the header
-    /// states, then compares the observed workspace against the
-    /// observation the pinned comparison carries.
+    /// states, compares the observed workspace against the observation
+    /// the pinned comparison carries, then absorbs the watched document
+    /// and list.
     pub fn observe_inspection(&mut self, reply: InspectionReply) {
         let before = self.fingerprint();
-        if reply.generation != self.generation {
+        let InspectionReply {
+            generation,
+            outcome,
+            document,
+            documents,
+        } = reply;
+        if generation != self.generation {
             return;
         }
-        if !reply.outcome.ok() {
-            return;
+        if outcome.ok() {
+            if let Some(data) = outcome.data {
+                self.absorb_inspection(data);
+                self.observe_arrivals();
+            }
         }
-        let Some(data) = reply.outcome.data else {
-            return;
-        };
-        self.absorb_inspection(data);
-        self.observe_arrivals();
+        if let Some(watched) = document {
+            self.absorb_watched_file(watched);
+        }
+        if let Some(paths) = documents {
+            self.absorb_document_list(paths);
+        }
         if self.fingerprint() != before {
             self.redraw = true;
         }
+    }
+
+    /// What the next poll rereads for this shell (SPEC 13.3): the
+    /// displayed document and the document list, against the adopted
+    /// scope's stored input or the discovery walk.
+    pub fn watch(&self) -> refresh::Watch {
+        refresh::Watch {
+            root: self.root.clone(),
+            document: self.document.as_ref().map(|document| document.path.clone()),
+            list: match &self.descriptor {
+                Some(descriptor) => refresh::WatchList::Adopted(descriptor.to_scope_input()),
+                None => refresh::WatchList::Unadopted,
+            },
+        }
+    }
+
+    /// Absorbs one watched document's reread (SPEC 5.4, 11.2, 13.3): when
+    /// its bytes changed, the view rebuilds through the same builder an
+    /// interactive load uses, and the reading position — the anchor plus
+    /// its drift — survives the swap. A reread the writer no longer
+    /// displays, or one that could not read the file, changes nothing.
+    fn absorb_watched_file(&mut self, watched: refresh::WatchedDocument) {
+        if matches!(watched.file, refresh::WatchedFile::Unread) {
+            return;
+        }
+        let Some(current) = self.document.as_ref() else {
+            return;
+        };
+        if current.path != watched.path {
+            return;
+        }
+        let working = match &watched.file {
+            refresh::WatchedFile::Bytes(bytes, total) => Ok((bytes.clone(), *total)),
+            // The deletion restates itself as the same NotFound the
+            // interactive load meets, so the label rule stays one rule.
+            refresh::WatchedFile::Gone => {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            }
+            refresh::WatchedFile::Unread => return,
+        };
+        let (document, notice) = document_view(&watched.path, &working, watched.candidate.as_ref());
+        let unchanged = document.text == current.text
+            && document.total_bytes == current.total_bytes
+            && document.truncated == current.truncated
+            && document.saved == current.saved;
+        if unchanged {
+            return;
+        }
+        let gone = matches!(watched.file, refresh::WatchedFile::Gone);
+        let said = notice.unwrap_or_else(|| {
+            bounded(&if gone {
+                format!("{} is gone from disk; the saved candidate still reads", watched.path)
+            } else {
+                format!("{} changed on disk; reloaded", watched.path)
+            })
+        });
+        let line = self.anchor.as_ref().map(|anchor| anchor.line);
+        let drift = self.drift;
+        self.source_lines = document.text.lines().map(str::to_string).collect();
+        self.display = Vec::new();
+        self.display_width = 0;
+        if let Some(line) = line {
+            let last = self.source_lines.len().clamp(1, u32::MAX as usize) as u32;
+            self.anchor = Some(SourceAnchor {
+                path: document.path.clone(),
+                line: line.min(last),
+            });
+        }
+        self.drift = drift;
+        self.document = Some(document);
+        self.redraw = true;
+        // An arrival notice always wins its place: the review cannot
+        // apply over it, so it is the more urgent sentence (SPEC 5.3).
+        if self.notice.is_none() {
+            self.notice = Some(said);
+        }
+    }
+
+    /// Absorbs one rebuilt document list (SPEC 13.3): the selection stays
+    /// on its document by path, and the displayed document stays
+    /// untouched even when the list no longer names it.
+    fn absorb_document_list(&mut self, paths: Vec<String>) {
+        if paths == self.documents {
+            return;
+        }
+        let remembered = self.documents.get(self.selection).cloned();
+        self.documents = paths;
+        self.workspace.documents = self.documents.len();
+        let last = self.documents.len().saturating_sub(1);
+        self.selection = remembered
+            .as_ref()
+            .and_then(|path| self.documents.iter().position(|name| name == path))
+            .unwrap_or(self.selection.min(last));
+        self.redraw = true;
     }
 
     /// Compares the observed workspace against the pinned observation
@@ -2295,8 +2348,14 @@ impl<'a> Shell<'a> {
         }
     }
 
-    /// Moves the reading position by one viewport, less one held row.
+    /// Moves one viewport, less one held row, in the focused element
+    /// (SPEC 11.3 `PgUp` and `PgDn`): the document list pages its
+    /// selection, and the reading position pages by view.
     fn page(&mut self, direction: i32) {
+        if self.focus == Focus::Documents {
+            self.page_selection(direction);
+            return;
+        }
         match self.view {
             View::Changes => {
                 let page = self.viewport_rows.saturating_sub(2).max(1) as i32;
@@ -2321,6 +2380,25 @@ impl<'a> Shell<'a> {
                 self.sync_anchor();
             }
         }
+    }
+
+    /// Moves the document selection by one viewport, less one held row,
+    /// clamped at the ends, and loads the document it names.
+    fn page_selection(&mut self, direction: i32) {
+        if self.documents.is_empty() {
+            return;
+        }
+        let page = self.viewport_rows.saturating_sub(1).max(1);
+        let next = if direction > 0 {
+            (self.selection + page).min(self.documents.len() - 1)
+        } else {
+            self.selection.saturating_sub(page)
+        };
+        let Some(path) = self.documents.get(next).cloned() else {
+            return;
+        };
+        self.selection = next;
+        self.load_document(&path);
     }
 
     /// Moves the document selection and loads the document it names.
@@ -2500,8 +2578,93 @@ fn working_matches(content: &DocumentContent, bytes: &[u8], total: u64) -> bool 
     }
 }
 
+/// Builds one document view from one working read and one candidate
+/// outcome: the label rule, the display text, and the notice one failed
+/// read earns. The interactive load and the live reload share this one
+/// builder, so the two can never disagree about what the reader sees or
+/// the label it reads (SPEC 5.4).
+fn document_view(
+    path: &str,
+    working: &std::io::Result<(Vec<u8>, u64)>,
+    shown: Option<&ShowOutcome>,
+) -> (DocumentView, Option<String>) {
+    let mut document = DocumentView {
+        path: path.to_string(),
+        candidate: None,
+        saved: SavedState::UnsavedDraft,
+        text: String::new(),
+        total_bytes: None,
+        truncated: false,
+    };
+    let mut notice = None;
+    match working {
+        Ok((bytes, total)) => {
+            document.total_bytes = Some(*total);
+            document.truncated = *total > READ_VIEW_BYTES;
+            match shown {
+                Some(outcome) => {
+                    document.candidate = Some(outcome.revision_oid.clone());
+                    if working_matches(&outcome.content, bytes, *total) {
+                        document.saved = SavedState::Saved;
+                        document.text = display_text(&outcome.content);
+                    } else if matches!(outcome.content, DocumentContent::Opaque(_)) {
+                        // Opaque bytes cannot pair with a working
+                        // preview, so the honest label is unknown.
+                        document.saved = SavedState::Unknown;
+                        document.text = display_text(&outcome.content);
+                        document.truncated = content_truncated(&outcome.content);
+                    } else {
+                        // The working bytes differ, or the candidate
+                        // is absent: the view is a labeled preview.
+                        document.saved = SavedState::UnsavedDraft;
+                        document.text = String::from_utf8_lossy(bytes).into_owned();
+                    }
+                }
+                None => {
+                    // No candidate exists to compare with.
+                    document.saved = SavedState::UnsavedDraft;
+                    document.text = String::from_utf8_lossy(bytes).into_owned();
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => match shown {
+            Some(outcome) => {
+                document.candidate = Some(outcome.revision_oid.clone());
+                document.saved = match outcome.content {
+                    DocumentContent::Missing => SavedState::Unknown,
+                    _ => SavedState::WorkingFileGone,
+                };
+                document.text = display_text(&outcome.content);
+                document.total_bytes = content_bytes(&outcome.content);
+                document.truncated = content_truncated(&outcome.content);
+            }
+            None => {
+                document.saved = SavedState::Unknown;
+                notice = Some(bounded(&format!("no document exists at {path}")));
+            }
+        },
+        Err(error) => {
+            document.saved = SavedState::Unknown;
+            notice = Some(bounded(&format!(
+                "the working file cannot be read: {error}"
+            )));
+            if let Some(outcome) = shown {
+                document.candidate = Some(outcome.revision_oid.clone());
+                document.text = display_text(&outcome.content);
+                document.total_bytes = content_bytes(&outcome.content);
+            }
+        }
+    }
+    document.text = prepare_display(&document.text);
+    (document, notice)
+}
+
 /// Reads the working bytes of one path, bounded by `limit`.
-fn read_working(root: &Path, path: &str, limit: u64) -> std::io::Result<(Vec<u8>, u64)> {
+pub(crate) fn read_working(
+    root: &Path,
+    path: &str,
+    limit: u64,
+) -> std::io::Result<(Vec<u8>, u64)> {
     let file = fs::File::open(root.join(path))?;
     let total = file.metadata()?.len();
     let mut bytes = Vec::new();
@@ -2574,12 +2737,27 @@ fn bounded(text: &str) -> String {
 
 /// Discovers the Markdown documents of one folder before adoption
 /// (SPEC 5.1).
-fn discover_documents(root: &Path) -> Vec<String> {
+pub(crate) fn discover_documents(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
     walk_documents(root, String::new(), 0, &mut found);
     found.sort();
     found.truncate(MAX_DISCOVERED_DOCUMENTS);
     found
+}
+
+/// The document paths of one resolved scope: the tracked and untracked
+/// entries, already sorted by path bytes (BTreeMap iteration order). The
+/// interactive load and the polling watch share this one mapping, so the
+/// list they show can never disagree.
+pub(crate) fn document_paths(resolved: &app::ResolvedScope) -> Vec<String> {
+    resolved
+        .paths
+        .iter()
+        .filter(|(_, state)| {
+            matches!(state, ScopedPathState::Tracked | ScopedPathState::Untracked)
+        })
+        .map(|(path, _)| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Walks one directory level, collecting Markdown paths relative to the

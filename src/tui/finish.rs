@@ -33,6 +33,7 @@ use crate::domain::{
 use crate::git::Git;
 use crate::tui::changes::{ChangesView, PlanCounts};
 use crate::tui::render;
+use crate::tui::wrap::ComposedLine;
 
 /// The request slot of the digest that names one finish. The real
 /// identifier cannot hash itself, so the digest holds this fixed
@@ -163,84 +164,107 @@ impl FinishSummary {
 
     /// The lines of the summary: the entire scope, the intended result,
     /// and the explicit keep-remaining intent (SPEC 5.2, 11.3).
-    pub fn lines(&self) -> Vec<String> {
+    pub fn lines(&self) -> Vec<ComposedLine> {
         let counts = self.counts;
         let mut lines = Vec::new();
-        lines.push("Finish review".to_string());
-        lines.push("The entire writing scope, unvisited documents included:".to_string());
-        lines.push(format!(
+        lines.push(ComposedLine::heading("Finish review"));
+        lines.push(ComposedLine::text(
+            "The entire writing scope, unvisited documents included:",
+        ));
+        lines.push(ComposedLine::text(format!(
             "{} document{} affected · {} passage group{}",
             counts.documents,
             plural(counts.documents),
             counts.groups,
             plural(counts.groups),
-        ));
-        lines.push(format!(
+        )));
+        lines.push(ComposedLine::text(format!(
             "{} passage{} restored · {} kept · {} undecided",
             counts.restored,
             plural(counts.restored),
             counts.kept,
             counts.undecided,
-        ));
+        )));
         if counts.unvisited > 0 || counts.unvisited_documents > 0 {
-            lines.push(format!(
+            lines.push(ComposedLine::warning(format!(
                 "{} passage group{} and {} document{} never opened",
                 counts.unvisited,
                 plural(counts.unvisited),
                 counts.unvisited_documents,
                 plural(counts.unvisited_documents),
-            ));
+            )));
         }
-        lines.push("Finishing keeps every passage you did not restore, opened or not.".to_string());
-        lines.push(format!(
+        lines.push(ComposedLine::meta(
+            "Finishing keeps every passage you did not restore, opened or not.",
+        ));
+        lines.push(ComposedLine::meta(format!(
             "B {} → C {} · review {}",
             render::short(&self.baseline_oid),
             render::short(&self.candidate_oid),
             render::short(&self.review_id),
-        ));
-        lines.push(String::new());
+        )));
+        lines.push(ComposedLine::text(String::new()));
         self.result_lines(&mut lines);
-        lines.push(String::new());
-        lines.push("Enter  Keep remaining changes and finish".to_string());
-        lines.push("Esc    Cancel; nothing is applied".to_string());
+        lines.push(ComposedLine::text(String::new()));
+        lines.push(ComposedLine::meta(
+            "Enter  Keep remaining changes and finish",
+        ));
+        lines.push(ComposedLine::meta("Esc    Cancel; nothing is applied"));
         lines
     }
 
     /// The intended-result half of the summary: what the read-only preview
     /// proved, or the typed error that stopped it.
-    fn result_lines(&self, lines: &mut Vec<String>) {
+    fn result_lines(&self, lines: &mut Vec<ComposedLine>) {
         let Err(error) = &self.plan else {
             return self.preview_lines(lines);
         };
-        lines.push("The plan cannot be prepared right now:".to_string());
-        lines.push(format!("{}: {}", error.code, bounded(&error.message)));
+        lines.push(ComposedLine::warning(
+            "The plan cannot be prepared right now:",
+        ));
+        lines.push(ComposedLine::warning(format!(
+            "{}: {}",
+            error.code,
+            bounded(&error.message)
+        )));
     }
 
     /// The lines of one proved preview: the decisions it records, the
     /// files it rewrites, and the result tree it intends.
-    fn preview_lines(&self, lines: &mut Vec<String>) {
+    fn preview_lines(&self, lines: &mut Vec<ComposedLine>) {
         let Some(data) = self.preview.data.as_ref() else {
             let error = self
                 .preview
                 .error
                 .as_ref()
                 .expect("a failed outcome carries its error");
-            lines.push("The intended result cannot be proved right now:".to_string());
-            lines.push(format!("{}: {}", error.code, bounded(&error.message)));
+            lines.push(ComposedLine::warning(
+                "The intended result cannot be proved right now:",
+            ));
+            lines.push(ComposedLine::warning(format!(
+                "{}: {}",
+                error.code,
+                bounded(&error.message)
+            )));
             return;
         };
-        lines.push("Intended result, proved by one read-only preview:".to_string());
+        lines.push(ComposedLine::text(
+            "Intended result, proved by one read-only preview:",
+        ));
         let kept = match data.kept {
             Some(kept) => format!("{kept} of {} passage groups kept", self.counts.groups),
             None => "passage groups kept: count unknown".to_string(),
         };
-        lines.push(format!("{kept} · {} restored", data.restored.len(),));
+        lines.push(ComposedLine::meta(format!(
+            "{kept} · {} restored",
+            data.restored.len(),
+        )));
         if data.paths.is_empty() {
-            lines.push(
-                "Files rewritten: none; the review commit records the kept tree.".to_string(),
-            );
+            lines.push(ComposedLine::meta(
+                "Files rewritten: none; the review commit records the kept tree.",
+            ));
         } else {
-            lines.push(format!(
+            lines.push(ComposedLine::meta(format!(
                 "Files rewritten: {}{}",
                 data.paths
                     .iter()
@@ -249,12 +273,12 @@ impl FinishSummary {
                     .collect::<Vec<_>>()
                     .join(", "),
                 remaining(&data.paths, MAX_LISTED_PATHS),
-            ));
+            )));
         }
-        lines.push(format!(
+        lines.push(ComposedLine::meta(format!(
             "Result tree {}",
             render::short(&data.expected_tree)
-        ));
+        )));
     }
 }
 
