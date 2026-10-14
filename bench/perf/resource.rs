@@ -235,7 +235,7 @@ where
     let mut session = PtySession::spawn(executable, &["tui", "--reduced-updates"], envs, cwd)
         .map_err(|error| format!("the surface cannot start on its terminal: {error}"))?;
     let mut failures = Vec::new();
-    if !session.wait_for("1 Read 2 Changes 3 History", STEP_LIMIT) {
+    if !session.wait_for("focus reading", STEP_LIMIT) {
         failures.push("the session never showed the useful first frame".to_string());
     }
     on_frame(&session);
@@ -362,7 +362,7 @@ pub fn run_cpu(
     let mut session = PtySession::spawn(executable, &["tui", "--reduced-updates"], envs, cwd)
         .map_err(|error| format!("the surface cannot start on its terminal: {error}"))?;
     let mut failures = Vec::new();
-    if !session.wait_for("1 Read 2 Changes 3 History", STEP_LIMIT) {
+    if !session.wait_for("focus reading", STEP_LIMIT) {
         failures.push("the session never showed the useful first frame".to_string());
     }
     let pid = session.pid();

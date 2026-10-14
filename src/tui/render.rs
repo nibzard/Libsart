@@ -11,7 +11,7 @@
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Text};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, widgets};
 
@@ -33,6 +33,8 @@ struct Palette {
     dim: Style,
     /// The style of emphasized rows.
     bold: Style,
+    selected: Style,
+    word: Style,
     /// The style of headings: view titles, group headers, Markdown
     /// headings.
     heading: Style,
@@ -51,6 +53,8 @@ impl Palette {
             Palette {
                 dim: Style::new(),
                 bold: Style::new(),
+                selected: Style::new(),
+                word: Style::new(),
                 heading: Style::new(),
                 added: Style::new(),
                 removed: Style::new(),
@@ -60,6 +64,8 @@ impl Palette {
             Palette {
                 dim: Style::new().dim(),
                 bold: Style::new().bold(),
+                selected: Style::new().bold().reversed().fg(Color::Blue),
+                word: Style::new().bold().reversed(),
                 heading: Style::new().bold().fg(Color::Blue),
                 added: Style::new().fg(Color::Green),
                 removed: Style::new().fg(Color::Red),
@@ -77,7 +83,7 @@ impl Palette {
             RowKind::Removed => self.removed,
             RowKind::Meta => self.dim,
             RowKind::Warning => self.warning,
-            RowKind::Emphasis => self.bold,
+            RowKind::Emphasis => self.selected,
         }
     }
 }
@@ -91,9 +97,10 @@ pub fn draw(shell: &mut Shell<'_>, frame: &mut Frame<'_>) {
         draw_too_small(frame, area, shell);
         return;
     }
-    let geometry = layout::frame_layout(area);
+    let geometry = layout::frame_layout_with_navigator(area, !shell.sidebar_hidden());
     let palette = Palette::of(shell);
     draw_header(frame, geometry.header, shell, palette);
+    draw_tabs(frame, geometry.tabs, shell, palette);
     if let Some(navigator) = geometry.navigator {
         draw_navigator(frame, navigator, shell, palette);
     }
@@ -143,29 +150,125 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
             ..area
         },
     );
-    frame.render_widget(Paragraph::new(left), left_area);
+    frame.render_widget(
+        Paragraph::new(fit_to(&left, left_area.width.saturating_sub(2) as usize)),
+        left_area,
+    );
     frame.render_widget(
         Paragraph::new(workspace.preservation_sentence()).style(palette.dim),
         right_area,
     );
 }
 
-/// Draws the optional document list (SPEC 11.2).
-fn draw_navigator(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
-    let documents = shell.documents();
-    let title = format!("Documents ({})", documents.len());
-    let mut lines = vec![Line::styled(title, palette.dim)];
-    for (index, path) in documents.iter().enumerate() {
-        let selected = index == shell.selection();
-        let marker = if selected { "› " } else { "  " };
-        let fit = fit_to(path, area.width.saturating_sub(2) as usize);
-        let line = Line::styled(
-            format!("{marker}{fit}"),
-            if selected { palette.bold } else { Style::new() },
-        );
-        lines.push(line);
+/// Persistent tabs keep the active mode visible even without color.
+fn draw_tabs(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
+    let mut spans = Vec::new();
+    for (key, view) in [(1, View::Read), (2, View::Changes), (3, View::History)] {
+        let active = shell.view() == view;
+        let label = if active {
+            format!(" [{key} {}] ", view.label())
+        } else {
+            format!("  {key} {}  ", view.label())
+        };
+        spans.push(Span::styled(
+            label,
+            if active {
+                palette.selected
+            } else {
+                palette.dim
+            },
+        ));
     }
-    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The compact sidebar nests the active document's parsed headings.
+fn draw_navigator(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
+    let focused = shell.focus() == Focus::Documents;
+    let mut lines = vec![Line::styled(
+        format!(
+            "Documents ({}){}",
+            shell.documents().len(),
+            if focused { " · focus" } else { "" }
+        ),
+        if focused {
+            palette.heading
+        } else {
+            palette.dim
+        },
+    )];
+    let entries = shell.navigator_entries();
+    let current = if focused {
+        shell.navigator_cursor()
+    } else {
+        entries
+            .iter()
+            .position(|&(doc, heading)| {
+                doc == shell.selection() && heading == shell.active_heading()
+            })
+            .unwrap_or(shell.selection())
+    };
+    let height = area.height.saturating_sub(2) as usize;
+    let start = current.saturating_sub(height.saturating_sub(1));
+    let base_level = shell.headings().iter().map(|h| h.level).min().unwrap_or(1);
+    for (index, &(document, heading)) in entries.iter().enumerate().skip(start).take(height) {
+        let active = index == current;
+        let marker = if active { "›" } else { " " };
+        let text = match heading {
+            Some(h) => {
+                let h = &shell.headings()[h];
+                format!(
+                    "{marker} {}{}",
+                    "  ".repeat((h.level - base_level).min(4) + 1),
+                    h.title
+                )
+            }
+            None => format!(
+                "{marker} {} {}",
+                if document == shell.selection() && !shell.outline_folded() {
+                    "▾"
+                } else {
+                    "▸"
+                },
+                shell.documents()[document]
+            ),
+        };
+        lines.push(Line::styled(
+            fit_to(&text, area.width.saturating_sub(1) as usize),
+            if active {
+                palette.selected
+            } else if heading.is_some() {
+                palette.dim
+            } else {
+                Style::new()
+            },
+        ));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// A row's word ranges survive wrapping; no marker characters enter the source.
+fn display_line(row: &wrap::DisplayRow, palette: Palette) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    for range in &row.highlights {
+        if range.start > cursor {
+            spans.push(Span::styled(
+                row.text[cursor..range.start].to_string(),
+                palette.style(row.kind),
+            ));
+        }
+        spans.push(Span::styled(
+            row.text[range.clone()].to_string(),
+            palette.style(row.kind).patch(palette.word),
+        ));
+        cursor = range.end;
+    }
+    spans.push(Span::styled(
+        row.text[cursor..].to_string(),
+        palette.style(row.kind),
+    ));
+    Line::from(spans)
 }
 
 /// Draws the Read view: the title breadcrumb, the saved state of this
@@ -230,27 +333,33 @@ fn draw_document_title(
     shell: &Shell<'_>,
     palette: Palette,
 ) {
-    let split = area.width / 2;
-    let (left, right) = (
+    let status = if shell.reading_source() {
+        format!("{label} · source")
+    } else {
+        label.to_string()
+    };
+    let status_width =
+        (unicode_width::UnicodeWidthStr::width(status.as_str()) as u16).min(area.width / 2);
+    let left_width = area.width.saturating_sub(status_width + 2);
+    let title = shell
+        .current_section()
+        .map(|section| format!("{path} › {section}"))
+        .unwrap_or_else(|| path.to_string());
+    frame.render_widget(
+        Paragraph::new(fit_to(&title, left_width as usize)).style(palette.heading),
         Rect {
-            width: split,
-            ..area
-        },
-        Rect {
-            x: area.x + split,
-            width: area.width - split,
+            width: left_width,
             ..area
         },
     );
-    let mut spans = vec![ratatui::text::Span::styled(path.to_string(), palette.heading)];
-    if let Some(section) = shell.current_section() {
-        spans.push(ratatui::text::Span::styled(
-            format!(" › {}", fit_to(&section, 40)),
-            palette.dim,
-        ));
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), left);
-    frame.render_widget(Paragraph::new(label).style(palette.dim), right);
+    frame.render_widget(
+        Paragraph::new(status).style(palette.dim),
+        Rect {
+            x: area.right().saturating_sub(status_width),
+            width: status_width,
+            ..area
+        },
+    );
 }
 
 /// Draws the wrapped rows of the reading column, each in the role its
@@ -261,7 +370,7 @@ fn render_reading_body(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, pal
     let shown = &rows[offset.min(rows.len())..];
     let mut lines = Vec::with_capacity(area.height as usize);
     for row in shown.iter().take(area.height as usize) {
-        lines.push(Line::styled(row.text.clone(), palette.style(row.kind)));
+        lines.push(display_line(row, palette));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
@@ -312,7 +421,7 @@ fn draw_changes(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
         // intent (SPEC 5.2). The footer keeps naming the two keys that
         // answer it, so no action is lost to a short frame.
         for row in shell.finish_rows().iter().take(body.height as usize) {
-            lines.push(Line::styled(row.text.clone(), palette.style(row.kind)));
+            lines.push(display_line(row, palette));
         }
         frame.render_widget(Paragraph::new(Text::from(lines)), body);
         return;
@@ -321,32 +430,23 @@ fn draw_changes(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
     let offset = changes.offset();
     let shown = &rows[offset.min(rows.len())..];
     for row in shown.iter().take(body.height as usize) {
-        lines.push(Line::styled(row.text.clone(), palette.style(row.kind)));
+        lines.push(display_line(row, palette));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), body);
 }
 
 /// Draws the History view (SPEC 5.5): the editorial timeline in ancestry
-/// order, with locally displayed timestamps and the exact Unix value beside
-/// them, or the standing restoration preview that `Enter` answers.
+/// order, with local timestamps and optional revision details, or the
+/// standing restoration preview that `Enter` answers.
 fn draw_history(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
     let workspace = shell.workspace();
-    let mut lines = vec![Line::styled("History", palette.heading)];
-    if let Some(branch) = &workspace.branch {
-        lines.push(Line::styled(format!("on {branch}"), palette.dim));
-    }
-    // The retained document names what `Enter` previews and restores
-    // (SPEC 5.4).
+    let mut lines = vec![Line::styled("Document history", palette.heading)];
     if let Some(document) = shell.document() {
         lines.push(Line::styled(
-            format!(
-                "document {} · Enter previews its restoration",
-                document.path
-            ),
+            format!("{} · Enter previews restoration", document.path),
             palette.dim,
         ));
     }
-    lines.push(Line::from(""));
     if !workspace.adopted {
         lines.push(Line::styled(
             "No timeline exists: Margin is not set up for this folder.",
@@ -380,8 +480,11 @@ fn draw_history(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
     let rows = history.display_rows();
     let offset = history.offset();
     let shown = &rows[offset.min(rows.len())..];
-    for row in shown.iter().take(area.height as usize) {
-        lines.push(Line::styled(row.text.clone(), palette.style(row.kind)));
+    for row in shown
+        .iter()
+        .take(area.height.saturating_sub(lines.len() as u16) as usize)
+    {
+        lines.push(display_line(row, palette));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
@@ -521,6 +624,26 @@ fn draw_context(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
         }
         None => String::from("no document"),
     };
+    let left = match shell.view() {
+        View::Read => left,
+        View::Changes => shell
+            .changes()
+            .and_then(|c| {
+                c.selected_group().map(|g| {
+                    format!(
+                        "{} · passage {} / {}",
+                        g.path,
+                        c.selection() + 1,
+                        c.groups().len()
+                    )
+                })
+            })
+            .unwrap_or(left),
+        View::History => shell
+            .history()
+            .map(|h| format!("Version {} / {}", h.selection() + 1, h.rows().len()))
+            .unwrap_or(left),
+    };
     let right = match (shell.view(), shell.changes()) {
         // In the Changes view, the plan the keys change states itself:
         // every decision and the scope it still has to cover, unvisited
@@ -544,7 +667,10 @@ fn draw_context(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
             ..area
         },
     );
-    frame.render_widget(Paragraph::new(left), left_area);
+    frame.render_widget(
+        Paragraph::new(fit_to(&left, left_area.width.saturating_sub(2) as usize)),
+        left_area,
+    );
     frame.render_widget(Paragraph::new(right).style(palette.dim), right_area);
 }
 
@@ -554,6 +680,10 @@ fn context_field(shell: &Shell<'_>) -> Option<String> {
     match shell.overlay() {
         Some(Overlay::Search { query }) => Some(format!(
             "search: {query}▏ · Enter finds the next match · Esc closes"
+        )),
+        Some(Overlay::Note { text, .. }) => Some(format!(
+            "Your note: {}▏ · Enter saves · Esc cancels",
+            crate::cli::display_escape(text)
         )),
         Some(Overlay::Picker { filter }) => {
             let matches = shell.picker_matches(filter).len();
@@ -570,7 +700,7 @@ fn context_field(shell: &Shell<'_>) -> Option<String> {
 /// context answers (SPEC 11.3). Focus is stated in words, so it is
 /// visible, never inferred from decoration alone.
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
-    let reduced = shell.width_class().reduces_metadata();
+    let reduced = area.width < 100;
     let views = if reduced {
         "1·2·3 views"
     } else {
@@ -609,6 +739,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
                 "type the query · Enter finds · Esc closes"
             },
         ),
+        Some(Overlay::Note { .. }) => (views, "type note · Enter saves · Esc cancels"),
         None => match (shell.view(), reduced, shell.finish().is_some()) {
             // While the finish summary stands, the footer names the two keys
             // that answer it, so the action stays reachable at every size
@@ -633,7 +764,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
                     }
                     _ => (
                         "1 Read 2 Changes 3 History",
-                        "j/k revision · Enter preview · a checkpoints · q quit",
+                        "j/k · Enter preview · d details · a checkpoints · ? help · q quit",
                     ),
                 }
             }
@@ -642,42 +773,65 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
                     Some(PreviewState::SaveOffer) => ("3 History", "s save · Esc cancel"),
                     Some(PreviewState::Ready) => ("3 History", "Enter restore · Esc cancel"),
                     Some(PreviewState::Refused) => ("3 History", "Esc cancel · j/k read"),
-                    _ => ("1·2·3 views", "j/k · Enter · q"),
+                    _ => (
+                        "1·2·3 views",
+                        "j/k · Enter preview · d details · ? · q quit",
+                    ),
                 }
             }
             (View::Changes, false, false) => (
                 "1 Read 2 Changes 3 History",
-                "n/p group · K keep · r restore · s source · R refresh · Enter finish",
+                "n/p group · K keep · r restore · u undo · d details · Enter finish · ? help",
             ),
-            (View::Changes, true, false) => ("2 Changes", "n/p · K · r · R · q"),
+            (View::Changes, true, false) => {
+                ("2 Changes", "n/p · K keep · r restore · Enter · ? · q quit")
+            }
             (_, false, _) => (
                 "1 Read 2 Changes 3 History",
-                "j/k move · / search · f find · : menu · ? help · q quit",
+                "j/k scroll · Tab outline · [ sidebar · s source · / search · ? help · q quit",
             ),
-            (_, true, _) => ("1·2·3 views", "j/k · / · f · q quit"),
+            (_, true, _) => ("1·2·3 views", "j/k · s source · f find · / · ? · q quit"),
         },
     };
-    // The focused element, in words, so focus is visible at every size
-    // (SPEC 11.3, 11.4).
-    let focus = match (reduced, shell.focus()) {
-        (false, focus) => format!("{left} · focus {}", focus.label()),
-        (true, Focus::Documents) => format!("{left} · list"),
-        (true, focus) => format!("{left} · {}", focus.label()),
-    };
-    let split = area.width / 2;
-    let (left_area, right_area) = (
-        Rect {
-            width: split,
-            ..area
+    let _ = left; // Tabs above now own mode switching.
+    let focus = match shell.focus() {
+        Focus::Documents => "document list",
+        Focus::Actions => "action menu",
+        Focus::Reading => match shell.view() {
+            View::Read => "reading",
+            View::Changes => "changes",
+            View::History => "history",
         },
+    };
+    let right = if shell.focus() == Focus::Documents && shell.overlay().is_none() {
+        "j/k navigate · Enter read · ←/→ fold · [ hide · Tab focus"
+    } else if shell.view() == View::Read
+        && shell.overlay().is_none()
+        && !shell.navigator_visible()
+        && area.width >= 100
+    {
+        "j/k scroll · [ sidebar · s source · f find · / search · ? help · q quit"
+    } else {
+        right
+    };
+    let prefix = format!("focus {focus} · ");
+    let left_width =
+        (unicode_width::UnicodeWidthStr::width(prefix.as_str()) as u16).min(area.width);
+    frame.render_widget(
+        Paragraph::new(prefix).style(palette.dim),
         Rect {
-            x: area.x + split,
-            width: area.width - split,
+            width: left_width,
             ..area
         },
     );
-    frame.render_widget(Paragraph::new(focus), left_area);
-    frame.render_widget(Paragraph::new(right).style(palette.dim), right_area);
+    frame.render_widget(
+        Paragraph::new(right),
+        Rect {
+            x: area.x + left_width,
+            width: area.width - left_width,
+            ..area
+        },
+    );
 }
 
 /// Draws the minimum-size message (SPEC 11.2): the useful minimum, the

@@ -529,6 +529,12 @@ impl Git {
         self
     }
 
+    /// Tightens a query's output bound without changing the caller's timeout.
+    pub fn with_output_limit(mut self, bytes: usize) -> Self {
+        self.limits.max_output_bytes = bytes.min(self.limits.max_output_bytes);
+        self
+    }
+
     /// Runs every child in this directory.
     pub fn at(mut self, directory: impl Into<PathBuf>) -> Self {
         self.working_dir = Some(directory.into());

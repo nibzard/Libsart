@@ -259,7 +259,7 @@ fn timeline_of(shell: &Shell<'_>) -> Vec<String> {
 /// collapsed writing pass with its checkpoint count, and the start, each
 /// with the local clock and the exact Unix timestamp beside it (SPEC 5.5).
 #[test]
-fn the_timeline_lists_starts_drafts_reviews_and_restorations() {
+fn the_document_timeline_lists_writing_passes_and_restorations() {
     let session = build_session();
     let git = adapter_for(&session.repo);
     let operations = Operations::new(&git);
@@ -271,7 +271,6 @@ fn the_timeline_lists_starts_drafts_reviews_and_restorations() {
     assert_eq!(
         timeline,
         vec![
-            "review margin: review complete".to_string(),
             "draft Tone revised".to_string(),
             "start margin: capture starting point".to_string(),
         ],
@@ -289,28 +288,31 @@ fn the_timeline_lists_starts_drafts_reviews_and_restorations() {
         !screen.contains("Introduction revised"),
         "the older checkpoint of the pass is collapsed",
     );
-    // Timestamps display locally, with the exact value beside them.
+    // Exact timestamps are available on demand.
+    assert!(!screen.contains("1767225600"));
+    shell.handle_event(&key(KeyCode::Char('d')));
+    let screen = joined(&draw(&mut shell, 110, 30));
     assert!(
-        screen.contains("2026-01-01 00:00 (1767225600)"),
+        screen.contains("2026-01-01 00:00 · exact 1767225600"),
         "the local clock and the exact Unix timestamp: {screen}",
     );
-    assert!(screen.contains("ancestry order"), "the order is stated");
+    assert!(screen.contains("newest first"), "the order is stated");
 
     // The selection moves between revisions and holds at its ends (SPEC
     // 11.3).
     assert_eq!(shell.history().unwrap().selection(), 0);
     shell.handle_event(&key(KeyCode::Char('j')));
     shell.handle_event(&key(KeyCode::Char('j')));
-    assert_eq!(shell.history().unwrap().selection(), 2);
+    assert_eq!(shell.history().unwrap().selection(), 1);
     let page = draw(&mut shell, 110, 30);
     assert!(
-        joined(&page).contains("› start "),
+        joined(&page).contains("› 2026-"),
         "the selected revision is marked",
     );
     shell.handle_event(&key(KeyCode::Char('j')));
     assert_eq!(
         shell.history().unwrap().selection(),
-        2,
+        1,
         "the oldest revision holds",
     );
 
@@ -321,8 +323,6 @@ fn the_timeline_lists_starts_drafts_reviews_and_restorations() {
     assert_eq!(
         timeline,
         vec![
-            "review margin: review complete".to_string(),
-            "draft Tone revised".to_string(),
             "draft Introduction revised".to_string(),
             "start margin: capture starting point".to_string(),
         ],
@@ -353,7 +353,7 @@ fn restore_from_start(session: &Session, path: &str) -> RestoreOutcome {
     let git = adapter_for(&session.repo);
     let operations = Operations::new(&git);
     let mut shell = history_shell(&session.repo, &operations, path);
-    // Newest first: review, draft, start. Two steps reach the start.
+    // Newest first: draft and start; a further step holds at the oldest.
     shell.handle_event(&key(KeyCode::Char('j')));
     shell.handle_event(&key(KeyCode::Char('j')));
     shell.handle_event(&key(KeyCode::Enter));
@@ -565,14 +565,13 @@ fn missing_and_empty_documents_stay_distinct_in_the_preview() {
     let git = adapter_for(&repo);
     let operations = Operations::new(&git);
 
-    // The timeline holds four rows, newest first: the recreation, the
-    // review, the deletion pass, and the start.
+    // The document timeline omits the content-identical review: recreation,
+    // deletion pass, and the start remain.
     let shell = history_shell(&repo, &operations, "notes/gone.md");
     assert_eq!(
         timeline_of(&shell),
         vec![
             "draft Recreate gone".to_string(),
-            "review margin: review complete".to_string(),
             "draft Delete and empty".to_string(),
             "start margin: capture starting point".to_string(),
         ],
@@ -583,7 +582,6 @@ fn missing_and_empty_documents_stay_distinct_in_the_preview() {
     // it: the revision side names the absence, the candidate side reads,
     // and the preview never calls the absence an empty document.
     let mut shell = history_shell(&repo, &operations, "notes/gone.md");
-    shell.handle_event(&key(KeyCode::Char('j')));
     shell.handle_event(&key(KeyCode::Char('j')));
     assert_eq!(
         shell

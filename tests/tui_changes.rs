@@ -298,8 +298,8 @@ fn every_group_renders_its_context_across_the_detail_pages() {
     let page = draw(&mut shell, 110, 30);
     let screen = joined(&page);
     assert!(screen.contains(&format!("{groups} passage groups")));
-    assert!(screen.contains("Changed documents:"));
-    assert!(screen.contains("notes/many.md · 3 groups"));
+    assert!(!screen.contains("Changed documents:"));
+    assert!(screen.contains("notes/many.md"));
     let mut seen = 0;
     for index in 0..groups {
         let page = draw(&mut shell, 110, 30);
@@ -349,7 +349,7 @@ fn k_and_r_change_only_the_in_memory_plan() {
     let screen = joined(&page);
     assert!(screen.contains("› Group 1 of 3 · Undecided"));
     assert!(
-        screen.contains("r Restore previous passage"),
+        screen.contains("r restore"),
         "the passage action carries the SPEC 5.2 wording",
     );
 
@@ -634,7 +634,7 @@ fn unvisited_scope_counts_stay_available() {
     let page = draw(&mut shell, 110, 30);
     let screen = joined(&page);
     assert!(
-        screen.contains("Plan in memory: 1 kept · 0 restored · 2 undecided · 2 unvisited"),
+        screen.contains("Not applied: 1 kept · 0 restored · 2 undecided · 2 unseen"),
         "the counts follow the decisions",
     );
 

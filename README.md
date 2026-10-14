@@ -116,15 +116,39 @@ capture and review operations.
 
 The implementation is in progress. Core command-line workflows are available
 for testing. The interactive terminal interface opens with its Read view,
-its Changes view, and its History view: the Changes view lists every passage
-group with its source, and the `K` and `r` keys record one in-memory plan.
-`Enter` opens a finish summary of the entire writing scope, and a second
-`Enter` keeps the remaining changes and records the review through the same
-operation as `margin review`. The History view lists the writing timeline in
-ancestry order with locally displayed timestamps, previews one document at a
-selected revision against the current candidate, and restores it through the
-same operation as `margin restore`; the review baseline stays unchanged, and
-missing files stay distinct from empty ones.
+its Changes view, and its History view. Persistent tabs show the active view.
+The compact sidebar nests the selected document's Markdown headings. `Tab`
+focuses the outline, `j`/`k` or arrows jump between entries, and `Enter` returns
+to reading. Left/right fold or expand the document; `[` hides or shows the
+sidebar. Scrolling highlights the current section. HTML comments stay hidden
+in Read until `s` toggles source view; source-line anchors survive both
+navigation and resizing.
+
+Changes shows before/after passages with word-level emphasis. `K` and `r`
+record an in-memory keep or restore decision; `u` clears the selected decision.
+`d` shows grouping rationale and review identity; `s` shows exact source.
+The decision count is separate from document saving: decisions are **not
+applied** until confirmed. `Enter` opens a finish summary of the entire writing
+scope, and a second `Enter` keeps the remaining changes and records the review
+through the same operation as `margin review`.
+
+Notes explain changes without changing document content. After a checkpoint,
+agents use `margin note --text "Why this changed"`, optionally with
+`--group` and a `change_id` from `margin diff --json`. `margin notes --json`
+lists notes on HEAD; `--revision` selects an earlier commit, and
+`margin notes --schema` exports the envelope schema. Changes and History
+display notes with authorship in words. In Changes, `N` opens a writer note;
+`Enter` saves it and `Esc` cancels. Installing the Claude integration adds
+the marked discovery block to `CLAUDE.md` and `AGENTS.md`; edited blocks
+are preserved with a conflict. Prompt hooks deliver bounded writer feedback
+from the current adoption's history, including feedback on older candidates.
+
+History lists versions affecting the selected document, in ancestry order,
+with separate local date, short commit, and description columns. `d` reveals
+revision kind, full commit, and exact timestamp; `a` expands draft checkpoints.
+`Enter` previews restoration against the current candidate before a second
+`Enter` applies it through `margin restore`. The review baseline stays
+unchanged, and missing files stay distinct from empty ones.
 
 The keyboard contract of the interface is complete: `Tab` and `Shift-Tab`
 cycle focus between the document list, the reading column, and the standing
@@ -190,7 +214,9 @@ For more detail, see:
 - [Behavior and design specification](SPEC.md)
 - [Supported terminal smoke matrix](docs/terminal-smoke-matrix.md)
 - [Verification tiers and support matrix](docs/verification-tiers.md)
+- [The notes channel design](docs/notes-channel.md)
 - [Review plan schema](schemas/review-plan-v1.json)
+- [Notes schema](schemas/notes-v1.json)
 - [Formal model](formal/MarginReview.tla)
 - [Formal mutation checks](formal/mutations/README.md)
 - [Implementation backlog](to-do.json)

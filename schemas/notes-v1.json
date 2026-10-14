@@ -1,0 +1,60 @@
+{
+  "$id": "https://margin.invalid/schemas/notes-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One commit's Margin notes on refs/notes/margin: a bounded list of note entries, each anchored to the commit as a whole or to one change-group digest of the comparison the commit pins. The CLI command `margin note` writes these bytes; native Git writers follow the same shape. This schema rejects unknown fields, missing authorship, identical complete entries, and out-of-bound text. Full validation additionally requires the semantic ID-uniqueness check specified in SPEC 12.7; JSON Schema uniqueItems cannot enforce uniqueness of one property across entries.",
+  "properties": {
+    "notes": {
+      "description": "Entry IDs must be unique within this array. Readers and appenders must enforce this semantic constraint in addition to schema validation.",
+      "items": {
+        "additionalProperties": false,
+        "description": "One note entry. A missing `group` anchors the entry to the commit as a whole.",
+        "properties": {
+          "by": {
+            "description": "The claimed author the interface states in words.",
+            "enum": [
+              "agent",
+              "writer"
+            ],
+            "type": "string"
+          },
+          "group": {
+            "description": "The change-group digest of the pinned comparison this entry annotates.",
+            "pattern": "^sha1:[0-9a-f]{40}$|^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "by",
+          "text"
+        ],
+        "type": "object"
+      },
+      "maxItems": 50,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema_version",
+    "notes"
+  ],
+  "title": "Margin notes v1",
+  "type": "object"
+}

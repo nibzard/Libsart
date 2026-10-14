@@ -44,7 +44,7 @@ pub use finish::FinishSummary;
 pub use history::{HistoryView, RestorePreview};
 pub use refresh::{
     INSPECTION_INTERVAL, InspectionReply, PinnedObservation, RefreshWorker, Watch, WatchJob,
-    WatchedDocument, WatchedFile, WatchList,
+    WatchList, WatchedDocument, WatchedFile,
 };
 pub use run::{LaunchError, TerminalGuard, launch};
 pub use shell::{ColorMode, EditorHandoff, Focus, Overlay, Shell, TuiOptions, View};

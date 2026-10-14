@@ -95,6 +95,7 @@ pub const EXIT_CLASSES: &[(u8, &str, &[&str])] = &[
         &[
             "INVALID_ARGUMENT",
             "INVALID_PLAN",
+            "INVALID_NOTES",
             "UNKNOWN_CHANGE",
             "LIMIT_EXCEEDED",
         ],
@@ -108,6 +109,8 @@ pub const EXIT_CLASSES: &[(u8, &str, &[&str])] = &[
             "STALE_STATE",
             "REQUEST_ID_CONFLICT",
             "BRANCH_CHANGED",
+            "NOTES_CONFLICT",
+            "INSTRUCTION_CONFLICT",
         ],
     ),
     (
@@ -296,6 +299,8 @@ struct EnvelopeEffects {
     repository: String,
     configuration: String,
     integration: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes_ref: Option<String>,
 }
 
 impl From<&Effects> for EnvelopeEffects {
@@ -308,6 +313,8 @@ impl From<&Effects> for EnvelopeEffects {
             repository: effects.repository.as_str().to_string(),
             configuration: effects.configuration.as_str().to_string(),
             integration: effects.integration.as_str().to_string(),
+            notes_ref: (effects.notes_ref != crate::app::ObservedEffect::Unchanged)
+                .then(|| effects.notes_ref.as_str().to_string()),
         }
     }
 }
@@ -402,6 +409,41 @@ fn command() -> Command {
                 .help("Text decoration only; JSON output never carries color"),
         )
         .subcommand(init_command())
+        .subcommand(
+            Command::new("note")
+                .about("Append one annotation to the candidate commit (mutation)")
+                .arg(
+                    Arg::new("text")
+                        .long("text")
+                        .required(true)
+                        .value_name("TEXT")
+                        .help("Reason for the change, 1–2000 Unicode characters"),
+                )
+                .arg(
+                    Arg::new("group")
+                        .long("group")
+                        .value_name("DIGEST")
+                        .help("Change-group digest from margin diff --json"),
+                ),
+        )
+        .subcommand(
+            Command::new("notes")
+                .about("List commit annotations or print their schema (query)")
+                .arg(
+                    Arg::new("revision")
+                        .long("revision")
+                        .value_name("COMMIT")
+                        .conflicts_with("schema")
+                        .help("Commit to inspect; default HEAD"),
+                )
+                .arg(
+                    Arg::new("schema")
+                        .long("schema")
+                        .action(ArgAction::SetTrue)
+                        .conflicts_with("json")
+                        .help("Print the installed raw JSON Schema without repository access"),
+                ),
+        )
         .subcommand(
             Command::new("status")
                 .about("Report preservation and review state (query)")
@@ -1032,8 +1074,8 @@ fn positional_entry(argument: &Arg) -> Option<Value> {
 fn command_effect(path: &str) -> &'static str {
     match path {
         "init" | "checkpoint" | "review" | "restore" | "hook install" | "hook remove"
-        | "hook claude" => "mutation",
-        "status" | "diff" | "show" | "log" | "doctor" => "query",
+        | "hook claude" | "note" => "mutation",
+        "status" | "diff" | "show" | "log" | "doctor" | "notes" => "query",
         "tui" | "edit" | "desk" => "interactive",
         // A test fails when a new command reaches a caller unnamed here.
         _ => "unknown",
@@ -1213,6 +1255,63 @@ fn dispatch(matches: &ArgMatches) -> Finished {
     let git = adapter(&invocation);
     let operations = Operations::new(&git);
     match name {
+        "notes" if sub.get_flag("schema") => Finished {
+            exit: 0,
+            stdout: Some(crate::notes::SCHEMA.to_string()),
+            stdout_bytes: None,
+            stderr: None,
+        },
+        "notes" => {
+            let outcome =
+                operations.list_notes(sub.get_one::<String>("revision").map(String::as_str));
+            outcome_finished_text(
+                "notes",
+                &outcome,
+                |data| notes_value(data, &data.commit),
+                |data| {
+                    let mut text = data.unreadable.clone().unwrap_or_default();
+                    for note in &data.notes {
+                        text.push_str(&format!(
+                            "{}{}: {}\n",
+                            note.label(),
+                            note.group
+                                .as_ref()
+                                .map(|g| format!(" ({g})"))
+                                .unwrap_or_default(),
+                            display_escape(&note.text)
+                        ));
+                    }
+                    if text.is_empty() {
+                        text.push_str("No notes.\n");
+                    }
+                    text
+                },
+                invocation.json,
+            )
+        }
+        "note" => {
+            let outcome = operations.append_note(&crate::notes::AppendRequest {
+                commit: None,
+                group: sub.get_one::<String>("group").cloned(),
+                by: crate::notes::Author::Agent,
+                text: sub
+                    .get_one::<String>("text")
+                    .expect("required text")
+                    .clone(),
+            });
+            outcome_finished_text(
+                "note",
+                &outcome,
+                |data| notes_value(data, &data.commit),
+                |data| {
+                    format!(
+                        "Note saved on {}.\n",
+                        &data.commit[..12.min(data.commit.len())]
+                    )
+                },
+                invocation.json,
+            )
+        }
         "init" => {
             let editor_argv = match editor_argv_of(sub, invocation.json) {
                 Ok(editor_argv) => editor_argv,
@@ -1611,6 +1710,13 @@ fn dispatch(matches: &ArgMatches) -> Finished {
 fn missing_command() -> OperationError {
     OperationError::new("INVALID_ARGUMENT", "a command is required")
         .recovery(&["margin", "--help", "--json"])
+}
+
+fn notes_value(data: &impl Serialize, commit: &str) -> Value {
+    let mut value = serde_json::to_value(data).expect("notes serialize");
+    // Operation results contain validated canonical OIDs in either supported format.
+    value["object_format"] = json!(if commit.len() == 64 { "sha256" } else { "sha1" });
+    value
 }
 
 /// Builds the scope input of `init` from its options. No `--scope` means
@@ -2116,11 +2222,13 @@ fn project_hook_setup(data: &integrations::claude::SetupOutcome) -> Value {
             })
             .collect::<Vec<Value>>(),
         "planned_config": data.planned_config,
+        "instruction_files": data.instructions,
         "capabilities": {
             "command": integrations::claude::HOOK_COMMAND,
             "events": integrations::claude::SUPPORTED_EVENTS,
             "capture": "one ordinary draft checkpoint, only while auto-checkpoint is stored; \
-                        otherwise the boundary stays silent",
+                        otherwise capture is disabled",
+            "feedback": "bounded writer notes in UserPromptSubmit context, independent of capture policy",
             "blocking_events": ["UserPromptSubmit"],
             "never_blocks": ["Stop", "StopFailure", "SessionStart", "SessionEnd"],
             "approval": "none: every capture is one unreviewed draft",
@@ -2161,7 +2269,36 @@ fn hook_setup_text(data: &integrations::claude::SetupOutcome) -> String {
             format!("margin: removed {planned} entries from {target}")
         }
     };
-    format!("{line}\n")
+    let instruction_count = data.instructions.iter().filter(|p| p.changed).count();
+    let mut body = if instruction_count > 0 {
+        format!(
+            "margin: {}{action}; {planned} hook entries and {instruction_count} instruction files {}\n",
+            if data.dry_run { "dry run " } else { "" },
+            if data.dry_run {
+                "would change"
+            } else {
+                "changed"
+            }
+        )
+    } else {
+        format!("{line}\n")
+    };
+    if data.dry_run && !data.changes.is_empty() {
+        body.push_str(&format!(
+            "\n{target}:\n{}\n",
+            serde_json::to_string_pretty(&data.planned_config).expect("configuration serializes")
+        ));
+    }
+    if data.dry_run {
+        for patch in data.instructions.iter().filter(|p| p.changed) {
+            body.push_str(&format!(
+                "\n{} (planned contents):\n{}\n",
+                patch.path.display(),
+                display_escape(&patch.planned_text)
+            ));
+        }
+    }
+    body
 }
 
 /// Projects the effective local settings without environment secrets
@@ -2718,6 +2855,8 @@ fn project_log_entry(entry: &LogEntry) -> Value {
         "checkpoints": entry.checkpoints,
         "marker": entry.marker.as_ref().map(marker_value),
         "ignored_reason": entry.ignored_reason,
+        "notes": entry.notes.notes,
+        "notes_unreadable": entry.notes.unreadable,
     })
 }
 
@@ -2760,6 +2899,16 @@ fn log_text(data: &LogOutcome) -> String {
             body.push_str(&format!(" (+{} collapsed)", entry.checkpoints - 1));
         }
         body.push('\n');
+        for note in &entry.notes.notes {
+            body.push_str(&format!(
+                "  {}: {}\n",
+                note.label(),
+                display_escape(&note.text)
+            ));
+        }
+        if let Some(reason) = &entry.notes.unreadable {
+            body.push_str(&format!("  {}\n", display_escape(reason)));
+        }
     }
     body
 }
@@ -3043,6 +3192,8 @@ mod tests {
                 "hook remove",
                 "init",
                 "log",
+                "note",
+                "notes",
                 "restore",
                 "review",
                 "show",

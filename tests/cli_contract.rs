@@ -175,6 +175,8 @@ fn help_json_lists_the_specified_command_inventory() {
             "hook remove",
             "init",
             "log",
+            "note",
+            "notes",
             "restore",
             "review",
             "show",

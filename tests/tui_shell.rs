@@ -271,9 +271,10 @@ fn the_read_view_shows_the_document_with_saved_and_review_state() {
     );
     assert!(screen.contains("main"), "the adopted branch");
 
-    // The untouched document reads as saved: move the document selection
+    // The untouched document reads as saved: fold headings and move the document selection
     // through the visible list.
     shell.handle_event(&key(KeyCode::Tab));
+    shell.handle_event(&key(KeyCode::Left));
     shell.handle_event(&key(KeyCode::Char('j')));
     let page = draw(&mut shell, 110, 30);
     let screen = joined(&page);
@@ -332,14 +333,20 @@ fn document_and_source_context_survive_view_switches() {
     shell.handle_event(&key(KeyCode::Char('2')));
     let page = draw(&mut shell, 110, 30);
     let screen = joined(&page);
-    assert!(screen.contains("Changed documents:"));
+    assert!(screen.contains("Since last review:"));
     assert!(screen.contains("notes/a.md"));
     // The History view lists the timeline in ancestry order (SPEC 5.5).
     shell.handle_event(&key(KeyCode::Char('3')));
     let page = draw(&mut shell, 110, 30);
     let screen = joined(&page);
-    assert!(screen.contains("start"), "the starting point shows");
-    assert!(screen.contains("draft"), "the writing pass shows");
+    assert!(
+        screen.contains("import"),
+        "the original document version shows"
+    );
+    assert!(
+        !screen.contains("Edit the first passage"),
+        "history excludes changes to other documents"
+    );
 }
 
 #[test]
@@ -576,4 +583,39 @@ fn an_invalid_initial_document_is_a_typed_refusal() {
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("INVALID_ARGUMENT"));
+}
+
+#[test]
+fn outline_jumps_to_source_lines_survives_resize_and_never_writes() {
+    let repo = TestRepo::init();
+    repo.write_file("guide.md", b"<!-- source note -->\n# Guide\n\nIntro\n\n## Brewing\n\nCoffee\n\n### Recipes\n\nRecipe text\n");
+    repo.commit_all("guide");
+    let before = oracle::snapshot(&repo);
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    let screen = joined(&draw(&mut shell, 120, 30));
+    assert!(!screen.contains("source note"));
+    assert!(screen.contains("Brewing"));
+    assert!(screen.contains("[1 Read]"));
+    shell.handle_event(&key(KeyCode::Tab));
+    shell.handle_event(&key(KeyCode::Char('j'))); // document title
+    shell.handle_event(&key(KeyCode::Char('j'))); // Brewing
+    draw(&mut shell, 120, 30);
+    assert_eq!(shell.current_anchor().unwrap().line, 6);
+    assert_eq!(shell.current_section().as_deref(), Some("Brewing"));
+    shell.handle_event(&key(KeyCode::Enter));
+    assert_eq!(shell.focus(), margin::tui::Focus::Reading);
+    draw(&mut shell, 70, 20);
+    assert_eq!(shell.current_anchor().unwrap().line, 6);
+    shell.handle_event(&key(KeyCode::Char('[')));
+    let screen = joined(&draw(&mut shell, 120, 30));
+    assert!(!screen.contains("Documents ("));
+    assert_eq!(shell.current_anchor().unwrap().line, 6);
+    shell.handle_event(&key(KeyCode::Char('s')));
+    draw(&mut shell, 120, 30);
+    assert!(shell.reading_source());
+    assert_eq!(shell.current_anchor().unwrap().line, 6);
+    let after = oracle::snapshot(&repo);
+    assert_eq!(before, after, "outline and source navigation are read-only");
 }

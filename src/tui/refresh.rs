@@ -32,7 +32,9 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::app::{InspectRequest, InspectResult, Operations, PolicyBlocker, ShowOutcome, ShowRequest};
+use crate::app::{
+    InspectRequest, InspectResult, Operations, PolicyBlocker, ShowOutcome, ShowRequest,
+};
 use crate::domain::OperationState;
 use crate::domain::ScopeInput;
 use crate::git::Git;
@@ -50,6 +52,8 @@ const NOTICE_CHARS: usize = 200;
 /// shows current disk state without one blocking read on the input loop.
 #[derive(Clone, Debug)]
 pub struct Watch {
+    /// Pinned comparison and visible history commits whose annotations refresh.
+    pub notes_commits: Vec<String>,
     /// The repository root the paths resolve against.
     pub root: PathBuf,
     /// The displayed document's repository-relative path; `None` when no
@@ -65,6 +69,7 @@ impl Watch {
     /// list.
     pub fn new(root: PathBuf) -> Watch {
         Watch {
+            notes_commits: Vec::new(),
             root,
             document: None,
             list: WatchList::Unadopted,
@@ -121,6 +126,7 @@ pub struct WatchedDocument {
 /// for it, the outcome of the one shared `inspect_workspace` operation,
 /// and what the watched document and list held (SPEC 13.2, 13.3).
 pub struct InspectionReply {
+    pub notes: Option<Vec<crate::notes::CommitNotes>>,
     /// The generation of the requesting shell state.
     pub generation: u64,
     /// The inspection outcome; a failure observes and claims nothing.
@@ -165,21 +171,28 @@ impl RefreshWorker {
                 // through the shared operation plus the watch's rereads,
                 // and the reply channel closing means the surface left.
                 let operations = Operations::new(&git);
+                let mut notes_cache: Option<(
+                    Option<String>,
+                    Vec<String>,
+                    Vec<crate::notes::CommitNotes>,
+                )> = None;
                 for job in jobs {
                     let outcome = operations.inspect_workspace(&InspectRequest {
                         scope: None,
                         path_filter: Vec::new(),
                     });
                     let document = job.watch.document.map(|path| {
-                        let file =
-                            match shell::read_working(&job.watch.root, &path, shell::READ_VIEW_BYTES)
-                            {
-                                Ok((bytes, total)) => WatchedFile::Bytes(bytes, total),
-                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                                    WatchedFile::Gone
-                                }
-                                Err(_) => WatchedFile::Unread,
-                            };
+                        let file = match shell::read_working(
+                            &job.watch.root,
+                            &path,
+                            shell::READ_VIEW_BYTES,
+                        ) {
+                            Ok((bytes, total)) => WatchedFile::Bytes(bytes, total),
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                WatchedFile::Gone
+                            }
+                            Err(_) => WatchedFile::Unread,
+                        };
                         let candidate = candidate_at_head(&operations, &outcome, &path);
                         WatchedDocument {
                             path,
@@ -195,8 +208,45 @@ impl RefreshWorker {
                         }
                         WatchList::Unadopted => Some(shell::discover_documents(&job.watch.root)),
                     };
+                    let notes = match crate::notes::Snapshot::ref_head(operations.git()) {
+                        Ok(head)
+                            if notes_cache.as_ref().is_some_and(|(old, commits, _)| {
+                                *old == head && *commits == job.watch.notes_commits
+                            }) =>
+                        {
+                            notes_cache.as_ref().map(|(_, _, notes)| notes.clone())
+                        }
+                        _ => {
+                            let snapshot = crate::notes::Snapshot::load(operations.git());
+                            let notes: Vec<_> = job
+                                .watch
+                                .notes_commits
+                                .iter()
+                                .map(|commit| match &snapshot {
+                                    Ok(snapshot) => snapshot.read(operations.git(), commit),
+                                    Err(error) => crate::notes::CommitNotes {
+                                        commit: commit.clone(),
+                                        notes: Vec::new(),
+                                        unreadable: Some(format!(
+                                            "Note unreadable: {}",
+                                            crate::cli::bounded_message(&error.message)
+                                        )),
+                                    },
+                                })
+                                .collect();
+                            if let Ok(snapshot) = snapshot {
+                                notes_cache = Some((
+                                    snapshot.head,
+                                    job.watch.notes_commits.clone(),
+                                    notes.clone(),
+                                ));
+                            }
+                            Some(notes)
+                        }
+                    };
                     if reply_sender
                         .send(InspectionReply {
+                            notes,
                             generation: job.generation,
                             outcome,
                             document,
@@ -301,11 +351,7 @@ fn candidate_at_head(
         max_lines: None,
         raw: false,
     });
-    if shown.ok() {
-        shown.data
-    } else {
-        None
-    }
+    if shown.ok() { shown.data } else { None }
 }
 
 /// The workspace observation one pinned comparison carries (SPEC 5.3):

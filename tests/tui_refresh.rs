@@ -287,6 +287,7 @@ fn a_reply_from_a_superseded_generation_is_discarded() {
 
     shell.observe_inspection(InspectionReply {
         generation: live - 1,
+        notes: None,
         outcome,
         document: None,
         documents: None,
@@ -309,6 +310,7 @@ fn a_reply_from_a_superseded_generation_is_discarded() {
     });
     shell.observe_inspection(InspectionReply {
         generation: live,
+        notes: None,
         outcome,
         document: None,
         documents: None,
@@ -719,6 +721,7 @@ fn a_reply_of_a_document_no_longer_displayed_is_ignored() {
     });
     repo.write_file("notes/a.md", b"# One\n\nFirst passage, rewritten.\n");
     shell.handle_event(&key(KeyCode::Tab));
+    shell.handle_event(&key(KeyCode::Left));
     shell.handle_event(&key(KeyCode::Char('j')));
     assert_eq!(
         shell.document().expect("a document stands").path,
@@ -780,7 +783,10 @@ fn polling_live_reloads_an_unadopted_folder() {
     let operations = Operations::new(&git);
     let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
     let screen = joined(&draw(&mut shell, 110, 30));
-    assert!(screen.contains("First passage."), "discovery reads the file");
+    assert!(
+        screen.contains("First passage."),
+        "discovery reads the file"
+    );
 
     // No adoption stands, so the workspace part of the reply fails; the
     // document and the list still live-reload.

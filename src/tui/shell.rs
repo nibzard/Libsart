@@ -154,13 +154,22 @@ pub enum Overlay {
         /// The query text the writer typed.
         query: String,
     },
+    /// Writer feedback anchored when the field opened, independent of refresh.
+    Note {
+        commit: String,
+        group: String,
+        text: String,
+    },
 }
 
 impl Overlay {
     /// Says whether this overlay is a text-entry field, where ordinary
     /// characters are text (SPEC 11.3).
     fn is_text_entry(&self) -> bool {
-        matches!(self, Overlay::Picker { .. } | Overlay::Search { .. })
+        matches!(
+            self,
+            Overlay::Picker { .. } | Overlay::Search { .. } | Overlay::Note { .. }
+        )
     }
 }
 
@@ -430,6 +439,11 @@ pub struct Shell<'a> {
     selection: usize,
     document: Option<DocumentView>,
     source_lines: Vec<String>,
+    headings: Vec<wrap::Heading>,
+    sidebar_hidden: bool,
+    outline_folded: bool,
+    navigator_cursor: usize,
+    reading_source: bool,
     display: Vec<DisplayRow>,
     display_width: u16,
     offset: usize,
@@ -532,6 +546,11 @@ impl<'a> Shell<'a> {
             selection: 0,
             document: None,
             source_lines: Vec::new(),
+            headings: Vec::new(),
+            sidebar_hidden: false,
+            outline_folded: false,
+            navigator_cursor: 0,
+            reading_source: false,
             display: Vec::new(),
             display_width: 0,
             offset: 0,
@@ -635,7 +654,15 @@ impl<'a> Shell<'a> {
     /// The launch path calls this after the first drawn frame; every
     /// rebuild calls it inside [`Shell::load_adopted`].
     fn load_background(&mut self) {
+        let previous_notes = self.changes.as_ref().and_then(|changes| {
+            self.operations
+                .list_notes(Some(changes.candidate_oid()))
+                .data
+        });
         self.changes = ChangesView::load(self.operations);
+        if let (Some(changes), Some(notes)) = (&mut self.changes, previous_notes) {
+            changes.retire_notes(notes);
+        }
         if self.view == View::Changes {
             // The opening view is the Changes view: the first group the
             // writer sees is visited, and the pinned candidate is checked
@@ -696,7 +723,10 @@ impl<'a> Shell<'a> {
             .as_ref()
             .and_then(HistoryView::selected)
             .map(|row| row.commit.clone());
-        self.history = HistoryView::load(self.operations);
+        self.history = match &self.document {
+            Some(document) => HistoryView::load_document(self.operations, &document.path),
+            None => HistoryView::load(self.operations),
+        };
         if let (Some(commit), Some(history)) = (pinned, &mut self.history) {
             history.select_commit(&commit);
         }
@@ -798,6 +828,9 @@ impl<'a> Shell<'a> {
             self.notice = Some(text);
         }
         self.absorb_document(document);
+        if self.history.is_some() {
+            self.reload_history();
+        }
     }
 
     /// Reads the candidate view of one path at `HEAD`; `None` when the
@@ -822,6 +855,7 @@ impl<'a> Shell<'a> {
 
     /// Stores one loaded document and resets the derived display state.
     fn absorb_document(&mut self, document: DocumentView) {
+        self.headings = wrap::document_headings(&document.text);
         self.source_lines = document.text.lines().map(str::to_string).collect();
         self.display = Vec::new();
         self.display_width = 0;
@@ -830,6 +864,7 @@ impl<'a> Shell<'a> {
             line: 1,
         });
         self.document = Some(document);
+        self.navigator_cursor = self.selection;
     }
 
     /// Recomputes the wrapped rows for one frame size; the caller renders
@@ -837,7 +872,13 @@ impl<'a> Shell<'a> {
     /// anchor plus the best-effort drift (SPEC 11.2).
     pub fn prepare_layout(&mut self, columns: u16, rows: u16) {
         self.layout = layout::classify(columns, rows);
-        let geometry = layout::frame_layout(ratatui::layout::Rect::new(0, 0, columns, rows));
+        let geometry = layout::frame_layout_with_navigator(
+            ratatui::layout::Rect::new(0, 0, columns, rows),
+            !self.sidebar_hidden,
+        );
+        if geometry.navigator.is_none() && self.focus == Focus::Documents {
+            self.focus = Focus::Reading;
+        }
         self.viewport_rows = geometry.reading.height as usize;
         let width = geometry.reading.width;
         match self.view {
@@ -860,7 +901,7 @@ impl<'a> Shell<'a> {
             },
             View::History => {
                 if let Some(history) = &mut self.history {
-                    history.prepare(width, self.viewport_rows);
+                    history.prepare(width, self.viewport_rows.saturating_sub(2));
                 }
             }
         }
@@ -876,7 +917,7 @@ impl<'a> Shell<'a> {
                 .map(|document| document.text.clone())
                 .unwrap_or_default();
             let anchor = self.current_anchor().map(|anchor| anchor.line).unwrap_or(1);
-            self.display = wrap::wrap_document(&text, width);
+            self.display = wrap::reading_document(&text, width, self.reading_source);
             self.display_width = width;
             let anchored = wrap::row_for_anchor(&self.display, anchor);
             let span = wrap::rows_of_source(&self.display, anchored, anchor);
@@ -888,7 +929,7 @@ impl<'a> Shell<'a> {
 
     /// Clamps the display offset to what the rows and viewport allow.
     fn clamp_offset(&mut self) {
-        let last = self.display.len().saturating_sub(self.viewport_rows.max(1));
+        let last = self.display.len().saturating_sub(1);
         self.offset = self.offset.min(last);
     }
 
@@ -913,12 +954,11 @@ impl<'a> Shell<'a> {
     /// part of the breadcrumb (SPEC 11.1).
     pub fn current_section(&self) -> Option<String> {
         let line = self.anchor.as_ref().map(|anchor| anchor.line)?;
-        self.source_lines
+        self.headings
             .iter()
-            .take(line as usize)
             .rev()
-            .find(|source| source.trim_start().starts_with('#'))
-            .map(|heading| heading.trim().to_string())
+            .find(|h| h.line <= line)
+            .map(|h| h.title.clone())
     }
 
     /// Answers one terminal event. Navigation changes only what the
@@ -950,16 +990,20 @@ impl<'a> Shell<'a> {
     }
 
     /// Absorbs one bracketed paste (SPEC 11.3).
-    fn handle_paste(&mut self, text: &str) {
+    fn handle_paste(&mut self, pasted_text: &str) {
         let text_entry = self.overlay.as_ref().is_some_and(Overlay::is_text_entry);
         if !text_entry {
             self.notice = Some("pasted text is ignored outside text entry".to_string());
             return;
         }
-        let pasted: String = text.chars().take(FIELD_CHARS).collect();
+        let pasted: String = pasted_text.chars().take(FIELD_CHARS).collect();
         match self.overlay.as_mut() {
             Some(Overlay::Picker { filter }) => filter.push_str(&pasted),
             Some(Overlay::Search { query }) => query.push_str(&pasted),
+            Some(Overlay::Note { text, .. }) => {
+                let remaining = crate::notes::MAX_TEXT_CHARS.saturating_sub(text.chars().count());
+                text.extend(pasted_text.chars().take(remaining));
+            }
             _ => {}
         }
     }
@@ -1090,6 +1134,59 @@ impl<'a> Shell<'a> {
                     }
                 }
             }
+            Overlay::Note {
+                commit,
+                group,
+                mut text,
+            } => {
+                // This field has the envelope's 2000-character bound rather
+                // than the shorter search/picker bound.
+                let keep = match (key.code, control) {
+                    (KeyCode::Char(c), false) if !c.is_control() => {
+                        if text.chars().count() < crate::notes::MAX_TEXT_CHARS {
+                            text.push(c);
+                        }
+                        true
+                    }
+                    _ => self.handle_field_key(&mut text, key, control, quit_warning_stood),
+                };
+                if keep {
+                    self.overlay = Some(Overlay::Note {
+                        commit,
+                        group,
+                        text,
+                    });
+                } else if key.code == KeyCode::Enter {
+                    let result = self.operations.append_note(&crate::notes::AppendRequest {
+                        commit: Some(commit.clone()),
+                        group: Some(group.clone()),
+                        by: crate::notes::Author::Writer,
+                        text: text.clone(),
+                    });
+                    if let Some(error) = result.error {
+                        self.notice = Some(bounded(&error.message));
+                        self.overlay = Some(Overlay::Note {
+                            commit,
+                            group,
+                            text,
+                        });
+                    } else {
+                        self.notice =
+                            Some("Your note saved; review decisions unchanged".to_string());
+                        if let Some(changes) = &mut self.changes
+                            && let Some(notes) = self
+                                .operations
+                                .list_notes(Some(changes.candidate_oid()))
+                                .data
+                        {
+                            changes.update_notes(notes);
+                        }
+                        self.reload_history();
+                    }
+                } else {
+                    self.notice = Some("Note cancelled; nothing saved".to_string());
+                }
+            }
         }
     }
 
@@ -1139,6 +1236,24 @@ impl<'a> Shell<'a> {
     fn open_menu(&mut self) {
         self.overlay = Some(Overlay::Menu { selection: 0 });
         self.focus = Focus::Actions;
+    }
+
+    fn open_note(&mut self) {
+        if self.view != View::Changes {
+            self.notice = Some("Notes are available on a selected group in Changes".into());
+            return;
+        }
+        if let Some(changes) = &self.changes
+            && let Some(group) = changes.selected_group()
+        {
+            self.overlay = Some(Overlay::Note {
+                commit: changes.candidate_oid().to_string(),
+                group: group.change_id.clone(),
+                text: String::new(),
+            });
+        } else {
+            self.notice = Some("No change group is selected".into());
+        }
     }
 
     /// Submits the document picker (SPEC 11.3 `f`): the filter names the
@@ -1239,9 +1354,28 @@ impl<'a> Shell<'a> {
             (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
                 self.request_quit(quit_warning_stood)
             }
+            (KeyCode::Char('['), false) => self.toggle_sidebar(),
+            (KeyCode::Char('d'), false) => self.toggle_details(),
+            (KeyCode::Char('u'), false) if self.view == View::Changes => self.undo_decision(),
+            (KeyCode::Left, false) if self.focus == Focus::Documents => {
+                self.outline_folded = true;
+                self.navigator_cursor = self.selection;
+                self.redraw = true;
+            }
+            (KeyCode::Right, false) if self.focus == Focus::Documents => {
+                self.outline_folded = false;
+                self.redraw = true;
+            }
+            (KeyCode::Enter, false) if self.focus == Focus::Documents => {
+                self.open_navigator_entry();
+                self.view = View::Read;
+                self.focus = Focus::Reading;
+            }
+            (KeyCode::Char('s'), false) if self.view == View::Read => self.toggle_current_source(),
             (KeyCode::Char('1'), false) => self.view = View::Read,
             (KeyCode::Char('2'), false) => self.enter_changes(),
             (KeyCode::Char('3'), false) => self.view = View::History,
+            (KeyCode::Char('N'), false) => self.open_note(),
             // `R` refreshes the read-only state explicitly (SPEC 5.3);
             // lowercase `r` stays one proposed restoration.
             (KeyCode::Char('R'), false) => self.refresh(),
@@ -1325,7 +1459,7 @@ impl<'a> Shell<'a> {
             .iter()
             .map(|&action| {
                 let disabled = match action {
-                    Action::NextGroup | Action::PreviousGroup => {
+                    Action::NextGroup | Action::PreviousGroup | Action::AddNote => {
                         if !in_changes {
                             Some(changes_only.to_string())
                         } else if groups == 0 {
@@ -1334,7 +1468,7 @@ impl<'a> Shell<'a> {
                             None
                         }
                     }
-                    Action::KeepGroup | Action::RestoreGroup => {
+                    Action::KeepGroup | Action::RestoreGroup | Action::UndoDecision => {
                         if !in_changes {
                             Some(changes_only.to_string())
                         } else {
@@ -1342,8 +1476,10 @@ impl<'a> Shell<'a> {
                         }
                     }
                     Action::SourceView => {
-                        if !in_changes {
-                            Some(changes_only.to_string())
+                        if self.view == View::Read {
+                            None
+                        } else if !in_changes {
+                            Some("Read or Changes view only".into())
                         } else if self.changes.is_none() {
                             Some("the comparison is unavailable right now".to_string())
                         } else {
@@ -1432,7 +1568,11 @@ impl<'a> Shell<'a> {
             Action::PreviousGroup => self.step_group(-1),
             Action::KeepGroup => self.toggle_decision(Decision::Keep),
             Action::RestoreGroup => self.toggle_decision(Decision::Restore),
-            Action::SourceView => self.toggle_source_view(),
+            Action::SourceView => self.toggle_current_source(),
+            Action::ToggleSidebar => self.toggle_sidebar(),
+            Action::Details => self.toggle_details(),
+            Action::UndoDecision => self.undo_decision(),
+            Action::AddNote => self.open_note(),
             Action::DocumentPicker => {
                 if self.documents.is_empty() {
                     self.notice = Some("no documents are listed to find".to_string());
@@ -1569,6 +1709,11 @@ impl<'a> Shell<'a> {
             Some(Overlay::Help) => "help".to_string(),
             Some(Overlay::Picker { filter }) => format!("picker:{filter}"),
             Some(Overlay::Search { query }) => format!("search:{query}"),
+            Some(Overlay::Note {
+                commit,
+                group,
+                text,
+            }) => format!("note:{commit}:{group}:{text}"),
         };
         let document = self
             .document
@@ -2074,6 +2219,7 @@ impl<'a> Shell<'a> {
     pub fn observe_inspection(&mut self, reply: InspectionReply) {
         let before = self.fingerprint();
         let InspectionReply {
+            notes,
             generation,
             outcome,
             document,
@@ -2082,17 +2228,30 @@ impl<'a> Shell<'a> {
         if generation != self.generation {
             return;
         }
-        if outcome.ok() {
-            if let Some(data) = outcome.data {
-                self.absorb_inspection(data);
-                self.observe_arrivals();
-            }
+        if outcome.ok()
+            && let Some(data) = outcome.data
+        {
+            self.absorb_inspection(data);
+            self.observe_arrivals();
         }
         if let Some(watched) = document {
             self.absorb_watched_file(watched);
         }
         if let Some(paths) = documents {
             self.absorb_document_list(paths);
+        }
+        if let Some(notes) = notes {
+            if let Some(changes) = &mut self.changes {
+                self.redraw |= changes.update_orphaned_notes(&notes);
+            }
+            if let Some(changes) = &mut self.changes
+                && let Some(fresh) = notes.iter().find(|n| n.commit == changes.candidate_oid())
+            {
+                self.redraw |= changes.update_notes(fresh.clone());
+            }
+            if let Some(history) = &mut self.history {
+                self.redraw |= history.update_notes(&notes);
+            }
         }
         if self.fingerprint() != before {
             self.redraw = true;
@@ -2104,6 +2263,18 @@ impl<'a> Shell<'a> {
     /// scope's stored input or the discovery walk.
     pub fn watch(&self) -> refresh::Watch {
         refresh::Watch {
+            notes_commits: self
+                .changes
+                .iter()
+                .flat_map(|c| c.note_commits())
+                .chain(
+                    self.history
+                        .iter()
+                        .flat_map(|h| h.rows().iter().map(|r| r.commit.clone())),
+                )
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             root: self.root.clone(),
             document: self.document.as_ref().map(|document| document.path.clone()),
             list: match &self.descriptor {
@@ -2132,9 +2303,7 @@ impl<'a> Shell<'a> {
             refresh::WatchedFile::Bytes(bytes, total) => Ok((bytes.clone(), *total)),
             // The deletion restates itself as the same NotFound the
             // interactive load meets, so the label rule stays one rule.
-            refresh::WatchedFile::Gone => {
-                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
-            }
+            refresh::WatchedFile::Gone => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
             refresh::WatchedFile::Unread => return,
         };
         let (document, notice) = document_view(&watched.path, &working, watched.candidate.as_ref());
@@ -2148,13 +2317,17 @@ impl<'a> Shell<'a> {
         let gone = matches!(watched.file, refresh::WatchedFile::Gone);
         let said = notice.unwrap_or_else(|| {
             bounded(&if gone {
-                format!("{} is gone from disk; the saved candidate still reads", watched.path)
+                format!(
+                    "{} is gone from disk; the saved candidate still reads",
+                    watched.path
+                )
             } else {
                 format!("{} changed on disk; reloaded", watched.path)
             })
         });
         let line = self.anchor.as_ref().map(|anchor| anchor.line);
         let drift = self.drift;
+        self.headings = wrap::document_headings(&document.text);
         self.source_lines = document.text.lines().map(str::to_string).collect();
         self.display = Vec::new();
         self.display_width = 0;
@@ -2284,7 +2457,7 @@ impl<'a> Shell<'a> {
     /// loses the focus the surface can actually use.
     fn cycle_focus(&mut self, forward: bool) {
         let menu = matches!(self.overlay, Some(Overlay::Menu { .. }));
-        let documents = self.layout.shows_navigator() && !self.documents.is_empty();
+        let documents = self.navigator_visible() && !self.documents.is_empty();
         let mut stops: Vec<Focus> = Vec::with_capacity(3);
         if documents {
             stops.push(Focus::Documents);
@@ -2313,7 +2486,7 @@ impl<'a> Shell<'a> {
     /// match with that focus.
     fn step(&mut self, direction: i32) {
         match self.focus {
-            Focus::Documents => self.step_selection(direction),
+            Focus::Documents => self.step_navigator(direction),
             Focus::Reading | Focus::Actions => self.step_reading(direction),
         }
     }
@@ -2353,7 +2526,14 @@ impl<'a> Shell<'a> {
     /// selection, and the reading position pages by view.
     fn page(&mut self, direction: i32) {
         if self.focus == Focus::Documents {
-            self.page_selection(direction);
+            let page = self.viewport_rows.saturating_sub(1).max(1);
+            let last = self.navigator_entries().len().saturating_sub(1);
+            self.navigator_cursor = if direction > 0 {
+                self.navigator_cursor.saturating_add(page).min(last)
+            } else {
+                self.navigator_cursor.saturating_sub(page)
+            };
+            self.open_navigator_entry();
             return;
         }
         match self.view {
@@ -2382,40 +2562,119 @@ impl<'a> Shell<'a> {
         }
     }
 
-    /// Moves the document selection by one viewport, less one held row,
-    /// clamped at the ends, and loads the document it names.
-    fn page_selection(&mut self, direction: i32) {
-        if self.documents.is_empty() {
-            return;
+    /// The outline contains only the active document's headings.
+    pub fn navigator_entries(&self) -> Vec<(usize, Option<usize>)> {
+        let mut entries = Vec::new();
+        for index in 0..self.documents.len() {
+            entries.push((index, None));
+            if index == self.selection && !self.outline_folded {
+                entries.extend((0..self.headings.len()).map(|h| (index, Some(h))));
+            }
         }
-        let page = self.viewport_rows.saturating_sub(1).max(1);
-        let next = if direction > 0 {
-            (self.selection + page).min(self.documents.len() - 1)
-        } else {
-            self.selection.saturating_sub(page)
-        };
-        let Some(path) = self.documents.get(next).cloned() else {
-            return;
-        };
-        self.selection = next;
-        self.load_document(&path);
+        entries
     }
 
-    /// Moves the document selection and loads the document it names.
-    fn step_selection(&mut self, direction: i32) {
-        if self.documents.is_empty() {
-            return;
+    pub fn headings(&self) -> &[wrap::Heading] {
+        &self.headings
+    }
+    pub fn navigator_visible(&self) -> bool {
+        self.layout.shows_navigator() && !self.sidebar_hidden
+    }
+    pub fn sidebar_hidden(&self) -> bool {
+        self.sidebar_hidden
+    }
+    pub fn outline_folded(&self) -> bool {
+        self.outline_folded
+    }
+    pub fn reading_source(&self) -> bool {
+        self.reading_source
+    }
+    pub fn navigator_cursor(&self) -> usize {
+        self.navigator_cursor
+    }
+    pub fn active_heading(&self) -> Option<usize> {
+        let line = self.anchor.as_ref()?.line;
+        self.headings.iter().rposition(|h| h.line <= line)
+    }
+
+    fn toggle_sidebar(&mut self) {
+        self.sidebar_hidden = !self.sidebar_hidden;
+        if self.sidebar_hidden {
+            self.focus = Focus::Reading;
         }
-        let next = if direction > 0 {
-            self.selection + 1
+        self.redraw = true;
+    }
+
+    fn toggle_current_source(&mut self) {
+        if self.view == View::Read {
+            self.reading_source = !self.reading_source;
+            self.display_width = 0;
+            self.redraw = true;
+        } else if self.view == View::Changes {
+            self.toggle_source_view();
+        }
+    }
+
+    fn toggle_details(&mut self) {
+        match self.view {
+            View::Changes => {
+                if let Some(changes) = &mut self.changes {
+                    changes.toggle_details();
+                }
+            }
+            View::History => {
+                if let Some(history) = &mut self.history {
+                    history.toggle_details();
+                }
+            }
+            View::Read => {
+                self.outline_folded = !self.outline_folded;
+                self.navigator_cursor = self.selection;
+            }
+        }
+        self.redraw = true;
+    }
+
+    fn undo_decision(&mut self) {
+        if let Some(changes) = &mut self.changes {
+            changes.undo();
+        }
+        self.notice = Some("Decision undone; the passage is undecided.".into());
+        self.redraw = true;
+    }
+
+    fn step_navigator(&mut self, direction: i32) {
+        let len = self.navigator_entries().len();
+        self.navigator_cursor = if direction > 0 {
+            (self.navigator_cursor + 1).min(len.saturating_sub(1))
         } else {
-            self.selection.saturating_sub(1)
+            self.navigator_cursor.saturating_sub(1)
         };
-        let Some(path) = self.documents.get(next).cloned() else {
+        self.open_navigator_entry();
+    }
+
+    fn open_navigator_entry(&mut self) {
+        let Some((document, heading)) =
+            self.navigator_entries().get(self.navigator_cursor).copied()
+        else {
             return;
         };
-        self.selection = next;
-        self.load_document(&path);
+        if let Some(heading) = heading {
+            self.view = View::Read;
+            self.prepare_reading(self.display_width.max(1));
+            self.offset = wrap::row_for_anchor(&self.display, self.headings[heading].line);
+            self.sync_anchor();
+        } else if document != self.selection {
+            self.selection = document;
+            let path = self.documents[document].clone();
+            self.load_document(&path);
+            self.navigator_cursor = self
+                .navigator_entries()
+                .iter()
+                .position(|entry| *entry == (document, None))
+                .unwrap_or(0);
+        }
+        self.redraw = true;
     }
 
     /// Says whether the event loop should stop.
@@ -2660,11 +2919,7 @@ fn document_view(
 }
 
 /// Reads the working bytes of one path, bounded by `limit`.
-pub(crate) fn read_working(
-    root: &Path,
-    path: &str,
-    limit: u64,
-) -> std::io::Result<(Vec<u8>, u64)> {
+pub(crate) fn read_working(root: &Path, path: &str, limit: u64) -> std::io::Result<(Vec<u8>, u64)> {
     let file = fs::File::open(root.join(path))?;
     let total = file.metadata()?.len();
     let mut bytes = Vec::new();
@@ -2753,9 +3008,7 @@ pub(crate) fn document_paths(resolved: &app::ResolvedScope) -> Vec<String> {
     resolved
         .paths
         .iter()
-        .filter(|(_, state)| {
-            matches!(state, ScopedPathState::Tracked | ScopedPathState::Untracked)
-        })
+        .filter(|(_, state)| matches!(state, ScopedPathState::Tracked | ScopedPathState::Untracked))
         .map(|(path, _)| path.to_string_lossy().into_owned())
         .collect()
 }

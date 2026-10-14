@@ -34,6 +34,14 @@ pub enum Action {
     RestoreGroup,
     /// Show the exact Markdown changes.
     SourceView,
+    /// Collapse or show the document outline.
+    ToggleSidebar,
+    /// Show grouping rationale or revision metadata.
+    Details,
+    /// Clear the selected review decision.
+    UndoDecision,
+    /// Add writer feedback to the selected group without applying decisions.
+    AddNote,
     /// Open the document picker.
     DocumentPicker,
     /// Search within the current view.
@@ -52,7 +60,7 @@ pub enum Action {
 
 impl Action {
     /// Every action in SPEC 11.3 table order.
-    pub const ALL: [Action; 19] = [
+    pub const ALL: [Action; 23] = [
         Action::CycleFocus,
         Action::ActionMenu,
         Action::ReadView,
@@ -72,6 +80,10 @@ impl Action {
         Action::Cancel,
         Action::Help,
         Action::Quit,
+        Action::ToggleSidebar,
+        Action::Details,
+        Action::UndoDecision,
+        Action::AddNote,
     ];
 
     /// The name the menu and the help list print.
@@ -89,6 +101,10 @@ impl Action {
             Action::KeepGroup => "Keep selected group",
             Action::RestoreGroup => "Restore selected group",
             Action::SourceView => "Source view",
+            Action::ToggleSidebar => "Toggle sidebar",
+            Action::Details => "Details / fold outline",
+            Action::UndoDecision => "Undo selected decision",
+            Action::AddNote => "Note on selected group",
             Action::DocumentPicker => "Document picker",
             Action::Search => "Search within current view",
             Action::EditDocument => "Edit document",
@@ -114,6 +130,10 @@ impl Action {
             Action::KeepGroup => "K",
             Action::RestoreGroup => "r",
             Action::SourceView => "s",
+            Action::ToggleSidebar => "[",
+            Action::Details => "d",
+            Action::UndoDecision => "u",
+            Action::AddNote => "N",
             Action::DocumentPicker => "f",
             Action::Search => "/",
             Action::EditDocument => "e",

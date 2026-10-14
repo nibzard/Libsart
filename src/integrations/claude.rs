@@ -2,8 +2,9 @@
 //!
 //! The adapter pins the upstream hook contract of SPEC 12.2: it reads one
 //! bounded JSON payload, validates the event and the workspace it names,
-//! applies the stored capture policy through the one shared checkpoint
-//! operation, and answers only in the upstream hook protocol. It never
+//! selects bounded writer feedback before applying the stored capture policy
+//! through the shared checkpoint operation, and answers only in the upstream
+//! hook protocol. It never
 //! prints a Margin envelope into that channel, never emits a response
 //! that forces the agent to continue after a Stop, and never grants
 //! approval: a boundary capture is one ordinary draft commit, exactly the
@@ -415,7 +416,32 @@ pub fn run(operations: &Operations<'_>, workspace_root: &Path, bytes: &[u8]) -> 
             workspace_root.display(),
         ));
     }
-    translate(operations, &event)
+    let feedback = (event.name == "UserPromptSubmit").then(|| crate::notes::feedback(operations));
+    let mut outcome = translate(operations, &event);
+    let mut response = outcome
+        .stdout
+        .as_deref()
+        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+        .unwrap_or_else(|| json!({}));
+    let blocked = response.get("decision").and_then(Value::as_str) == Some("block");
+    if !blocked && outcome.exit == 0 {
+        match feedback {
+            Some(Ok(Some(context))) => {
+                response["hookSpecificOutput"] = json!({
+                    "hookEventName": "UserPromptSubmit", "additionalContext": context,
+                });
+                outcome.stdout = Some(render(&response));
+            }
+            Some(Err(error)) => {
+                outcome.stderr = Some(format!(
+                    "margin hook: feedback unavailable: {}\n",
+                    bounded_message(&error.message)
+                ))
+            }
+            _ => {}
+        }
+    }
+    outcome
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +514,8 @@ pub struct SetupOutcome {
     /// Whether the action changed nothing, because every entry already sat
     /// in its target state.
     pub no_op: bool,
+    /// Exact instruction-file plans, owned only when their template is recognized.
+    pub instructions: Vec<super::instructions::Patch>,
 }
 
 /// The result type of one configuration action (SPEC 12.4).
@@ -526,12 +554,20 @@ fn setup(operations: &Operations<'_>, action: SetupAction, dry_run: bool) -> Set
         Ok(root) => root,
         Err(error) => return OperationOutcome::failure(error, Effects::unchanged()),
     };
+    let _lock = if dry_run {
+        None
+    } else {
+        match operations.acquire_mutation_lock() {
+            Ok(lock) => Some(lock),
+            Err(error) => return OperationOutcome::failure(error, Effects::unchanged()),
+        }
+    };
     let path = root.join(SETTINGS_RELATIVE_PATH);
     let target = match read_target(&path) {
         Ok(target) => target,
         Err(error) => return OperationOutcome::failure(error, Effects::unchanged()),
     };
-    let fingerprint = target.bytes.as_deref().map(fingerprint);
+    let expected_fingerprint = target.bytes.as_deref().map(fingerprint);
     let planned = match action {
         SetupAction::Install => plan_install(&path, target.value),
         SetupAction::Remove => plan_removal(&path, target.value),
@@ -540,15 +576,20 @@ fn setup(operations: &Operations<'_>, action: SetupAction, dry_run: bool) -> Set
         Ok(plan) => plan,
         Err(error) => return OperationOutcome::failure(error, Effects::unchanged()),
     };
+    let instructions = match super::instructions::plan(&root, action) {
+        Ok(patches) => patches,
+        Err(error) => return OperationOutcome::failure(error, Effects::unchanged()),
+    };
     let outcome = SetupOutcome {
         action,
         dry_run,
         path: path.clone(),
         target_existed: target.bytes.is_some(),
-        fingerprint: fingerprint.clone(),
+        fingerprint: expected_fingerprint.clone(),
         changes: changes.clone(),
         planned_config: planned_config.clone(),
-        no_op: changes.is_empty(),
+        no_op: changes.is_empty() && instructions.iter().all(|p| !p.changed),
+        instructions: instructions.clone(),
     };
     if dry_run || outcome.no_op {
         // A dry run changes no configuration, and neither does the
@@ -556,7 +597,29 @@ fn setup(operations: &Operations<'_>, action: SetupAction, dry_run: bool) -> Set
         return OperationOutcome::success(outcome, Effects::unchanged());
     }
     let content = serialize_target(&planned_config);
-    match apply(&path, fingerprint.as_deref(), &content, action) {
+    let mut published = Vec::new();
+    let publication = (|| {
+        // Preflight every fingerprint before any intended write.
+        if read_current(&path)?.as_deref().map(fingerprint).as_deref()
+            != expected_fingerprint.as_deref()
+        {
+            return Err(stale_configuration(&path, action));
+        }
+        for patch in &instructions {
+            super::instructions::verify(patch)?;
+        }
+        if !changes.is_empty() {
+            apply(&path, expected_fingerprint.as_deref(), &content, action)?;
+            published.push(path.clone());
+        }
+        for patch in instructions.iter().filter(|p| p.changed) {
+            super::instructions::verify(patch)?;
+            write_target(&patch.path, &patch.planned_text)?;
+            published.push(patch.path.clone());
+        }
+        Ok(())
+    })();
+    match publication {
         Ok(()) => {
             let mut effects = Effects::unchanged();
             effects.observe_integration(ObservedEffect::Changed);
@@ -567,7 +630,21 @@ fn setup(operations: &Operations<'_>, action: SetupAction, dry_run: bool) -> Set
             // so the integration effect stays unknown, never unchanged
             // (SPEC 7.1).
             let mut effects = Effects::unchanged();
-            effects.observe_integration(ObservedEffect::Unknown);
+            if !published.is_empty() || error.code == "IO_FAILED" {
+                effects.observe_integration(ObservedEffect::Unknown);
+            }
+            let error = if published.is_empty() {
+                error
+            } else {
+                OperationError::new(
+                    "PARTIAL_MUTATION",
+                    format!(
+                        "integration setup stopped after publishing {} file(s): {}",
+                        published.len(),
+                        error.message
+                    ),
+                )
+            };
             OperationOutcome::failure(error, effects)
         }
     }

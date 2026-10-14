@@ -6219,6 +6219,7 @@ fn timeline_entry(classified: ClassifiedCommit, checkpoints: u64) -> LogEntry {
         checkpoints,
         marker,
         ignored_reason: classified.ignored_reason.map(bounded_timeline_reason),
+        notes: crate::notes::CommitNotes::default(),
     }
 }
 
@@ -6625,6 +6626,8 @@ pub struct Effects {
     pub configuration: ObservedEffect,
     /// Installed hook entries of an agent integration (SPEC 12.4).
     pub integration: ObservedEffect,
+    /// The annotations namespace, separate from adopted branch history.
+    pub notes_ref: ObservedEffect,
 }
 
 impl Effects {
@@ -6639,6 +6642,7 @@ impl Effects {
             repository: RepositoryEffect::Unchanged,
             configuration: ObservedEffect::Unchanged,
             integration: ObservedEffect::Unchanged,
+            notes_ref: ObservedEffect::Unchanged,
         }
     }
 
@@ -6654,6 +6658,7 @@ impl Effects {
             repository: RepositoryEffect::Unknown,
             configuration: ObservedEffect::Unknown,
             integration: ObservedEffect::Unknown,
+            notes_ref: ObservedEffect::Unknown,
         }
     }
 
@@ -7572,6 +7577,8 @@ pub struct LogEntry {
     /// Why a claimed marker was ignored, bounded. `None` for validated
     /// markers and ordinary commits.
     pub ignored_reason: Option<String>,
+    /// Annotations on this entry's commit; older collapsed checkpoints remain listable.
+    pub notes: crate::notes::CommitNotes,
 }
 
 /// The semantic data of one timeline query (SPEC 5.5, 6.3): the commit the
@@ -8559,7 +8566,7 @@ pub struct Operations<'a> {
 /// lock Git itself, an editor, or an agent (SPEC 14.3). It is never
 /// approximated by a stale PID file, because the lock lives exactly as
 /// long as the open file description of the guard.
-struct MutationGuard {
+pub(crate) struct MutationGuard {
     /// The locked open file. Closing the descriptor would release the lock
     /// as well; the explicit unlock states the release where it happens.
     lock: fs::File,
@@ -8638,7 +8645,7 @@ impl<'a> Operations<'a> {
     /// and the historical restoration arrive with tasks T032 and T033, and
     /// the dry-run validation reports the same lookup without a lock,
     /// because it writes nothing.
-    fn acquire_mutation_lock(&self) -> Result<MutationGuard, OperationError> {
+    pub(crate) fn acquire_mutation_lock(&self) -> Result<MutationGuard, OperationError> {
         let path = self
             .git
             .git_path(MUTATION_LOCK_FILE)
@@ -10879,10 +10886,25 @@ impl<'a> Operations<'a> {
             Ok(history) => history,
             Err(error) => return failure(history_walk_failed(error)),
         };
-        let page = match timeline_page(walk, &history, &contract, start, limit) {
+        let mut page = match timeline_page(walk, &history, &contract, start, limit) {
             Ok(page) => page,
             Err(error) => return failure(error),
         };
+        match crate::notes::Snapshot::load(self.git) {
+            Ok(notes) => {
+                for entry in &mut page.entries {
+                    entry.notes = notes.read(self.git, &entry.commit);
+                }
+            }
+            Err(error) => {
+                for entry in &mut page.entries {
+                    entry.notes.unreadable = Some(format!(
+                        "Note unreadable: {}",
+                        crate::cli::bounded_message(&error.message)
+                    ));
+                }
+            }
+        }
         LogResult::success(
             LogOutcome {
                 head: Some(head),

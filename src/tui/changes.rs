@@ -35,14 +35,6 @@ use crate::tui::wrap::{self, ComposedLine, DisplayRow};
 /// outside the supported envelope, and it says so when it does.
 const MAX_DETAIL_PAGES: usize = 64;
 
-/// How many changed documents the column header lists before a remaining
-/// count takes over. Every group block names its own document, so the
-/// header list is a summary, not the coverage.
-const MAX_LISTED_DOCUMENTS: usize = 8;
-
-/// How many word hints one group block shows before a remaining count.
-const MAX_SHOWN_WORD_HINTS: usize = 8;
-
 /// How many hexadecimal characters one opaque side shows.
 const MAX_HEX_CHARS: usize = 96;
 
@@ -170,6 +162,8 @@ pub struct PlanCounts {
 /// The Changes view state: the pinned comparison, every group it holds,
 /// and the plan the keys change.
 pub struct ChangesView {
+    notes: crate::notes::CommitNotes,
+    orphaned_notes: Option<crate::notes::CommitNotes>,
     review_id: String,
     branch_ref: String,
     scope_id: String,
@@ -186,6 +180,8 @@ pub struct ChangesView {
     selection: usize,
     /// Whether the source view replaces the passage view (SPEC 11.3 `s`).
     source: bool,
+    details: bool,
+    scroll_to_selected: bool,
     // The derived display state: the wrapped rows of the column, the first
     // row of every group block, the width they were wrapped at, and the
     // top visible row.
@@ -257,6 +253,11 @@ impl ChangesView {
             ));
         }
         Some(ChangesView {
+            orphaned_notes: None,
+            notes: operations
+                .list_notes(Some(&first.candidate_oid))
+                .data
+                .unwrap_or_default(),
             review_id: first.review_id,
             branch_ref: first.branch_ref,
             scope_id: first.scope_id,
@@ -270,6 +271,8 @@ impl ChangesView {
             plan: PlanDraft::default(),
             selection: 0,
             source: false,
+            details: false,
+            scroll_to_selected: false,
             rows: Vec::new(),
             starts: Vec::new(),
             width: 0,
@@ -282,6 +285,47 @@ impl ChangesView {
     /// The change groups this view holds, in manifest order.
     pub fn groups(&self) -> &[ChangeDetail] {
         &self.groups
+    }
+
+    pub fn update_notes(&mut self, notes: crate::notes::CommitNotes) -> bool {
+        if self.notes == notes {
+            return false;
+        }
+        self.notes = notes;
+        self.dirty = true;
+        true
+    }
+
+    /// Disclose annotations left behind by this session's explicit re-pin once.
+    pub fn retire_notes(&mut self, mut notes: crate::notes::CommitNotes) {
+        if notes.commit != self.candidate_oid {
+            notes.notes.retain(|n| n.group.is_some());
+            if !notes.notes.is_empty() || notes.unreadable.is_some() {
+                self.orphaned_notes = Some(notes);
+                self.dirty = true;
+            }
+        }
+    }
+
+    pub fn note_commits(&self) -> Vec<String> {
+        std::iter::once(self.candidate_oid.clone())
+            .chain(self.orphaned_notes.iter().map(|n| n.commit.clone()))
+            .collect()
+    }
+
+    pub fn update_orphaned_notes(&mut self, notes: &[crate::notes::CommitNotes]) -> bool {
+        if let Some(old) = &self.orphaned_notes
+            && let Some(fresh) = notes.iter().find(|n| n.commit == old.commit)
+        {
+            let mut fresh = fresh.clone();
+            fresh.notes.retain(|n| n.group.is_some());
+            if *old != fresh {
+                self.orphaned_notes = Some(fresh);
+                self.dirty = true;
+                return true;
+            }
+        }
+        false
     }
 
     /// The whole-scope totals of the pinned comparison.
@@ -530,6 +574,7 @@ impl ChangesView {
     /// Selects one group and scrolls to its first row.
     fn select(&mut self, index: usize) {
         self.set_selection(index);
+        self.scroll_to_selected = true;
         if let Some(&start) = self.starts.get(self.selection) {
             self.offset = start;
             self.clamp_offset();
@@ -575,6 +620,10 @@ impl ChangesView {
             self.compose(width);
             self.width = width;
             self.dirty = false;
+        }
+        if self.scroll_to_selected {
+            self.offset = self.starts.get(self.selection).copied().unwrap_or(0);
+            self.scroll_to_selected = false;
         }
         self.clamp_offset();
     }
@@ -637,10 +686,9 @@ impl ChangesView {
         let counts = self.counts();
         let mut lines = Vec::new();
         lines.push(ComposedLine::meta(format!(
-            "B {} → C {} · review {}",
+            "Since last review: {} → {}",
             render::short(&self.baseline_oid),
             render::short(&self.candidate_oid),
-            render::short(&self.review_id),
         )));
         lines.push(ComposedLine::meta(format!(
             "{} changed document{} · {} passage group{}",
@@ -650,7 +698,7 @@ impl ChangesView {
             plural(self.totals.groups),
         )));
         lines.push(ComposedLine::meta(format!(
-            "Plan in memory: {} kept · {} restored · {} undecided · {} unvisited",
+            "Not applied: {} kept · {} restored · {} undecided · {} unseen",
             counts.kept, counts.restored, counts.undecided, counts.unvisited,
         )));
         if counts.unvisited_documents > 0 {
@@ -681,23 +729,48 @@ impl ChangesView {
                 "New edits arrived. Refresh before applying.",
             ));
         }
+        lines.push(ComposedLine::meta(
+            "Enter previews finish · decisions apply only after confirmation",
+        ));
         lines.push(ComposedLine::text(String::new()));
-        lines.push(ComposedLine::meta("Changed documents:"));
-        let documents = self.changed_documents();
-        let listed = documents.len().min(MAX_LISTED_DOCUMENTS);
-        for (path, count) in documents.iter().take(listed) {
-            lines.push(ComposedLine::text(format!(
-                "  {path} · {count} group{}",
-                plural(*count)
-            )));
+        if let Some(reason) = &self.notes.unreadable {
+            lines.push(ComposedLine::warning(reason));
         }
-        if documents.len() > listed {
-            lines.push(ComposedLine::text(format!(
-                "  and {} more changed documents",
-                documents.len() - listed,
-            )));
+        if let Some(older) = &self.orphaned_notes {
+            for note in &older.notes {
+                lines.push(ComposedLine::meta(format!(
+                    "{} · group is outside this comparison · earlier version {}",
+                    note.label(),
+                    render::short(&older.commit)
+                )));
+                for line in note.display_text().lines() {
+                    lines.push(ComposedLine::text(line));
+                }
+            }
+            if let Some(reason) = &older.unreadable {
+                lines.push(ComposedLine::warning(reason));
+            }
         }
-        lines.push(ComposedLine::text(String::new()));
+        for note in &self.notes.notes {
+            let orphan = note
+                .group
+                .as_ref()
+                .is_some_and(|id| !self.groups.iter().any(|g| &g.change_id == id));
+            if note.group.is_none() || orphan {
+                lines.push(ComposedLine::meta(format!(
+                    "{}{}",
+                    note.label(),
+                    if orphan {
+                        " · group is outside this comparison"
+                    } else {
+                        " · this version"
+                    }
+                )));
+                for line in note.display_text().lines() {
+                    lines.push(ComposedLine::text(line));
+                }
+            }
+        }
         if self.groups.is_empty() {
             lines.push(ComposedLine::text("No pending changes."));
         }
@@ -715,17 +788,8 @@ impl ChangesView {
             .collect();
     }
 
-    /// The changed documents with their group counts, in path order.
-    fn changed_documents(&self) -> Vec<(&str, usize)> {
-        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for group in &self.groups {
-            *counts.entry(group.path.as_str()).or_insert(0) += 1;
-        }
-        counts.into_iter().collect()
-    }
-
     /// Composes one group's block: the header with its state label, the
-    /// source coordinates, the deciding keys, and the passage view or the
+    /// source coordinates, optional grouping details, and the passage view or the
     /// source view (SPEC 5.2, 10.4, 11.3-11.4). The header draws as a
     /// heading, or as a warning while no decision can exist.
     fn group_block(&self, index: usize) -> Vec<ComposedLine> {
@@ -738,6 +802,8 @@ impl ChangesView {
         };
         let header = if matches!(state, GroupState::Stale | GroupState::Unavailable) {
             ComposedLine::warning
+        } else if index == self.selection {
+            ComposedLine::emphasis
         } else {
             ComposedLine::heading
         };
@@ -748,78 +814,101 @@ impl ChangesView {
             self.groups.len(),
             state.label(),
         )));
-        lines.push(ComposedLine::meta(format!(
-            "{} · {}{}{}",
-            group.path,
-            group.kind,
-            if group.whole_file {
-                " · whole file"
-            } else {
-                ""
-            },
-            if group.opaque { " · opaque bytes" } else { "" },
-        )));
-        lines.push(ComposedLine::meta(format!(
-            "Why one decision: {}",
-            group.reason
-        )));
-        lines.push(ComposedLine::meta(
-            "r Restore previous passage · K Keep passage · s source view",
-        ));
+        if index == 0
+            || self.groups[index - 1].path != group.path
+            || group.whole_file
+            || group.opaque
+        {
+            lines.push(ComposedLine::meta(format!(
+                "{} · {}{}{}",
+                group.path,
+                group.kind,
+                if group.whole_file {
+                    " · whole file"
+                } else {
+                    ""
+                },
+                if group.opaque { " · opaque bytes" } else { "" },
+            )));
+        }
+        if self.details && index == self.selection {
+            lines.push(ComposedLine::meta(format!(
+                "Why one decision: {}",
+                group.reason
+            )));
+            lines.push(ComposedLine::meta(format!("Review {}", self.review_id)));
+        }
         if self.source {
             self.source_block(group, &mut lines);
         } else {
             self.passage_block(group, &mut lines);
         }
+        for note in self
+            .notes
+            .notes
+            .iter()
+            .filter(|n| n.group.as_deref() == Some(&group.change_id))
+        {
+            lines.push(ComposedLine::meta(note.label()));
+            for line in note.display_text().lines() {
+                lines.push(ComposedLine::text(line));
+            }
+        }
         lines
     }
 
-    /// The passage view of one group: the exact excerpts of both sides,
-    /// placed by line range, with the word hints the pairing supports
-    /// (SPEC 5.2, 10.4). Each side draws in its own role; the `Before`
-    /// and `After` labels keep naming the sides in words (SPEC 11.4).
+    pub fn toggle_details(&mut self) {
+        self.details = !self.details;
+        self.dirty = true;
+    }
+
+    /// Clear only the current in-memory choice, without applying a plan.
+    pub fn undo(&mut self) {
+        if let Some(group) = self.groups.get(self.selection) {
+            self.plan.clear(&group.change_id);
+            self.dirty = true;
+        }
+    }
+
+    /// Exact excerpts with word emphasis where the canonical pairing is reliable.
     fn passage_block(&self, group: &ChangeDetail, lines: &mut Vec<ComposedLine>) {
-        let presentation = &group.presentation;
-        lines.push(ComposedLine::removed(format!(
-            "Before · {}:",
-            line_span(&presentation.before)
-        )));
-        excerpt_lines(&presentation.before, None, ComposedLine::removed, lines);
-        bounded_notice("before", &presentation.before, lines);
-        lines.push(ComposedLine::added(format!(
-            "After · {}:",
-            line_span(&presentation.after)
-        )));
-        excerpt_lines(&presentation.after, None, ComposedLine::added, lines);
-        bounded_notice("after", &presentation.after, lines);
-        let shown = presentation
-            .word_hints
-            .iter()
-            .take(MAX_SHOWN_WORD_HINTS)
-            .count();
-        if shown > 0 {
-            lines.push(ComposedLine::meta("Changed words:"));
-            for hint in presentation.word_hints.iter().take(MAX_SHOWN_WORD_HINTS) {
-                lines.push(ComposedLine::text(format!(
-                    "  line {} to {}: {}[{} → {}]{}",
-                    hint.before_line,
-                    hint.after_line,
-                    hint.prefix,
-                    hint.removed,
-                    hint.added,
-                    hint.suffix,
-                )));
+        let p = &group.presentation;
+        for (excerpt, before) in [(&p.before, true), (&p.after, false)] {
+            let build = if before {
+                ComposedLine::removed
+            } else {
+                ComposedLine::added
+            };
+            lines.push(ComposedLine::meta(format!(
+                "{} · {}:",
+                if before { "Before" } else { "After" },
+                line_span(excerpt)
+            )));
+            let start = lines.len();
+            excerpt_lines(excerpt, None, build, lines);
+            for (i, line) in lines[start..].iter_mut().enumerate() {
+                let source_line = excerpt.first_line + i as u64;
+                if let Some(hint) = p.word_hints.iter().find(|h| {
+                    if before {
+                        h.before_line == source_line
+                    } else {
+                        h.after_line == source_line
+                    }
+                }) {
+                    let changed = if before { &hint.removed } else { &hint.added };
+                    let expected = format!("  {}{}{}", hint.prefix, changed, hint.suffix);
+                    if line.text == expected && !changed.is_empty() {
+                        let begin = 2 + hint.prefix.len();
+                        line.highlights.push(begin..begin + changed.len());
+                    }
+                }
             }
-            let more = presentation.word_hints.len() - shown + presentation.word_hints_omitted;
-            if more > 0 {
-                lines.push(ComposedLine::meta(format!(
-                    "  and {more} more word hints"
-                )));
-            }
-        } else if presentation.word_hints_omitted > 0 {
+            bounded_notice(if before { "before" } else { "after" }, excerpt, lines);
+        }
+        if p.word_hints_omitted > 0 {
             lines.push(ComposedLine::meta(format!(
                 "{} word hints are omitted by the detail bound",
-                presentation.word_hints_omitted,
+                p.word_hints_omitted
             )));
         }
     }
@@ -854,13 +943,23 @@ impl ChangesView {
             "Before · {}:",
             line_span(&group.presentation.before)
         )));
-        excerpt_lines(&group.presentation.before, Some('-'), ComposedLine::removed, lines);
+        excerpt_lines(
+            &group.presentation.before,
+            Some('-'),
+            ComposedLine::removed,
+            lines,
+        );
         bounded_notice("before", &group.presentation.before, lines);
         lines.push(ComposedLine::added(format!(
             "After · {}:",
             line_span(&group.presentation.after)
         )));
-        excerpt_lines(&group.presentation.after, Some('+'), ComposedLine::added, lines);
+        excerpt_lines(
+            &group.presentation.after,
+            Some('+'),
+            ComposedLine::added,
+            lines,
+        );
         bounded_notice("after", &group.presentation.after, lines);
     }
 }
@@ -1004,6 +1103,8 @@ mod tests {
             groups: groups.len(),
         };
         ChangesView {
+            notes: crate::notes::CommitNotes::default(),
+            orphaned_notes: None,
             review_id: "review:1".to_string(),
             branch_ref: "refs/heads/main".to_string(),
             scope_id: "sha1:1".to_string(),
@@ -1017,6 +1118,8 @@ mod tests {
             plan: PlanDraft::default(),
             selection: 0,
             source: false,
+            details: false,
+            scroll_to_selected: false,
             rows: Vec::new(),
             starts: Vec::new(),
             width: 0,
@@ -1195,10 +1298,53 @@ mod tests {
             );
         }
         assert!(
-            column.contains("r Restore previous passage"),
-            "the action wording"
+            column.contains("decisions apply only after confirmation"),
+            "the persistence wording"
         );
         assert!(column.contains("10 passage groups"), "the scope totals");
+    }
+
+    #[test]
+    fn details_undo_and_word_emphasis_preserve_exact_passages() {
+        let mut group = detail(
+            "a",
+            "notes/one.md",
+            "Brew café slowly.",
+            "Brew coffee slowly.",
+        );
+        group
+            .presentation
+            .word_hints
+            .push(crate::markdown::WordHint {
+                before_line: 3,
+                after_line: 3,
+                prefix: "Brew ".into(),
+                removed: "café".into(),
+                added: "coffee".into(),
+                suffix: " slowly.".into(),
+            });
+        let mut view = view(vec![group]);
+        let shown = column(&mut view);
+        assert!(!shown.contains("Why one decision:"));
+        assert!(!shown.contains("Changed words:"));
+        assert!(shown.contains("Brew café slowly."));
+        let highlighted: Vec<_> = view
+            .rows
+            .iter()
+            .flat_map(|row| {
+                row.highlights
+                    .iter()
+                    .map(|r| row.text[r.clone()].to_string())
+            })
+            .collect();
+        assert_eq!(highlighted, ["café", "coffee"]);
+        view.toggle_details();
+        assert!(column(&mut view).contains("Why one decision:"));
+        view.toggle(Decision::Restore);
+        assert_eq!(view.counts().restored, 1);
+        view.undo();
+        assert_eq!(view.counts().undecided, 1);
+        assert!(view.restore_selection().is_empty());
     }
 
     #[test]

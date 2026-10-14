@@ -347,6 +347,8 @@ This is Margin's own interface guarantee. The supported Git mutation environment
 | `diff` | Optional `--path`, `--change`, `--cursor`, `--limit`, `--working` | Complete review identity/manifest plus bounded selected detail; working previews are non-actionable |
 | `show` | `--path`, `--revision`, optional byte/page bounds | Document at an immutable revision; explicit absence/encoding |
 | `log` | `--limit`, `--cursor`, optional `--path`, `--all-checkpoints` | Bounded ancestry-based editorial timeline |
+| `note` | `--text`, optional `--group` | Guarded append of one agent note to the candidate commit |
+| `notes` | Optional `--revision`, `--json`; alternative `--schema` | List a commit's notes (default HEAD), or print the installed notes-v1 schema without repository access |
 | `checkpoint` | Optional message, expected state, `--dry-run`; guarded `--include-staged` recovery mode | Ordinary draft commit or explicit unchanged no-op |
 | `review` | `--input FILE\|-`, optional `--dry-run` or `--resume` | Validate or apply a complete pinned review plan |
 | `restore` | `--input FILE\|-`, optional `--dry-run` | Whole-document historical restoration as an unreviewed commit |
@@ -444,6 +446,8 @@ Every core JSON response has these required top-level fields:
 
 `repository` is `unchanged`, `created`, or `unknown`; `configuration` and `integration` are `unchanged`, `changed`, or `unknown`. These fields capture initialization and hook-install partial effects. Every response supplies them, including commands for which all three are unchanged.
 
+An annotation write additionally supplies `effects.notes_ref` as `changed` or `unknown`; omission means the notes ref is unchanged. This distinguishes the annotation namespace from adopted-branch commit history, which a note never advances.
+
 All OIDs are full lowercase hex with a separate `object_format` field (`sha1` or `sha256`). No parser assumes a fixed 40-character OID. [G9]
 
 ### 7.2 Review context
@@ -508,8 +512,8 @@ The source revision must resolve to available committed content and belong to th
 | Exit | Class | Representative error codes |
 | --- | --- | --- |
 | 0 | Verified success or documented no-op | No error |
-| 2 | Invalid invocation/input | `INVALID_ARGUMENT`, `INVALID_PLAN`, `UNKNOWN_CHANGE`, `LIMIT_EXCEEDED` |
-| 3 | Stale/conflicting context | `STALE_REVIEW`, `STALE_CURSOR`, `REQUEST_ID_CONFLICT`, `BRANCH_CHANGED` |
+| 2 | Invalid invocation/input | `INVALID_ARGUMENT`, `INVALID_PLAN`, `INVALID_NOTES`, `UNKNOWN_CHANGE`, `LIMIT_EXCEEDED` |
+| 3 | Stale/conflicting context | `STALE_REVIEW`, `STALE_CURSOR`, `REQUEST_ID_CONFLICT`, `BRANCH_CHANGED`, `NOTES_CONFLICT`, `INSTRUCTION_CONFLICT` |
 | 4 | Unmet operational precondition | `NOT_INITIALIZED`, `DIRTY_SCOPE`, `STAGED_CHANGES`, `UNSUPPORTED_REPOSITORY`, `WRITER_ACTIVE`, `BUSY`, `BASELINE_UNAVAILABLE` |
 | 5 | Execution failure | `GIT_FAILED`, `HOOK_FAILED`, `PARTIAL_MUTATION`, `OUTCOME_UNKNOWN`, `IO_FAILED`, `CONTRACT_VIOLATION` |
 | 130 | User interruption when clean shutdown is possible | `INTERRUPTED`, with best-known effects |
@@ -746,6 +750,8 @@ Rules for grouping:
 - Treat repeated or moved passages conservatively. A plausible visual alignment is insufficient evidence for a safe source restoration.
 - If selected groups fail exact application, refuse the plan. Do not silently apply a subset, fuzz whitespace, use three-way conflict resolution, or broaden the user's selection during mutation.
 
+Every change group carries one canonical digest. The digest is the group's only identifier across every command: `diff --json`, review plans, and notes all name the same value. The digest is stable while the comparison stays pinned; one re-pinned comparison may compute new digests, and a note that names an old digest stays with the commit it was written on.
+
 Patch independence protects source operations. It does not prove that keeping one factual edit and restoring another is logically consistent. The writer remains responsible for editorial meaning.
 
 ### 10.4 Required presentation by content class
@@ -787,6 +793,17 @@ The TUI should feel like a quiet professional writing surface. Use a restrained 
 
 Defaults: a reading measure of approximately 76 terminal cells, soft wrapping, a visible document title/section breadcrumb, explicit saved/reviewed/stale state, and a small contextual action footer. Width is adjustable within the available terminal. Avoid dense repository dashboards, commit graphs, flashing activity, decorative boxes around every paragraph, and panels that leave too little room for prose.
 
+The active view is shown in a persistent tab row above the content. The
+navigator is a compact document outline: only the selected document expands
+its parsed Markdown headings, and reading scroll tracks the current heading.
+HTML comments are hidden in the Read presentation by default and remain
+available in source view with their original source-line coordinates.
+Changes emphasizes changed words within before/after excerpts; grouping
+rationale and review identity are available on demand instead of repeated
+for every passage. Decision counts state that choices are not applied until
+finish confirmation. History defaults to versions affecting the displayed
+document; revision kinds and exact timestamps are available in details.
+
 ### 11.2 Responsive behavior
 
 | Terminal width | Layout policy |
@@ -811,7 +828,12 @@ Resizing must not reset a plan or mutate content. Preserve position using source
 | Next / previous change | `n` / `p` | Move between canonical change groups |
 | Keep selected group | `K` | Record a proposed decision; lowercase `k` remains navigation |
 | Restore selected group | `r` | Toggle proposed restoration, no disk write |
-| Source view | `s` | Show exact Markdown changes |
+| Source view | `s` | Toggle Read source/comments or exact Markdown changes |
+| Toggle sidebar | `[` | Hide or show the document outline |
+| Fold / expand | Left / Right in outline | Collapse or expand the selected document headings |
+| Details | `d` | Grouping rationale in Changes, revision metadata in History, fold outline in Read |
+| Undo decision | `u` | Clear the selected in-memory review choice |
+| Note on selected group | `N` in Changes | Open writer feedback; Enter saves the note, Esc cancels; review decisions remain unchanged |
 | Document picker | `f` | Open/find documents |
 | Search within current view | `/` | Search without changing content |
 | Edit document | `e` | Suspend/handoff to configured editor |
@@ -879,6 +901,8 @@ Do not read transcripts, full prompts, or message bodies to generate checkpoint 
 
 Removal affects only the exact adapter entries Margin installed and can identify. It does not delete user hooks or restore an old whole configuration over newer edits. Config migration and removal must have round-trip tests. Repeated installation/removal is harmless and clearly reports no-op states.
 
+The agent instruction files — `CLAUDE.md` and `AGENTS.md` — may carry one bounded, marked block that tells the agent how to leave notes. Installing it belongs to the explicit agent-integration install, never to a side effect of another command. The block sits between a `<!-- margin:notes vN -->` marker and its closing marker. Markers locate the block but do not establish ownership: update and removal require exactly one complete pair and contents matching a recognized shipped template for that declared version, including markers, using the file's existing LF or CRLF convention. An unchanged current template makes install a no-op; a recognized older template can be updated. Preserve all bytes outside the block. Edited contents, unknown versions, duplicate blocks, nested markers, and unmatched markers cause refusal without replacing, deleting, or appending a block. With no markers, install may append the block or create a missing file; removal is a no-op. Validate both instruction files and hook configuration before the first intended write. The reread-and-refuse discipline applies before each file's publication, and `--dry-run` prints the exact planned lines. The block names `margin note` as the writing path, with the native-Git equivalent and `margin notes --schema` as the documented fallback; it must not assume schema files exist in the writer's project.
+
 ### 12.5 Editor configuration
 
 Use an explicit executable-plus-argument list stored in local settings. Append or substitute the literal file path and optional line number only through documented placeholders. Do not parse arbitrary `$EDITOR` shell strings using ad hoc shell splitting. A plain executable environment value may be offered as an import suggestion; users with arguments configure argv explicitly.
@@ -895,6 +919,32 @@ Pass the explicit agent executable and argv through a supported direct-exec mech
 
 The writer owns the agent process. Quitting Margin must not kill the agent or unrelated tmux sessions. `desk` reports the processes/session it created and its attach/exit behavior. Existing user bindings are queried or described accurately; do not assume the default prefix has not changed.
 
+### 12.7 The notes channel
+
+Notes carry what a diff cannot: the reason behind a change, and the writer's answer to it. One Git notes namespace — `refs/notes/margin` — holds them, one note blob per commit, in the shape of [the notes schema](schemas/notes-v1.json). Each entry names its author (`agent` or `writer`), anchors to the commit as a whole or to one change-group digest of the comparison it pins, and carries bounded text.
+
+The CLI is the writing contract: `margin note --text` appends one entry through the same bytes for every caller, and `margin notes` lists them. Native Git writers follow the same envelope; the format is stable and documented, not hidden.
+
+Stage 1 also provides `margin notes --schema`: an alternative to listing notes that emits the installed notes-v1 JSON Schema directly to stdout, without a Margin result envelope, repository discovery, adoption, or writes. The installed instruction block uses this command so native-Git writers can obtain the schema independently of Margin's source checkout.
+
+Full envelope validation includes both the JSON Schema and a semantic check that every entry's `id` is unique within that commit. Schema `uniqueItems` compares complete entries and does not establish ID uniqueness. Readers diagnose invalid envelopes; appenders refuse to replace them. Text is 1–2000 Unicode characters and each envelope holds 1–50 entries.
+
+Raw envelope reads are capped at 2 MiB before parsing, including malformed native notes. Display surfaces escape terminal controls through the existing presentation rule.
+
+Note appends require the adopted branch, valid starting history, a supported repository layout, no active Git operation, and a Git identity. Uncaptured content and staged changes do not block this metadata-only write; it neither stages nor captures those bytes. The TUI targets its pinned candidate explicitly and refuses if that commit is outside the current adoption's first-parent range.
+
+Append holds the shared Margin mutation lock and snapshots the notes ref, but also guards publication against native-Git writers with an expected-old ref update. Build the replacement notes commit on a private temporary ref and publish with `git update-ref refs/notes/margin <new> <expected-old>`, using an all-zero expected OID for an absent ref. Never force-replace the public ref through `git notes`. On conflict, reread, validate, and rebuild; refuse with a retryable conflict after three publication attempts and remove the private ref on every exit. Preserve the generated entry ID across retries: an existing identical entry is a no-op, while reuse for a different entry is a conflict. Recheck entry limits on each attempt. Native replacement writers need the same expected-old guard to preserve concurrent writes.
+
+A note never touches the working tree, never enters the diff or a capture, never moves `HEAD`, and never invalidates a pinned comparison. Note text is bounded, the entry count per commit is bounded, and writing needs the Git identity Margin already requires.
+
+The TUI prints notes in writer words — a note under its History commit, a note beside its change group in Changes, authorship stated in words, never hue. A note whose group left the current comparison says so once as an orphan; it never silently disappears, because it stays with the commit it was written on.
+
+Every reader — the CLI, the TUI, and the hook — parses each envelope against the schema and the semantic ID check, bounds what it shows, and states an unreadable note in one honest sentence instead of failing. The `by` field is claimed authorship, as Git claims its committer: the interface states it in words, and Margin does not authenticate it. The notes ref is an ordinary Git ref; sharing it through push or fetch is explicit Git use, outside this contract.
+
+The writer answers from inside the review: one text field on the selected group stores a `writer` entry on the same ref. Delivery to the agent rides the existing hook boundary. Before capture at `UserPromptSubmit`, snapshot the adopted branch's HEAD and notes ref. Select writer entries from the snapshotted HEAD's first-parent ancestry through the current scope's starting marker, inclusive, using adoption's starting-marker discovery. The latest review marker does not cut off feedback. Checkpoints and reviews keep earlier feedback eligible; a new start resets the range, and unreachable or pre-start commits are excluded. Invalid adoption makes feedback unavailable with a diagnostic. This selection requires no TUI pin or persistent delivery state.
+
+Read from the notes-ref snapshot, newest commit first and envelope order within each commit. Context includes commit, entry ID, optional group digest, and text, bounded to 50 entries and 16 KiB of UTF-8 including labels and truncation notice. Disclose omissions and truncate only at character boundaries. Diagnose and skip invalid envelopes without suppressing valid peers. Then apply the existing capture policy: an allowed prompt receives the selected context even when capture advances HEAD or capture is manual; a blocked prompt retains its blocking response and consumes nothing. Notes arriving after the snapshot are eligible next turn. No acknowledgment bookkeeping exists in this contract, so eligible feedback repeats on subsequent allowed prompts. [The notes design](docs/notes-channel.md) records stage acceptance tests for validation, concurrent appends, and feedback delivery.
+
 ## 13. Rust architecture and dependency policy
 
 ### 13.1 One package, explicit modules
@@ -907,6 +957,7 @@ Start with one Cargo package containing a library and executable. Split crates o
 | `src/app.rs` | Use cases, guard ordering, mutation phases, error/effect reporting |
 | `src/git.rs` | Git process adapter, binary protocols, capability checks, commit/patch operations |
 | `src/markdown.rs` | Source context and safe presentation/grouping support |
+| `src/notes.rs` | Strict note envelopes, guarded annotations namespace, adoption-range feedback selection |
 | `src/cli.rs` | Arguments, JSON/text projections, parser errors, help/schema export |
 | `src/tui/` | View state, input-to-command mapping, layout, terminal guard |
 | `src/integrations/claude.rs` | Hook payload/response translation and config editing |

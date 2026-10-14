@@ -68,6 +68,8 @@ pub fn classify(columns: u16, rows: u16) -> WidthClass {
 pub struct FrameLayout {
     /// The one compact status header row (SPEC 11.1).
     pub header: Rect,
+    /// Persistent view tabs.
+    pub tabs: Rect,
     /// The optional document list; absent when the width hides it.
     pub navigator: Option<Rect>,
     /// The reading column, already capped at the reading measure and
@@ -85,6 +87,11 @@ pub struct FrameLayout {
 /// useful minimum produces one whose reading area is empty, which the
 /// renderer replaces with the minimum-size message.
 pub fn frame_layout(area: Rect) -> FrameLayout {
+    frame_layout_with_navigator(area, true)
+}
+
+/// Computes a frame with an explicitly collapsed navigator.
+pub fn frame_layout_with_navigator(area: Rect, navigator_visible: bool) -> FrameLayout {
     let class = classify(area.width, area.height);
     let header = Rect { height: 1, ..area };
     let footer = Rect {
@@ -97,7 +104,12 @@ pub fn frame_layout(area: Rect) -> FrameLayout {
         height: 1,
         ..area
     };
-    let body_top = area.y + 1;
+    let tabs = Rect {
+        y: area.y + 1,
+        height: 1,
+        ..area
+    };
+    let body_top = area.y + 2;
     let body_bottom = area.bottom().saturating_sub(2).max(body_top);
     let body = Rect {
         y: body_top,
@@ -106,7 +118,7 @@ pub fn frame_layout(area: Rect) -> FrameLayout {
     };
     let mut navigator = None;
     let mut column = body;
-    if class.shows_navigator() && body.width > NAVIGATOR_WIDTH + 12 {
+    if navigator_visible && class.shows_navigator() && body.width > NAVIGATOR_WIDTH + 12 {
         navigator = Some(Rect {
             width: NAVIGATOR_WIDTH,
             height: body.height,
@@ -131,6 +143,7 @@ pub fn frame_layout(area: Rect) -> FrameLayout {
     };
     FrameLayout {
         header,
+        tabs,
         navigator,
         reading,
         context,

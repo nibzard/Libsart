@@ -558,8 +558,8 @@ fn session_args(fixture: &Fixture) -> Vec<String> {
 
 /// The needles the first useful frame must show (SPEC 17.4): the header
 /// fragment that names the branch and the review head, the document's
-/// own opening heading, one saved-state label, and the footer that names
-/// the views. A spinner or a blank frame shows none of them.
+/// own opening heading, one saved-state label, the active tab, and the
+/// contextual footer. A spinner or a blank frame shows none of them.
 ///
 /// Every needle is written for one terminal row. The surface draws its
 /// panes side by side, so the flattened stream interleaves the panes row
@@ -593,7 +593,10 @@ fn useful_frame_needles(fixture: &Fixture) -> Result<(String, String, Vec<String
 fn frame_is_useful(text: &str, identity: &str, content: &str, saved: &[String]) -> bool {
     text.contains(identity)
         && text.contains(content)
-        && text.contains(&pty::collapse("1 Read 2 Changes 3 History"))
+        && text.contains(&pty::collapse("[1 Read]"))
+        && text.contains(&pty::collapse("2 Changes"))
+        && text.contains(&pty::collapse("3 History"))
+        && text.contains(&pty::collapse("focus reading"))
         && saved.iter().any(|label| text.contains(label))
 }
 

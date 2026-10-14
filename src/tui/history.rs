@@ -61,6 +61,7 @@ const DIRTY_SCOPE: &str = "DIRTY_SCOPE";
 /// One row of the editorial timeline (SPEC 5.5).
 #[derive(Clone, Debug)]
 pub struct HistoryRow {
+    pub notes: crate::notes::CommitNotes,
     /// The commit object ID. For a collapsed writing pass, its newest
     /// checkpoint.
     pub commit: String,
@@ -314,6 +315,8 @@ pub struct HistoryView {
     /// Whether every draft checkpoint is listed instead of one row per
     /// collapsed writing pass (SPEC 5.5).
     all_checkpoints: bool,
+    details: bool,
+    path_filter: Vec<String>,
     selection: usize,
     /// The standing restoration preview, when one stands (SPEC 5.5).
     preview: Option<RestorePreview>,
@@ -332,15 +335,29 @@ impl HistoryView {
     /// Loads the first page of the editorial timeline through the shared
     /// `log` operation (SPEC 5.5, 6.3).
     pub fn load(operations: &Operations<'_>) -> Option<HistoryView> {
-        Self::query(operations, false)
+        Self::query(operations, false, Vec::new())
+    }
+
+    /// Timeline limited to revisions affecting the displayed document.
+    pub fn load_document(operations: &Operations<'_>, path: &str) -> Option<HistoryView> {
+        Self::query(operations, false, vec![path.to_string()])
+    }
+
+    pub fn toggle_details(&mut self) {
+        self.details = !self.details;
+        self.dirty = true;
     }
 
     /// Re-queries the timeline with the checkpoint display policy the `a`
     /// key selects, keeping the selection readable.
-    fn query(operations: &Operations<'_>, all_checkpoints: bool) -> Option<HistoryView> {
+    fn query(
+        operations: &Operations<'_>,
+        all_checkpoints: bool,
+        path_filter: Vec<String>,
+    ) -> Option<HistoryView> {
         let outcome = operations.list_history(&LogRequest {
             scope: None,
-            path_filter: Vec::new(),
+            path_filter: path_filter.clone(),
             cursor: None,
             limit: None,
             all_checkpoints,
@@ -358,6 +375,7 @@ impl HistoryView {
             .map(|entry| {
                 let commit = entry.commit.clone();
                 HistoryRow {
+                    notes: entry.notes,
                     commit,
                     kind: entry.kind.as_str(),
                     subject: entry.subject,
@@ -372,6 +390,8 @@ impl HistoryView {
             scope_id: data.scope_id,
             truncated,
             all_checkpoints,
+            details: false,
+            path_filter,
             selection: 0,
             preview: None,
             display: Vec::new(),
@@ -388,7 +408,7 @@ impl HistoryView {
     /// changed (SPEC 5.5 `a`).
     pub fn toggle_checkpoints(&mut self, operations: &Operations<'_>) -> bool {
         let wanted = !self.all_checkpoints;
-        let Some(mut fresh) = Self::query(operations, wanted) else {
+        let Some(mut fresh) = Self::query(operations, wanted, self.path_filter.clone()) else {
             return false;
         };
         // Keep the reader near the revision they were reading: the newest
@@ -409,6 +429,20 @@ impl HistoryView {
     /// The timeline rows, newest first in ancestry order.
     pub fn rows(&self) -> &[HistoryRow] {
         &self.rows
+    }
+
+    pub fn update_notes(&mut self, notes: &[crate::notes::CommitNotes]) -> bool {
+        let mut changed = false;
+        for row in &mut self.rows {
+            if let Some(fresh) = notes.iter().find(|n| n.commit == row.commit)
+                && row.notes != *fresh
+            {
+                row.notes = fresh.clone();
+                self.dirty = true;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// The selected timeline row, when one exists.
@@ -561,6 +595,9 @@ impl HistoryView {
             self.compose(width);
             self.width = width;
             self.dirty = false;
+            if self.preview.is_none() {
+                self.scroll_to_selection();
+            }
         }
         self.clamp_offset();
     }
@@ -581,17 +618,16 @@ impl HistoryView {
             return;
         }
         let mut lines = Vec::new();
-        lines.push(ComposedLine::heading(
-            "History · the writing timeline, in ancestry order",
-        ));
-        lines.push(ComposedLine::meta(
-            "Times show the local clock; the value in parentheses is the exact Unix timestamp.",
-        ));
+        lines.push(ComposedLine::heading(format!(
+            "  {:16}  {:7}  Version",
+            "Date / time", "Commit"
+        )));
+        lines.push(ComposedLine::meta("Local time · newest first · d details"));
         if self.all_checkpoints {
             lines.push(ComposedLine::meta("Every draft checkpoint is listed."));
         } else {
             lines.push(ComposedLine::meta(
-                "A count marks the checkpoints of one collapsed writing pass; a lists them all.",
+                "Writing passes collapsed · a shows all checkpoints",
             ));
         }
         if let Some(why) = &self.truncated {
@@ -605,6 +641,34 @@ impl HistoryView {
             // The entry lands on the next composed line, one-based.
             starts.push((lines.len() + 1) as u32);
             lines.push(self.row_line(index));
+            for note in &self.rows[index].notes.notes {
+                lines.push(ComposedLine::meta(format!(
+                    "  {}{}",
+                    note.label(),
+                    if note.group.is_some() {
+                        " · change annotation"
+                    } else {
+                        ""
+                    }
+                )));
+                for line in note.display_text().lines() {
+                    lines.push(ComposedLine::text(format!("  {line}")));
+                }
+            }
+            if let Some(reason) = &self.rows[index].notes.unreadable {
+                lines.push(ComposedLine::warning(reason));
+            }
+            if self.details && index == self.selection {
+                let row = &self.rows[index];
+                lines.push(ComposedLine::meta(format!(
+                    "  {} · {}",
+                    row.kind, row.commit
+                )));
+                lines.push(ComposedLine::meta(format!(
+                    "  {}",
+                    timestamp_line(&row.local_date, row.committer_time)
+                )));
+            }
         }
         self.display = wrap::wrap_rows(&lines, width);
         self.starts = starts
@@ -613,8 +677,8 @@ impl HistoryView {
             .collect();
     }
 
-    /// One timeline row: the selection marker, the kind label, the commit,
-    /// the timestamps, the subject, and the checkpoint count. The selected
+    /// One timeline row: selection, local date, commit, description, and
+    /// checkpoint count. Technical metadata is available on demand. The selected
     /// row draws with weight; the marker keeps naming the selection
     /// (SPEC 11.4).
     fn row_line(&self, index: usize) -> ComposedLine {
@@ -624,20 +688,17 @@ impl HistoryView {
         } else {
             "  "
         };
-        let when = match (&row.local_date, row.committer_time) {
-            (Some(local), Some(exact)) => format!("{local} ({exact})"),
-            (Some(local), None) => local.clone(),
-            (None, Some(exact)) => format!("unknown local time ({exact})"),
-            (None, None) => "no timestamp".to_string(),
-        };
+        let when = row
+            .local_date
+            .clone()
+            .unwrap_or_else(|| "time unavailable".into());
         let passes = if row.checkpoints > 1 {
             format!(" ×{}", row.checkpoints)
         } else {
             String::new()
         };
         let text = format!(
-            "{marker}{:<8}{}  {when}  {}{passes}",
-            row.kind,
+            "{marker}{when}  {}  {}{passes}",
             render::short(&row.commit),
             row.subject,
         );
@@ -850,11 +911,9 @@ fn side_lines(label: &str, shown: &Option<ShowOutcome>, lines: &mut Vec<Composed
         DocumentContent::Missing => lines.push(ComposedLine::warning(
             "  missing: no document exists at this revision; restoring removes the file",
         )),
-        DocumentContent::Empty { .. } => {
-            lines.push(ComposedLine::meta(
-                "  empty: the document exists here and holds zero bytes",
-            ))
-        }
+        DocumentContent::Empty { .. } => lines.push(ComposedLine::meta(
+            "  empty: the document exists here and holds zero bytes",
+        )),
         DocumentContent::Text(text) => {
             let escaped = crate::cli::display_escape(&text.text);
             for line in escaped.lines() {
@@ -952,7 +1011,11 @@ mod tests {
             &mut lines,
         );
         assert_eq!(lines[0].text, "At the selected revision:");
-        assert!(lines[1].text.contains("missing: no document exists at this revision"));
+        assert!(
+            lines[1]
+                .text
+                .contains("missing: no document exists at this revision")
+        );
         assert!(lines[1].text.contains("restoring removes the file"));
 
         let mut lines = Vec::new();
@@ -977,7 +1040,10 @@ mod tests {
             &mut lines,
         );
         assert_eq!(lines[1].text, "  first");
-        assert!(lines[2].text.trim().is_empty(), "the blank line stays blank");
+        assert!(
+            lines[2].text.trim().is_empty(),
+            "the blank line stays blank"
+        );
         assert_eq!(lines[3].text, "  second");
 
         let mut lines = Vec::new();

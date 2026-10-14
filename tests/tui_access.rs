@@ -507,6 +507,10 @@ fn search_moves_within_every_view_without_changing_content() {
         "the match itself is on screen: {screen}",
     );
 
+    // History is document-scoped: select a captured document before searching.
+    shell.handle_event(&key(KeyCode::Char('f')));
+    shell.handle_event(&Event::Paste("notes/a.md".into()));
+    shell.handle_event(&key(KeyCode::Enter));
     // History view: the same key searches the timeline's subjects.
     shell.handle_event(&key(KeyCode::Char('3')));
     draw(&mut shell, 90, 30);
@@ -610,7 +614,7 @@ fn page_keys_follow_focus_and_move_one_viewport() {
     let operations = Operations::new(&git);
     let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
     // One draw at 110x30 prepares the frame: the reading column and the
-    // list share 27 rows, so one page is 26 rows.
+    // list share 26 rows, so one page is 25 outline entries.
     draw(&mut shell, 110, 30);
 
     // Focus the document list: one page moves the selection by 26 rows
@@ -618,7 +622,11 @@ fn page_keys_follow_focus_and_move_one_viewport() {
     shell.handle_event(&key(KeyCode::Tab));
     assert_eq!(shell.focus(), Focus::Documents);
     shell.handle_event(&key(KeyCode::PageDown));
-    assert_eq!(shell.selection(), 26, "one page lands 26 documents down");
+    assert_eq!(
+        shell.selection(),
+        24,
+        "one page includes the expanded heading"
+    );
     shell.handle_event(&key(KeyCode::PageDown));
     assert_eq!(
         shell.selection(),
@@ -626,7 +634,7 @@ fn page_keys_follow_focus_and_move_one_viewport() {
         "a second page clamps at the last document",
     );
     shell.handle_event(&key(KeyCode::PageUp));
-    assert_eq!(shell.selection(), 3, "one page up lands 26 documents up");
+    assert_eq!(shell.selection(), 4, "one page up moves 25 outline entries");
     shell.handle_event(&key(KeyCode::PageUp));
     assert_eq!(shell.selection(), 0, "a second page up clamps at the first");
 
@@ -638,7 +646,7 @@ fn page_keys_follow_focus_and_move_one_viewport() {
     assert_eq!(shell.focus(), Focus::Reading);
     assert_eq!(shell.reading_offset(), 0);
     shell.handle_event(&key(KeyCode::PageDown));
-    assert_eq!(shell.reading_offset(), 26, "one page scrolls 26 rows");
+    assert_eq!(shell.reading_offset(), 25, "one page scrolls 25 rows");
     shell.handle_event(&key(KeyCode::PageUp));
     assert_eq!(shell.reading_offset(), 0, "one page up returns to the top");
 
@@ -796,8 +804,8 @@ fn color_on_marks_headings_and_both_diff_sides_with_hue() {
     let styles = styles_of(buffer, "Group 1 of");
     assert_eq!(
         styles.as_slice(),
-        [(Some(Color::Blue), Modifier::BOLD)],
-        "a group header draws as a heading"
+        [(Some(Color::Blue), Modifier::BOLD | Modifier::REVERSED)],
+        "the selected group is highlighted"
     );
     let styles = styles_of(buffer, "-First passage.");
     assert_eq!(
@@ -855,7 +863,7 @@ fn reduced_updates_redraw_only_when_the_frame_changed() {
     );
 
     // A key that changes the frame draws it.
-    shell.handle_event(&key(KeyCode::Char('j')));
+    shell.handle_event(&key(KeyCode::Char('n')));
     assert!(shell.take_redraw(), "a state change draws the frame");
 
     // A notice is a frame change while it stands and while it clears.
@@ -971,8 +979,7 @@ fn edit_requests_the_configured_editor_and_reloads_on_return() {
     let expected_path = std::fs::canonicalize(repo.file_path("notes/a.md"))
         .expect("the document path canonicalizes");
     assert_eq!(
-        handoff.path,
-        expected_path,
+        handoff.path, expected_path,
         "the path is the displayed document's literal path",
     );
     assert!(shell.take_editor_request().is_none(), "the request is once");

@@ -9,6 +9,7 @@
 //! the role picks the color the surface draws it in, and the words and
 //! symbols of the line keep carrying every state on their own (SPEC 11.4).
 
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use unicode_width::UnicodeWidthChar as _;
 use unicode_width::UnicodeWidthStr;
 
@@ -42,6 +43,8 @@ pub struct ComposedLine {
     pub text: String,
     /// The role the surface draws the line in.
     pub kind: RowKind,
+    /// Byte ranges of word-level changes, relative to this line.
+    pub highlights: Vec<std::ops::Range<usize>>,
 }
 
 impl ComposedLine {
@@ -50,6 +53,7 @@ impl ComposedLine {
         ComposedLine {
             text: text.into(),
             kind,
+            highlights: Vec::new(),
         }
     }
 
@@ -102,6 +106,8 @@ pub struct DisplayRow {
     /// The role the surface draws this row in, taken from the composed
     /// line it came from.
     pub kind: RowKind,
+    /// Byte ranges of word-level changes, relative to this line.
+    pub highlights: Vec<std::ops::Range<usize>>,
 }
 
 /// Wraps `text` to at most `width` terminal cells per row.
@@ -120,16 +126,180 @@ pub fn wrap_text(text: &str, width: u16) -> Vec<DisplayRow> {
 /// what the text already states (SPEC 11.4).
 pub fn wrap_document(text: &str, width: u16) -> Vec<DisplayRow> {
     wrap_each(
-        text.lines()
-            .map(|line| (line, if line.starts_with('#') { RowKind::Heading } else { RowKind::Text })),
+        text.lines().map(|line| {
+            (
+                line,
+                if line.starts_with('#') {
+                    RowKind::Heading
+                } else {
+                    RowKind::Text
+                },
+            )
+        }),
         width,
     )
+}
+
+/// One parsed heading with its original source coordinate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Heading {
+    pub line: u32,
+    pub level: usize,
+    pub title: String,
+}
+
+/// Extracts ATX and setext headings, excluding code and HTML comments.
+pub fn document_headings(text: &str) -> Vec<Heading> {
+    let mut headings = Vec::new();
+    let mut current: Option<Heading> = None;
+    let mut scanned = 0;
+    let mut line = 1;
+    for (event, range) in Parser::new(text).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                line += text[scanned..range.start]
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count() as u32;
+                scanned = range.start;
+                current = Some(Heading {
+                    line,
+                    level: level as usize,
+                    title: String::new(),
+                });
+            }
+            Event::Text(value) | Event::Code(value) => {
+                if let Some(heading) = &mut current {
+                    heading.title.push_str(&value);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some(heading) = &mut current {
+                    heading.title.push(' ');
+                }
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some(heading) = current.take() {
+                    headings.push(heading);
+                }
+            }
+            _ => {}
+        }
+    }
+    headings
+}
+
+/// Reading presentation preserves source coordinates while hiding HTML
+/// comments. Raw source remains available with `s`; code examples stay literal.
+pub fn reading_document(text: &str, width: u16, source: bool) -> Vec<DisplayRow> {
+    if source {
+        return wrap_document(text, width);
+    }
+    let headings = document_headings(text);
+    // HTML blocks arrive in per-line events; retain comment state across them.
+    let mut comments = Vec::new();
+    let mut opened = None;
+    for (event, range) in Parser::new(text).into_offset_iter() {
+        if !matches!(event, Event::Html(_) | Event::InlineHtml(_)) {
+            continue;
+        }
+        let mut cursor = range.start;
+        while cursor < range.end {
+            if let Some(start) = opened {
+                if let Some(end) = text[cursor..range.end].find("-->") {
+                    cursor += end + 3;
+                    comments.push(start..cursor);
+                    opened = None;
+                } else {
+                    break;
+                }
+            } else if let Some(start) = text[cursor..range.end].find("<!--") {
+                cursor += start;
+                opened = Some(cursor);
+                cursor += 4;
+            } else {
+                break;
+            }
+        }
+    }
+    if let Some(start) = opened {
+        comments.push(start..text.len());
+    }
+    let mut comment_index = 0;
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        let end = start + line.len();
+        let mut shown = String::new();
+        let mut cursor = start;
+        while comment_index < comments.len() && comments[comment_index].end <= start {
+            comment_index += 1;
+        }
+        let relevant = &comments[comment_index..];
+        for comment in relevant.iter().take_while(|r| r.start < end) {
+            if cursor < comment.start {
+                shown.push_str(&text[cursor..comment.start.min(end)]);
+            }
+            cursor = cursor.max(comment.end.min(end));
+        }
+        shown.push_str(&text[cursor..end]);
+        let hidden = shown.trim().is_empty() && relevant.first().is_some_and(|r| r.start < end);
+        if !hidden {
+            let number = index as u32 + 1;
+            let kind = if headings.binary_search_by_key(&number, |h| h.line).is_ok() {
+                RowKind::Heading
+            } else {
+                RowKind::Text
+            };
+            wrap_line(
+                shown.trim_end_matches(['\n', '\r']),
+                width.max(1) as usize,
+                number,
+                kind,
+                &mut rows,
+            );
+        }
+        start = end;
+    }
+    let first = rows
+        .iter()
+        .position(|r| !r.text.is_empty())
+        .unwrap_or(rows.len());
+    rows.drain(..first);
+    if rows.is_empty() {
+        return wrap_text("", width);
+    }
+    rows
 }
 
 /// Wraps the composed lines of one column to at most `width` cells per
 /// row. Every row one composed line produces keeps that line's role.
 pub fn wrap_rows(lines: &[ComposedLine], width: u16) -> Vec<DisplayRow> {
-    wrap_each(lines.iter().map(|line| (line.text.as_str(), line.kind)), width)
+    let mut rows = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let first = rows.len();
+        wrap_line(
+            &line.text,
+            width.max(1) as usize,
+            index as u32 + 1,
+            line.kind,
+            &mut rows,
+        );
+        let mut cursor = 0;
+        for row in &mut rows[first..] {
+            let start = cursor + line.text[cursor..].find(&row.text).unwrap_or(0);
+            let end = start + row.text.len();
+            for range in &line.highlights {
+                let left = range.start.max(start);
+                let right = range.end.min(end);
+                if left < right {
+                    row.highlights.push(left - start..right - start);
+                }
+            }
+            cursor = end;
+        }
+    }
+    rows
 }
 
 /// Wraps `(text, role)` pairs, one source line per pair.
@@ -148,13 +318,20 @@ where
             source_line: 1,
             text: String::new(),
             kind: RowKind::Text,
+            highlights: Vec::new(),
         });
     }
     rows
 }
 
 /// Wraps one source line into `rows`.
-fn wrap_line(line: &str, width: usize, source_line: u32, kind: RowKind, rows: &mut Vec<DisplayRow>) {
+fn wrap_line(
+    line: &str,
+    width: usize,
+    source_line: u32,
+    kind: RowKind,
+    rows: &mut Vec<DisplayRow>,
+) {
     let mut current = String::new();
     let mut cells = 0usize;
     for (slice, is_spaces) in tokens(line) {
@@ -204,6 +381,7 @@ fn push_row(rows: &mut Vec<DisplayRow>, source_line: u32, kind: RowKind, text: &
     rows.push(DisplayRow {
         source_line,
         kind,
+        highlights: Vec::new(),
         text: text.trim_end_matches(' ').to_string(),
     });
 }
@@ -387,6 +565,70 @@ mod tests {
             ],
         );
         let texts: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
-        assert_eq!(texts, ["# A long", "heading that", "wraps", "", "body text"]);
+        assert_eq!(
+            texts,
+            ["# A long", "heading that", "wraps", "", "body text"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::*;
+
+    #[test]
+    fn outline_parses_nested_and_setext_headings_but_not_code_or_comments() {
+        let text = "<!--\n# Hidden\n-->\n# Title\n## A *nested* heading\n```md\n# Example\n```\nSetext title\n------------\n";
+        let headings = document_headings(text);
+        assert_eq!(
+            headings
+                .iter()
+                .map(|h| (h.line, h.level, h.title.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (4, 1, "Title"),
+                (5, 2, "A nested heading"),
+                (9, 2, "Setext title")
+            ]
+        );
+    }
+
+    #[test]
+    fn hidden_comments_preserve_source_anchors_and_code_examples() {
+        let text = "<!--\nprivate source note\n-->\n\n# Title\nA <!-- inline --> passage.\n```html\n<!-- example -->\n```\n";
+        let rows = reading_document(text, 40, false);
+        assert_eq!(rows[0].source_line, 5);
+        let shown = rows
+            .iter()
+            .map(|r| r.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!shown.contains("private source note"));
+        assert!(!shown.contains("inline"));
+        assert!(shown.contains("<!-- example -->"));
+        assert_eq!(rows[row_for_anchor(&rows, 6)].source_line, 6);
+        assert!(
+            reading_document(text, 40, true)
+                .iter()
+                .any(|r| r.text.contains("private source note"))
+        );
+    }
+
+    #[test]
+    fn unicode_word_emphasis_survives_wrap_boundaries() {
+        let mut line = ComposedLine::added("  Before café 世界 after");
+        let start = line.text.find("café").unwrap();
+        let end = line.text.find(" after").unwrap();
+        line.highlights.push(start..end);
+        let rows = wrap_rows(&[line], 9);
+        let emphasis: Vec<_> = rows
+            .iter()
+            .flat_map(|row| row.highlights.iter().map(|r| &row.text[r.clone()]))
+            .collect();
+        assert_eq!(emphasis, ["café 世界"]);
+        assert!(
+            rows.iter()
+                .all(|r| unicode_width::UnicodeWidthStr::width(r.text.as_str()) <= 9)
+        );
     }
 }
