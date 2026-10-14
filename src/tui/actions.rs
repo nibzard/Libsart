@@ -46,6 +46,8 @@ pub enum Action {
     DocumentPicker,
     /// Search within the current view.
     Search,
+    /// Search working source across the listed documents.
+    WorkspaceSearch,
     /// Hand the displayed document to the configured editor.
     EditDocument,
     /// Open the finish summary of the whole scope.
@@ -60,7 +62,7 @@ pub enum Action {
 
 impl Action {
     /// Every action in SPEC 11.3 table order.
-    pub const ALL: [Action; 23] = [
+    pub const ALL: [Action; 24] = [
         Action::CycleFocus,
         Action::ActionMenu,
         Action::ReadView,
@@ -75,6 +77,7 @@ impl Action {
         Action::SourceView,
         Action::DocumentPicker,
         Action::Search,
+        Action::WorkspaceSearch,
         Action::EditDocument,
         Action::FinishReview,
         Action::Cancel,
@@ -107,6 +110,7 @@ impl Action {
             Action::AddNote => "Note on selected group",
             Action::DocumentPicker => "Document picker",
             Action::Search => "Search within current view",
+            Action::WorkspaceSearch => "Search all documents",
             Action::EditDocument => "Edit document",
             Action::FinishReview => "Finish review",
             Action::Cancel => "Cancel or go back",
@@ -136,6 +140,7 @@ impl Action {
             Action::AddNote => "N",
             Action::DocumentPicker => "f",
             Action::Search => "/",
+            Action::WorkspaceSearch => "Ctrl+F",
             Action::EditDocument => "e",
             Action::FinishReview => "Enter",
             Action::Cancel => "Esc",

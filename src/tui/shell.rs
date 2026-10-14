@@ -53,6 +53,7 @@ use crate::tui::history::{HistoryView, RestorePreview};
 use crate::tui::layout::{self, WidthClass};
 use crate::tui::refresh::{self, InspectionReply, PinnedObservation};
 use crate::tui::render;
+use crate::tui::search::{SearchWorker, WorkspaceSearch};
 use crate::tui::wrap::{self, DisplayRow};
 
 /// How many content bytes the Read view carries at once. The view states
@@ -154,6 +155,8 @@ pub enum Overlay {
         /// The query text the writer typed.
         query: String,
     },
+    /// Search the current working source of all listed documents.
+    WorkspaceSearch,
     /// Writer feedback anchored when the field opened, independent of refresh.
     Note {
         commit: String,
@@ -168,7 +171,10 @@ impl Overlay {
     fn is_text_entry(&self) -> bool {
         matches!(
             self,
-            Overlay::Picker { .. } | Overlay::Search { .. } | Overlay::Note { .. }
+            Overlay::Picker { .. }
+                | Overlay::Search { .. }
+                | Overlay::WorkspaceSearch
+                | Overlay::Note { .. }
         )
     }
 }
@@ -475,6 +481,8 @@ pub struct Shell<'a> {
     pinned: Option<PinnedObservation>,
     /// The standing overlay, when one stands (SPEC 11.3).
     overlay: Option<Overlay>,
+    workspace_search: WorkspaceSearch,
+    search_worker: Option<SearchWorker>,
     /// One requested editor handoff the event loop has not run yet (SPEC
     /// 11.3 `e`, 12.5).
     pending_editor: Option<EditorHandoff>,
@@ -567,6 +575,8 @@ impl<'a> Shell<'a> {
             generation: 0,
             pinned: None,
             overlay: None,
+            workspace_search: WorkspaceSearch::default(),
+            search_worker: None,
             pending_editor: None,
             editor: None,
             capture_after_edit: false,
@@ -697,6 +707,7 @@ impl<'a> Shell<'a> {
     /// state the shell no longer holds, so their replies are discarded.
     fn regenerate(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.invalidate_workspace_search();
     }
 
     /// Rereads the local settings (SPEC 8.2): the adopted scope the next
@@ -1000,6 +1011,14 @@ impl<'a> Shell<'a> {
         match self.overlay.as_mut() {
             Some(Overlay::Picker { filter }) => filter.push_str(&pasted),
             Some(Overlay::Search { query }) => query.push_str(&pasted),
+            Some(Overlay::WorkspaceSearch) => {
+                let remaining =
+                    FIELD_CHARS.saturating_sub(self.workspace_search.query.chars().count());
+                self.workspace_search
+                    .query
+                    .extend(pasted.chars().take(remaining));
+                self.invalidate_workspace_search();
+            }
             Some(Overlay::Note { text, .. }) => {
                 let remaining = crate::notes::MAX_TEXT_CHARS.saturating_sub(text.chars().count());
                 text.extend(pasted_text.chars().take(remaining));
@@ -1056,6 +1075,51 @@ impl<'a> Shell<'a> {
             return;
         };
         match overlay {
+            Overlay::WorkspaceSearch => match (key.code, control) {
+                (KeyCode::Esc, false) => {
+                    self.invalidate_workspace_search();
+                    self.overlay = None;
+                }
+                (KeyCode::Up, false) => {
+                    self.workspace_search.selection =
+                        self.workspace_search.selection.saturating_sub(1);
+                }
+                (KeyCode::Down, false) => {
+                    let last = self
+                        .workspace_search
+                        .results
+                        .as_ref()
+                        .map_or(0, |r| r.hits.len().saturating_sub(1));
+                    self.workspace_search.selection =
+                        (self.workspace_search.selection + 1).min(last);
+                }
+                (KeyCode::PageUp, false) => {
+                    self.workspace_search.selection = self
+                        .workspace_search
+                        .selection
+                        .saturating_sub((self.viewport_rows / 2).max(1));
+                }
+                (KeyCode::PageDown, false) => {
+                    let last = self
+                        .workspace_search
+                        .results
+                        .as_ref()
+                        .map_or(0, |r| r.hits.len().saturating_sub(1));
+                    self.workspace_search.selection = (self.workspace_search.selection
+                        + (self.viewport_rows / 2).max(1))
+                    .min(last);
+                }
+                (KeyCode::Enter, false) => self.submit_workspace_search(),
+                (KeyCode::Char('f'), true) => self.start_workspace_search(),
+                _ => {
+                    let mut query = self.workspace_search.query.clone();
+                    self.handle_field_key(&mut query, key, control, quit_warning_stood);
+                    if query != self.workspace_search.query {
+                        self.workspace_search.query = query;
+                        self.invalidate_workspace_search();
+                    }
+                }
+            },
             Overlay::Menu { selection } => {
                 let count = self.menu().len().max(1);
                 match (key.code, control) {
@@ -1347,10 +1411,118 @@ impl<'a> Shell<'a> {
         None
     }
 
+    fn invalidate_workspace_search(&mut self) {
+        if let Some(worker) = &mut self.search_worker {
+            worker.cancel();
+        }
+        self.workspace_search.request = None;
+        self.workspace_search.results = None;
+        self.workspace_search.selection = 0;
+        self.redraw = true;
+    }
+
+    fn open_workspace_search(&mut self) {
+        self.overlay = Some(Overlay::WorkspaceSearch);
+        self.notice = None;
+        if self.workspace_search.results.is_none()
+            && !self.workspace_search.searching()
+            && !self.workspace_search.query.trim().is_empty()
+        {
+            self.start_workspace_search();
+        }
+    }
+
+    fn start_workspace_search(&mut self) {
+        self.invalidate_workspace_search();
+        let query = self.workspace_search.query.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        if self.search_worker.is_none() {
+            match SearchWorker::spawn() {
+                Ok(worker) => self.search_worker = Some(worker),
+                Err(error) => {
+                    self.notice = Some(bounded(&format!("search could not start: {error}")));
+                    return;
+                }
+            }
+        }
+        let id = self.search_worker.as_mut().unwrap().request(
+            self.root.clone(),
+            self.documents.clone(),
+            query,
+        );
+        self.workspace_search.request = Some(id);
+    }
+
+    /// Called by the event loop, never by the renderer. Old/cancelled
+    /// queries cannot replace the current panel, including after Esc.
+    pub fn poll_workspace_search(&mut self) {
+        if let Some(worker) = &mut self.search_worker {
+            while let Some(reply) = worker.receive() {
+                if self.overlay == Some(Overlay::WorkspaceSearch)
+                    && self.workspace_search.request == Some(reply.id)
+                {
+                    self.workspace_search.request = None;
+                    self.workspace_search.results = Some(reply.results);
+                    self.workspace_search.selection = 0;
+                    self.redraw = true;
+                }
+            }
+        }
+    }
+
+    fn submit_workspace_search(&mut self) {
+        let hit = self
+            .workspace_search
+            .results
+            .as_ref()
+            .and_then(|results| results.hits.get(self.workspace_search.selection))
+            .cloned();
+        let Some(hit) = hit else {
+            if !self.workspace_search.searching() {
+                self.start_workspace_search();
+            }
+            return;
+        };
+        // Revalidate against disk before opening: a result is a location,
+        // not an immutable promise about a file that another editor can change.
+        let query = self.workspace_search.query.trim().to_lowercase();
+        let valid = crate::tui::search::hit_is_current(&self.root, &hit, &query);
+        if !valid || !self.documents.contains(&hit.path) {
+            self.invalidate_workspace_search();
+            self.notice = Some("search result changed on disk; Enter searches again".into());
+            return;
+        }
+        self.selection = self
+            .documents
+            .iter()
+            .position(|path| path == &hit.path)
+            .unwrap();
+        self.load_document(&hit.path);
+        self.view = View::Read;
+        self.focus = Focus::Reading;
+        // Source mode makes comments and Markdown syntax matches visible,
+        // and source-line anchors survive wrapping and resizing.
+        self.reading_source = true;
+        self.anchor = Some(SourceAnchor {
+            path: hit.path.clone(),
+            line: hit.line as u32,
+        });
+        self.drift = 0;
+        self.display_width = 0;
+        self.overlay = None;
+        self.notice = Some(format!(
+            "search: {}:{} · source view · Ctrl+F returns to results",
+            hit.path, hit.line
+        ));
+    }
+
     /// Answers one key press of the reading column, where every key but
     /// the finish action changes only what the interface shows.
     fn handle_column_key(&mut self, key: &KeyEvent, control: bool, quit_warning_stood: bool) {
         match (key.code, control) {
+            (KeyCode::Char('f'), true) => self.open_workspace_search(),
             (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
                 self.request_quit(quit_warning_stood)
             }
@@ -1495,7 +1667,7 @@ impl<'a> Shell<'a> {
                             self.changes.as_ref().and_then(|changes| changes.refusal())
                         }
                     }
-                    Action::DocumentPicker => (self.documents.is_empty())
+                    Action::DocumentPicker | Action::WorkspaceSearch => (self.documents.is_empty())
                         .then(|| "no documents are listed to find".to_string()),
                     Action::EditDocument => {
                         if self.document.is_none() {
@@ -1587,6 +1759,7 @@ impl<'a> Shell<'a> {
                     query: String::new(),
                 });
             }
+            Action::WorkspaceSearch => self.open_workspace_search(),
             Action::EditDocument => self.request_editor(),
             Action::FinishReview => self.open_finish(),
             Action::Help => self.overlay = Some(Overlay::Help),
@@ -1709,6 +1882,12 @@ impl<'a> Shell<'a> {
             Some(Overlay::Help) => "help".to_string(),
             Some(Overlay::Picker { filter }) => format!("picker:{filter}"),
             Some(Overlay::Search { query }) => format!("search:{query}"),
+            Some(Overlay::WorkspaceSearch) => format!(
+                "workspace-search:{}:{}:{:?}",
+                self.workspace_search.query,
+                self.workspace_search.selection,
+                self.workspace_search.request
+            ),
             Some(Overlay::Note {
                 commit,
                 group,
@@ -2355,6 +2534,7 @@ impl<'a> Shell<'a> {
         if paths == self.documents {
             return;
         }
+        self.invalidate_workspace_search();
         let remembered = self.documents.get(self.selection).cloned();
         self.documents = paths;
         self.workspace.documents = self.documents.len();
@@ -2765,6 +2945,10 @@ impl<'a> Shell<'a> {
     /// The standing overlay, when one stands (SPEC 11.3).
     pub fn overlay(&self) -> Option<&Overlay> {
         self.overlay.as_ref()
+    }
+
+    pub fn workspace_search(&self) -> &WorkspaceSearch {
+        &self.workspace_search
     }
 
     /// The documents the picker filter matches, in list order, with the

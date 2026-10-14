@@ -495,7 +495,8 @@ fn commands_without_algorithms_refuse_typed_and_unchanged() {
     let before = support::oracle::snapshot(&repo);
     // The `log` timeline left this list with task T022; the interactive TUI
     // stays the one query-shaped command without a noninteractive result.
-    let cases: Vec<(&[&str], &str)> = vec![(&["tui"], "tui")];
+    let cases: Vec<(&[&str], &str)> =
+        vec![(&["tui"], "tui"), (&["notes/a.md"], "document shorthand")];
     for (args, command) in cases {
         let output = margin(repo.env(), repo.path(), args);
         assert_eq!(exit_of(&output), 4, "{command} is a pending operation");
@@ -511,6 +512,7 @@ fn interactive_commands_reject_json_with_a_typed_error() {
     let repo = TestRepo::init();
     for args in [
         vec!["tui", "--json"],
+        vec!["notes/a.md", "--json"],
         vec!["edit", "--path", "notes/a.md", "--json"],
         vec!["desk", "--json", "--", "claude"],
     ] {

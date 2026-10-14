@@ -361,6 +361,11 @@ This is Margin's own interface guarantee. The supported Git mutation environment
 
 The hook adapter uses the upstream hook protocol, not the normal Margin JSON envelope. Interactive commands reject `--json` with a typed error where a meaningful noninteractive result does not exist; setup/dry-run subcommands remain available.
 
+`margin PATH` is shorthand for `margin tui --path PATH` when the first operand
+contains a slash or has a file extension. It accepts the same global and TUI
+options and uses the same repository-relative document validation. Known
+command names retain their command meaning; unknown bare names remain errors.
+
 Setup settings are explicit CLI inputs: `--auto-checkpoint` / `--no-auto-checkpoint`, `--capture-after-edit` / `--no-capture-after-edit`, and `--editor-argv-json '["nvim","--"]'`. Opposing flags conflict. Omitted settings preserve their current values on repeated initialization; on first initialization, automatic checkpointing and editor-exit capture default off. The TUI calls the same settings operation. No capability requires editing undocumented private state.
 
 ### 6.3 Query semantics
@@ -836,6 +841,7 @@ Resizing must not reset a plan or mutate content. Preserve position using source
 | Note on selected group | `N` in Changes | Open writer feedback; Enter saves the note, Esc cancels; review decisions remain unchanged |
 | Document picker | `f` | Open/find documents |
 | Search within current view | `/` | Search without changing content |
+| Search all documents | `Ctrl+F` | Search listed working source; arrows select, Enter searches/opens, Esc cancels |
 | Edit document | `e` | Suspend/handoff to configured editor |
 | Finish review | `Enter` on the finish action | Show complete scope/result summary and explicit keep-rest intent |
 | Cancel overlay/back | `Esc` | Leave local UI context; never silently apply |
@@ -845,6 +851,22 @@ Resizing must not reset a plan or mutate content. Preserve position using source
 All actions must also be discoverable through a compact action menu. Navigation keys never change review decisions. Keymap changes are user-interface contract changes and require updating usability and snapshot tests.
 
 Text entry has precedence: in search or a settings field, ordinary characters such as `q`, `r`, `s`, and `:` are text, and Enter submits that field rather than finishing a review. Esc leaves text entry; Ctrl-C retains the explicit clean-quit behavior. Bracketed paste is literal text in a text field and cannot trigger a sequence of global actions; outside text entry it is ignored with a concise notice.
+
+Cross-document search uses the TUI's listed paths, respecting the adopted
+scope or pre-adoption discovery. It searches current working source as
+case-insensitive literal text, independently of terminal wrapping. Results
+are matching source lines with path/line/excerpt; Enter opens the selected
+hit in Read source mode with a source-line anchor. Query and selection remain
+available when returning with Ctrl+F; Ctrl+F inside the panel rescans. Changes
+to the query or document list cancel old results, and selected hits are
+revalidated against disk before navigation. It saves or approves nothing.
+
+Scanning runs off the input loop, with cancellation and bounded pending
+requests. It reads at most 256 KiB per file, 16 MiB total, and 2,000 files,
+and returns at most 500 matching lines. Non-UTF-8, binary, unreadable,
+non-regular, and symlinked files are skipped. The panel reports skipped and
+truncated files and search-limit exhaustion; incomplete scans never claim
+that there are no matches in the entire scope.
 
 ### 11.4 Accessible semantics
 

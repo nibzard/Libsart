@@ -286,6 +286,7 @@ fn drive(
     let mut next_inspection = Instant::now();
     let mut drawn_once = false;
     loop {
+        shell.poll_workspace_search();
         if let Some(worker) = worker.as_mut() {
             // Every answered inspection reaches the shell before the
             // frame that shows it: a reply the shell's generation
@@ -345,7 +346,9 @@ fn drive(
         // The input wait ends at the next tick, so polling stays
         // two-second and every key press answers at once (SPEC 13.3).
         let mut wait = next_inspection.saturating_duration_since(now);
-        if worker.as_ref().is_some_and(RefreshWorker::is_busy) {
+        if worker.as_ref().is_some_and(RefreshWorker::is_busy)
+            || shell.workspace_search().searching()
+        {
             wait = wait.min(BUSY_WAIT);
         }
         if event::poll(wait)? {

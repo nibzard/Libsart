@@ -108,6 +108,9 @@ pub fn draw(shell: &mut Shell<'_>, frame: &mut Frame<'_>) {
         Some(Overlay::Menu { .. }) => draw_menu(frame, geometry.reading, shell, palette),
         Some(Overlay::Help) => draw_help(frame, geometry.reading, shell, palette),
         Some(Overlay::Picker { .. }) => draw_picker(frame, geometry.reading, shell, palette),
+        Some(Overlay::WorkspaceSearch) => {
+            draw_workspace_search(frame, geometry.reading, shell, palette)
+        }
         // The search field keeps the current view visible behind it; the
         // context row carries the query (SPEC 11.3).
         _ => match shell.view() {
@@ -596,6 +599,62 @@ fn draw_picker(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
+fn draw_workspace_search(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
+    let search = shell.workspace_search();
+    let status = if search.searching() {
+        "Searching… · Esc cancels".to_string()
+    } else if let Some(results) = &search.results {
+        results.summary()
+    } else {
+        "Type a literal query · Enter searches".to_string()
+    };
+    let mut lines = vec![
+        Line::styled("Search all documents · working source", palette.heading),
+        Line::styled(
+            format!(
+                "{} listed documents · case-insensitive",
+                shell.documents().len()
+            ),
+            palette.dim,
+        ),
+    ];
+    for row in wrap::wrap_text(&status, area.width.max(1)) {
+        lines.push(Line::raw(row.text));
+    }
+    lines.push(Line::raw(""));
+    if let Some(results) = &search.results {
+        let visible = (usize::from(area.height).saturating_sub(lines.len()) / 2).max(1);
+        let start = search.selection.saturating_sub(visible.saturating_sub(1));
+        for (index, hit) in results.hits.iter().enumerate().skip(start).take(visible) {
+            let selected = index == search.selection;
+            lines.push(Line::styled(
+                fit_to(
+                    &format!(
+                        "{}{}:{}",
+                        if selected { "› " } else { "  " },
+                        crate::cli::display_escape(&hit.path),
+                        hit.line
+                    ),
+                    area.width as usize,
+                ),
+                if selected {
+                    palette.selected
+                } else {
+                    palette.dim
+                },
+            ));
+            lines.push(Line::raw(fit_to(
+                &format!("  {}", hit.excerpt),
+                area.width as usize,
+            )));
+        }
+        if results.hits.is_empty() {
+            lines.push(Line::raw("No matches in the searched text."));
+        }
+    }
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+}
+
 /// Draws the retained context row: the standing text-entry field, the
 /// document, the source anchor, and the review state of the scope (SPEC
 /// 5.4). One standing notice takes the whole row instead, and an
@@ -678,6 +737,20 @@ fn draw_context(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
 /// the writer typed, with a visible caret and the keys that answer it.
 fn context_field(shell: &Shell<'_>) -> Option<String> {
     match shell.overlay() {
+        Some(Overlay::WorkspaceSearch) => Some(format!(
+            "all files: {}▏ · Enter {} · ↑/↓ select · Ctrl+F reruns · Esc closes",
+            crate::cli::display_escape(&shell.workspace_search().query),
+            if shell
+                .workspace_search()
+                .results
+                .as_ref()
+                .is_some_and(|r| !r.hits.is_empty())
+            {
+                "opens"
+            } else {
+                "searches"
+            },
+        )),
         Some(Overlay::Search { query }) => Some(format!(
             "search: {query}▏ · Enter finds the next match · Esc closes"
         )),
@@ -730,6 +803,10 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
             } else {
                 "type filters · Enter opens the first · Esc closes"
             },
+        ),
+        Some(Overlay::WorkspaceSearch) => (
+            views,
+            "type query · ↑/↓ select · Enter search/open · Esc close",
         ),
         Some(Overlay::Search { .. }) => (
             views,
@@ -788,7 +865,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
             }
             (_, false, _) => (
                 "1 Read 2 Changes 3 History",
-                "j/k scroll · Tab outline · [ sidebar · s source · / search · ? help · q quit",
+                "j/k scroll · Tab outline · [ sidebar · s source · / local · Ctrl+F all files · ? help · q quit",
             ),
             (_, true, _) => ("1·2·3 views", "j/k · s source · f find · / · ? · q quit"),
         },
@@ -810,7 +887,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
         && !shell.navigator_visible()
         && area.width >= 100
     {
-        "j/k scroll · [ sidebar · s source · f find · / search · ? help · q quit"
+        "j/k scroll · [ sidebar · s source · f find · / local · Ctrl+F all files · ? help · q quit"
     } else {
         right
     };

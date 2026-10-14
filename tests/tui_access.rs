@@ -539,6 +539,118 @@ fn search_moves_within_every_view_without_changing_content() {
     before.assert_unchanged(&oracle::snapshot(&repo), "the search keys");
 }
 
+fn wait_for_workspace_search(shell: &mut Shell<'_>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while shell.workspace_search().searching() {
+        shell.poll_workspace_search();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "workspace search timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(shell.workspace_search().results.is_some());
+}
+
+#[test]
+fn workspace_search_finds_listed_working_source_and_opens_exact_lines() {
+    let repo = three_group_repo();
+    // Raw Markdown/comment matches, literal punctuation, and untracked
+    // working files must be searchable even when no rendered row matches.
+    let query = "Quartz [x].* qrs:";
+    repo.write_file(
+        "notes/b.md",
+        format!("# Two\n\n<!-- {query} -->\n").as_bytes(),
+    );
+    repo.write_file(
+        "notes/new.md",
+        format!("# New\n\n{} {query}\n", "filler ".repeat(30)).as_bytes(),
+    );
+    repo.write_file("outside.md", format!("{query}\n").as_bytes());
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    let before = oracle::snapshot(&repo);
+    let original_path = shell.document().unwrap().path.clone();
+    shell.handle_event(&modified(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    shell.handle_event(&Event::Paste(query.to_lowercase()));
+    assert!(!shell.should_quit());
+    assert_eq!(shell.document().unwrap().path, original_path);
+    shell.handle_event(&key(KeyCode::Enter));
+    wait_for_workspace_search(&mut shell);
+    let hits = &shell.workspace_search().results.as_ref().unwrap().hits;
+    assert_eq!(hits.len(), 2);
+    assert_eq!((&*hits[0].path, hits[0].line), ("notes/b.md", 3));
+    assert_eq!((&*hits[1].path, hits[1].line), ("notes/new.md", 3));
+    let screen = joined(&draw(&mut shell, 110, 30));
+    assert!(screen.contains("Search all documents"), "{screen}");
+    assert!(screen.contains("notes/b.md:3"), "{screen}");
+    assert!(screen.contains("Quartz [x].* qrs:"), "{screen}");
+    // Opening the comment proves that source mode makes hidden hits visible.
+    shell.handle_event(&key(KeyCode::Enter));
+    draw(&mut shell, 70, 24);
+    assert!(shell.reading_source());
+    assert_eq!(shell.document().unwrap().path, "notes/b.md");
+    assert_eq!(shell.current_anchor().unwrap().line, 3);
+    shell.handle_event(&modified(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    assert_eq!(shell.workspace_search().query, query.to_lowercase());
+    assert!(shell.workspace_search().results.is_some());
+    shell.handle_event(&key(KeyCode::Down));
+    shell.handle_event(&key(KeyCode::Enter));
+    draw(&mut shell, 70, 24);
+    assert_eq!(shell.document().unwrap().path, "notes/new.md");
+    assert_eq!(shell.current_anchor().unwrap().line, 3);
+    draw(&mut shell, 110, 30);
+    assert_eq!(shell.current_anchor().unwrap().line, 3);
+    before.assert_unchanged(&oracle::snapshot(&repo), "workspace search and navigation");
+}
+
+#[test]
+fn workspace_search_discards_cancelled_queries_and_revalidates_hits() {
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    let original_path = shell.document().unwrap().path.clone();
+    shell.handle_event(&modified(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    shell.handle_event(&Event::Paste("forests".into()));
+    shell.handle_event(&key(KeyCode::Enter));
+    shell.handle_event(&key(KeyCode::Esc));
+    shell.poll_workspace_search();
+    assert!(shell.overlay().is_none());
+    assert!(shell.workspace_search().results.is_none());
+    // Reopening remembers the query and starts a new generation. Editing
+    // it immediately invalidates that scan; only the newest query may win.
+    shell.handle_event(&modified(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    for _ in 0.."forests".len() {
+        shell.handle_event(&key(KeyCode::Backspace));
+    }
+    shell.handle_event(&Event::Paste("Other passage".into()));
+    shell.handle_event(&key(KeyCode::Enter));
+    wait_for_workspace_search(&mut shell);
+    let hits = &shell.workspace_search().results.as_ref().unwrap().hits;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, "notes/b.md");
+    // A changed file cannot send the reader to a now-unrelated line.
+    repo.write_file("notes/b.md", b"# Two\n\nReplaced on disk.\n");
+    shell.handle_event(&key(KeyCode::Enter));
+    assert_eq!(shell.document().unwrap().path, original_path);
+    assert!(shell.workspace_search().results.is_none());
+    assert!(shell.notice().unwrap().contains("changed on disk"));
+    shell.handle_event(&key(KeyCode::Enter));
+    wait_for_workspace_search(&mut shell);
+    assert!(
+        shell
+            .workspace_search()
+            .results
+            .as_ref()
+            .unwrap()
+            .hits
+            .is_empty()
+    );
+    assert!(joined(&draw(&mut shell, 70, 24)).contains("No matches in the searched text"));
+}
+
 #[test]
 fn the_document_picker_finds_and_opens_documents() {
     let repo = three_group_repo();
@@ -677,6 +789,7 @@ fn help_lists_the_keys_and_the_current_blockers() {
     assert!(screen.contains("PgUp / PgDn · Page"));
     assert!(screen.contains(": · Action menu"));
     assert!(screen.contains("/ · Search within current view"));
+    assert!(screen.contains("Ctrl+F · Search all documents"));
     assert!(screen.contains("Current blockers"));
     assert!(
         screen.contains("none"),

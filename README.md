@@ -66,6 +66,7 @@ draft. A review records your decisions about that draft.
 | `margin review --input review.json` | Keep or restore changes and record the review |
 | `margin log` | Browse the writing history |
 | `margin tui` | Open the interactive reading and review surface |
+| `margin content/article.md` | Open one document in the interactive surface |
 | `margin edit --path content/article.md` | Hand one document to the configured editor |
 | `margin show --path content/article.md --revision HEAD` | Read a saved document |
 | `margin restore --input restore.json` | Restore one historical document in a new commit |
@@ -79,6 +80,10 @@ Review plans use identifiers from `margin diff --json`. A completed request
 has a receipt in Git history. Repeating the same request returns that receipt.
 Historical restoration creates a new commit and leaves the restored content
 pending review.
+
+Open a document directly with `margin content/article.md`, shorthand for
+`margin tui --path content/article.md`. Paths are relative to the repository
+root. The shorthand accepts TUI options, such as `--view changes`.
 
 The hook adapter reads one Claude Code hook event from standard input and
 answers in Claude Code's own hook protocol, never in the Margin envelope. It
@@ -178,6 +183,16 @@ terminal left raw after one recovers with `reset` (or `stty sane`). The
 command line. The Claude Code hook adapter translates supported events, and
 `hook install` and `hook remove` edit only Margin's own entries in the local
 Claude Code settings; `margin desk` composes the optional tmux writing desk.
+
+`Ctrl+F` searches the working source of every document listed in the TUI.
+Type a literal, case-insensitive query and press `Enter`; results show file
+paths, source lines, and excerpts. Use arrows to select a result and `Enter`
+to open it at that line in source view. `Ctrl+F` returns to the results;
+inside the panel it reruns the search. Editing the query clears old results,
+and `Esc` cancels and closes. Search runs in the background, changes no
+content, and reports skipped files and limits: 256 KiB per file, 16 MiB total,
+2,000 files, and 500 matching lines. Binary, unreadable, and symlinked files
+are skipped. `/` continues to search only the current view.
 Recovery supports inspection, exact-plan review resume, and guarded capture
 of inspected staged content.
 

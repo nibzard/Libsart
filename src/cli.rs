@@ -153,6 +153,7 @@ pub const EXIT_CLASSES: &[(u8, &str, &[&str])] = &[
 /// live parser, so an example that no longer invokes the program fails the
 /// suite (SPEC 16.8).
 const EXAMPLES: &[&str] = &[
+    "margin content/article.md",
     "margin --help --json",
     "margin status --json",
     "margin diff --path content/article.md --json",
@@ -857,7 +858,11 @@ fn init_command() -> Command {
 /// The exit classes and examples of the text help, built from the same
 /// tables the structured help reads (SPEC 6.1).
 fn after_help() -> String {
-    let mut text = String::from("Exit classes:\n");
+    let mut text = String::from(
+        "Open a document: margin <PATH> [TUI OPTIONS]\n\
+         Shorthand for margin tui --path <PATH>; paths are repository-relative.\n\n\
+         Exit classes:\n",
+    );
     for (exit, class, codes) in EXIT_CLASSES {
         let codes = if codes.is_empty() {
             String::new()
@@ -1188,7 +1193,7 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    let argv: Vec<OsString> = argv.into_iter().map(Into::into).collect();
+    let argv = document_shorthand(argv.into_iter().map(Into::into).collect());
     let json = argv
         .iter()
         .skip(1)
@@ -1219,6 +1224,43 @@ where
             _ => parse_error(&error, &argv, json),
         },
     }
+}
+
+/// Expand a path-shaped first operand into the explicit TUI command.
+/// Skip global option values, and leave commands and malformed options
+/// to clap. No filesystem lookup is needed, so missing documents still
+/// receive the same validation as `tui --path`.
+fn document_shorthand(mut argv: Vec<OsString>) -> Vec<OsString> {
+    let root = command();
+    let mut value_pending = false;
+    for index in 1..argv.len() {
+        let Some(token) = argv[index].to_str() else {
+            break;
+        };
+        if value_pending {
+            value_pending = false;
+            continue;
+        }
+        if let Some(body) = token.strip_prefix("--") {
+            let name = body.split('=').next().unwrap_or("");
+            let Some(argument) = long_arg(&root, name) else {
+                break;
+            };
+            value_pending = argument.get_action().takes_values() && !body.contains('=');
+            continue;
+        }
+        if token.starts_with('-') || root.find_subcommand(token).is_some() {
+            break;
+        }
+        if token.contains('/') || std::path::Path::new(token).extension().is_some() {
+            argv.splice(
+                index..index,
+                [OsString::from("tui"), OsString::from("--path")],
+            );
+        }
+        break;
+    }
+    argv
 }
 
 /// Reports one parser failure: one bounded envelope in JSON mode, one
@@ -3265,12 +3307,47 @@ mod tests {
     }
 
     #[test]
+    fn document_paths_open_the_tui_with_options() {
+        for tokens in [
+            vec!["30_personal/30.00_active/thanks_for_all_the_fish.md"],
+            vec!["article.md"],
+            vec!["content/a file.md", "--view", "history"],
+            vec!["--cwd", "some/directory", "--color=never", "content/a.md"],
+            vec!["--timeout-ms", "100", "content/a.md", "--reduced-updates"],
+        ] {
+            let matches = command()
+                .try_get_matches_from(document_shorthand(argv(&tokens)))
+                .unwrap();
+            let (name, sub) = matches.subcommand().unwrap();
+            assert_eq!(name, "tui", "{tokens:?}");
+            let expected = tokens.iter().find(|token| token.ends_with(".md")).unwrap();
+            assert_eq!(sub.get_one::<String>("path").unwrap(), expected);
+            if tokens.contains(&"history") {
+                assert_eq!(sub.get_one::<String>("view").unwrap(), "history");
+            }
+            if tokens.contains(&"--reduced-updates") {
+                assert!(sub.get_flag("reduced-updates"));
+            }
+        }
+        for tokens in [
+            vec!["status", "--path", "content/a.md"],
+            vec!["tui", "--path", "content/a.md"],
+            vec!["--cwd", "content/a.md", "status"],
+            vec!["not-a-command"],
+            vec!["--unknown", "content/a.md"],
+        ] {
+            let original = argv(&tokens);
+            assert_eq!(document_shorthand(original.clone()), original);
+        }
+    }
+
+    #[test]
     fn documented_examples_still_invoke_the_program() {
         for example in EXAMPLES {
             let tokens = example_tokens(example);
             // A help request is a valid invocation too; it reports itself
             // through the display path rather than parsed matches.
-            match command().try_get_matches_from(tokens) {
+            match command().try_get_matches_from(document_shorthand(tokens)) {
                 Ok(_) => {}
                 Err(error) => assert!(
                     matches!(
