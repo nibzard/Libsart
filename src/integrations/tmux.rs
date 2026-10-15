@@ -82,27 +82,24 @@ pub fn compose_desk(cwd: &Path, agent: &[String]) -> Result<String, OperationErr
     validate_agent(agent)?;
     probe()?;
     let cwd: PathBuf = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    let directory =
-        crate::desk::directory().map_err(|e| OperationError::new("IO_FAILED", e.to_string()))?;
-    let socket = directory.join("viewer.sock");
-    let wrap = |argv: &[String]| {
-        let mut result = vec![
-            "env".to_string(),
-            format!("MARGIN_DESK_SOCKET={}", socket.display()),
-        ];
-        result.extend_from_slice(argv);
-        result
-    };
-    let margin = wrap(&margin_argv());
-    let agent = wrap(agent);
-    let agent = agent.as_slice();
+    let socket = crate::desk::directory()
+        .map(|dir| dir.join("open.sock"))
+        .map_err(|e| {
+            OperationError::new(
+                "IO_FAILED",
+                format!("cannot create desk socket directory: {e}"),
+            )
+        })?;
+    let margin = margin_argv();
     let result = if inside_tmux() {
-        compose_inside(&cwd, agent, &margin)
+        compose_inside(&cwd, agent, &margin, &socket)
     } else {
-        compose_outside(&cwd, agent, &margin)
+        compose_outside(&cwd, agent, &margin, &socket)
     };
+    // On detach the viewer still owns this directory. Failed composition
+    // may leave an empty reservation, which is safe to remove.
     if result.is_err() {
-        let _ = fs::remove_dir(&directory);
+        let _ = fs::remove_dir(socket.parent().unwrap());
     }
     result
 }
@@ -194,13 +191,16 @@ fn words(parts: &[&str]) -> Vec<OsString> {
 /// `split-window`, and the percentage size of `MARGIN_SHARE`, both
 /// arrived in that release. The CI tiers pin the release they exercise
 /// in `ci/tmux.version`.
-fn direct_exec(args: &mut Vec<OsString>, argv: &[String]) {
+fn direct_exec(args: &mut Vec<OsString>, argv: &[String], socket: &Path) {
     args.push(OsString::from("--"));
-    // tmux treats one command argument as shell text. Give it a command
-    // with multiple arguments, then let env execute the literal program.
-    if argv.len() == 1 {
-        args.extend(words(&["env", "--"]));
-    }
+    // tmux 3.1 has no new-session -e. The direct argv uses env to
+    // set this process's address and exec the literal program. Multiple
+    // command arguments also keep tmux out of its shell-text form.
+    args.extend(words(&[
+        "env",
+        "--",
+        &format!("MARGIN_DESK_SOCKET={}", socket.display()),
+    ]));
     args.extend(argv.iter().map(OsString::from));
 }
 
@@ -339,6 +339,7 @@ fn compose_outside(
     cwd: &Path,
     agent: &[String],
     margin: &[String],
+    socket: &Path,
 ) -> Result<String, OperationError> {
     let size = crossterm::terminal::size().ok();
     let (columns, rows) = size.unwrap_or((80, 24));
@@ -365,9 +366,9 @@ fn compose_outside(
         "-c",
         &cwd.display().to_string(),
     ]);
-    direct_exec(&mut session, agent);
+    direct_exec(&mut session, agent, socket);
     let window = run(&session)?;
-    let built = build_desk_surfaces(&name, &window, layout, cwd, margin, &[])
+    let built = build_desk_surfaces(&name, &window, layout, cwd, margin, &[], socket)
         .or_else(|error| desk_or_agent_failure(&name, agent, error));
 
     let prefix = prefix_of(&name);
@@ -381,7 +382,7 @@ fn compose_outside(
     // An agent that exited before the desk finished leaves no session to
     // attach; the writer gets the honest reason, not an attach failure.
     if !session_exists(&name) {
-        return Err(agent_did_not_run(&unwrapped(agent)[0]));
+        return Err(agent_did_not_run(&agent[0]));
     }
     let attached = attach(&name);
     let running = session_exists(&name);
@@ -402,6 +403,7 @@ fn compose_inside(
     cwd: &Path,
     agent: &[String],
     margin: &[String],
+    socket: &Path,
 ) -> Result<String, OperationError> {
     let session = run(&words(&["display-message", "-p", "#{session_name}"]))?;
     if session.is_empty() {
@@ -424,7 +426,7 @@ fn compose_inside(
         "-c",
         &cwd.display().to_string(),
     ]);
-    direct_exec(&mut created, agent);
+    direct_exec(&mut created, agent, socket);
     let window = run(&created)?;
     let width = run(&words(&[
         "display-message",
@@ -444,6 +446,7 @@ fn compose_inside(
         cwd,
         margin,
         &[DESK_REVIEW_WINDOW],
+        socket,
     )
     .or_else(|error| desk_or_agent_failure(&session, agent, error));
     match built {
@@ -455,7 +458,7 @@ fn compose_inside(
     }
     if !window_exists(&window) {
         kill_window(&window);
-        return Err(agent_did_not_run(&unwrapped(agent)[0]));
+        return Err(agent_did_not_run(&agent[0]));
     }
     // The window stays selected, so the writer lands on the desk; in the
     // focused arrangement the agent window is the desk's center.
@@ -486,6 +489,7 @@ fn build_desk_surfaces(
     cwd: &Path,
     margin: &[String],
     review_windows: &[&str],
+    socket: &Path,
 ) -> Result<(), OperationError> {
     let target = agent_window;
     match layout {
@@ -500,7 +504,7 @@ fn build_desk_surfaces(
                 "-c",
                 &cwd.display().to_string(),
             ]);
-            direct_exec(&mut split, margin);
+            direct_exec(&mut split, margin, socket);
             run(&split)?;
             // The writer's first words belong to the agent, so the agent
             // pane keeps the focus the split moved to the new pane.
@@ -517,7 +521,7 @@ fn build_desk_surfaces(
                 "-c",
                 &cwd.display().to_string(),
             ]);
-            direct_exec(&mut review, margin);
+            direct_exec(&mut review, margin, socket);
             run(&review)?;
             let _ = run(&words(&["select-window", "-t", target]));
         }
@@ -533,7 +537,7 @@ fn desk_or_agent_failure(
     error: OperationError,
 ) -> Result<(), OperationError> {
     if !session_exists(session) {
-        return Err(agent_did_not_run(&unwrapped(agent)[0]));
+        return Err(agent_did_not_run(&agent[0]));
     }
     Err(error)
 }
@@ -651,20 +655,8 @@ impl Summary {
 
 /// One argv as one line of text: control characters become U+FFFD, so an
 /// argument can never carry a carriage return into the report.
-fn unwrapped(argv: &[String]) -> &[String] {
-    if argv.first().is_some_and(|s| s == "env")
-        && argv
-            .get(1)
-            .is_some_and(|s| s.starts_with("MARGIN_DESK_SOCKET="))
-    {
-        &argv[2..]
-    } else {
-        argv
-    }
-}
 fn show_argv(argv: &[String]) -> String {
-    unwrapped(argv)
-        .iter()
+    argv.iter()
         .map(|argument| {
             argument
                 .chars()

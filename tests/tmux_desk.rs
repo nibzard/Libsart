@@ -550,12 +550,14 @@ fn outside_tmux_the_desk_composes_an_agent_pane_and_a_margin_pane() {
     assert!(
         panes.iter().any(|pane| pane.contains(&agent_pid)
             && pane.contains("dead=0")
-            && pane.contains(&agent.display().to_string())),
+            && pane.contains("start=env -- MARGIN_DESK_SOCKET=")
+            && pane.contains(&format!(" {}", agent.display()))),
         "the agent pane runs the recorded process: {panes:?}"
     );
     assert!(
         panes.iter().any(|pane| pane.contains("dead=0")
-            && pane.contains(env!("CARGO_BIN_EXE_margin"))
+            && pane.contains("start=env -- MARGIN_DESK_SOCKET=")
+            && pane.contains(&format!(" {}", env!("CARGO_BIN_EXE_margin")))
             && pane.ends_with("tui")),
         "the margin pane runs this build's interactive surface: {panes:?}"
     );
@@ -866,7 +868,8 @@ fn quitting_margin_leaves_the_agent_running() {
         survivor.contains(&agent_pid)
             && survivor.contains("dead=0")
             && survivor.contains("command=sleep")
-            && survivor.contains(&agent.display().to_string()),
+            && survivor.contains("start=env -- MARGIN_DESK_SOCKET=")
+            && survivor.contains(&format!(" {}", agent.display())),
         "the agent process still runs in its pane: {survivor}"
     );
     let drafting = server.windows("writer", "#{window_name}");
@@ -1160,24 +1163,24 @@ fn repeated_desks_target_their_new_windows() {
 }
 
 #[test]
-fn agent_open_draws_in_existing_viewer_and_survives_detach() {
+fn desk_open_survives_detach_without_moving_focus_in_wide_and_narrow_layouts() {
     if skip_for_tmux() {
         return;
     }
-    for columns in [90, 170] {
+    for columns in [170, 90] {
         let repo = TestRepo::init();
-        repo.write_file("notes/a.md", b"# Original document\n");
-        repo.write_file(
-            "notes/résumé 文.md",
-            b"# Agent opened this document\n\nTarget passage.\n",
-        );
-        repo.commit_all("documents");
+        repo.write_file("a.md", b"# First\nInitial document\n");
+        repo.write_file("second λ.md", b"# Target\nDesk navigation target\n");
+        repo.commit_all("import");
         let work = tempfile::TempDir::new().unwrap();
-        let server = DeskServer::new("open");
+        let server = DeskServer::new("desk-open");
         let agent = work.path().join("open-agent.sh");
+        let trigger = work.path().join("open-now");
+        let result = work.path().join("open-result.json");
+        let identity = work.path().join("socket.txt");
         fs::write(&agent, format!(
-            "#!/bin/sh\nprintf '%s' \"$MARGIN_DESK_SOCKET\" > '{}/socket'\n'{}' open 'notes/résumé 文.md' --line 3 --json > '{}/result'\nexec sleep 600\n",
-            work.path().display(), env!("CARGO_BIN_EXE_margin"), work.path().display()
+            "#!/bin/sh\nprintf '%s\\n' \"$MARGIN_DESK_SOCKET\" > '{}'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\n'{}' open 'second λ.md' --json > '{}'\nexec sleep 600\n",
+            identity.display(), trigger.display(), env!("CARGO_BIN_EXE_margin"), result.display()
         )).unwrap();
         fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).unwrap();
         let mut pty = spawn_desk(
@@ -1185,56 +1188,67 @@ fn agent_open_draws_in_existing_viewer_and_survives_detach() {
             &server,
             &[agent.to_str().unwrap()],
             columns,
-            40,
+            45,
             None,
         );
         assert!(pty.wait_for("0:agent", LIMIT));
-        assert!(soon(LIMIT, || fs::read_to_string(
-            work.path().join("result")
-        )
-        .is_ok_and(|s| s.contains("\"ok\":true"))));
-        let target = server
-            .run(&["list-panes", "-a", "-F", "#{pane_id} #{pane_start_command}"])
-            .lines()
-            .find(|line| line.contains(env!("CARGO_BIN_EXE_margin")))
-            .unwrap()
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .to_string();
-        let target = target.as_str();
-        assert!(
-            soon(LIMIT, || server
-                .run(&["capture-pane", "-p", "-t", target])
-                .contains("Target passage")),
-            "viewer capture: {}",
-            server.run(&["capture-pane", "-p", "-t", target])
-        );
-        let panes = server.panes("margin:agent", "#{pane_id}");
-        let focus = server.run(&["display-message", "-p", "-t", "margin:agent", "#{pane_id}"]);
-        detach(&mut pty);
-        assert_eq!(pty.wait_exit(LIMIT).unwrap().code(), Some(0));
-        let socket = fs::read_to_string(work.path().join("socket")).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_margin"))
-            .args(["open", "notes/a.md", "--json"])
-            .env("MARGIN_DESK_SOCKET", socket.trim())
-            .current_dir(repo.path())
+        let active = server.run(&["display-message", "-p", "-t", "margin:agent", "#{pane_id}"]);
+        let viewer = if columns >= 140 {
+            "margin:agent.1"
+        } else {
+            "margin:margin.0"
+        };
+        let socket = server.run(&["display-message", "-p", "-t", viewer, "#{pane_pid}"]);
+        // Query the actual child environment through ps, since tmux's
+        // pane command is the directly executed Margin binary.
+        let pid = socket;
+        let environment = Command::new("ps")
+            .args(["eww", "-p", &pid])
             .output()
             .unwrap();
+        let environment = String::from_utf8_lossy(&environment.stdout);
+        let socket = environment
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix("MARGIN_DESK_SOCKET="))
+            .expect("viewer received its private socket")
+            .to_string();
+        detach(&mut pty);
+        assert!(pty.wait_exit(LIMIT).unwrap().success());
+        assert!(soon(LIMIT, || identity.exists()));
+        assert_eq!(fs::read_to_string(&identity).unwrap().trim(), socket);
+        fs::write(&trigger, b"open").unwrap();
         assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
+            soon(LIMIT, || fs::read_to_string(&result)
+                .is_ok_and(|text| text.contains("\"ok\":true"))),
+            "agent command failed: {:?}",
+            fs::read_to_string(&result)
         );
-        assert!(
-            server
-                .run(&["capture-pane", "-p", "-t", target])
-                .contains("Original document")
-        );
-        assert_eq!(server.panes("margin:agent", "#{pane_id}"), panes);
+        assert!(soon(LIMIT, || server
+            .run(&["capture-pane", "-p", "-t", viewer])
+            .contains("Desk navigation target")));
         assert_eq!(
             server.run(&["display-message", "-p", "-t", "margin:agent", "#{pane_id}"]),
-            focus
+            active
         );
+        assert_eq!(
+            server.run(&["display-message", "-p", "-t", "margin:", "#{window_name}"]),
+            "agent"
+        );
+        let mut attached = Pty::spawn(
+            Path::new("tmux"),
+            &["attach-session", "-t", "margin"],
+            &desk_env(&repo, &server, None),
+            repo.path(),
+            columns,
+            45,
+        )
+        .unwrap();
+        assert!(attached.wait_for("0:agent", LIMIT));
+        assert_eq!(
+            server.run(&["display-message", "-p", "-t", "margin:", "#{window_name}"]),
+            "agent"
+        );
+        detach(&mut attached);
+        assert!(attached.wait_exit(LIMIT).unwrap().success());
     }
 }
