@@ -6,18 +6,18 @@
 //! repository through one contract. Opening the shell before adoption
 //! changes nothing (SPEC 5.1), and every key it answers changes at most
 //! what the interface shows — the `K` and `r` keys of the Changes view
-//! included, which change one in-memory plan and nothing on any disk
-//! (SPEC 5.2).
+//! included, which change proposed choices and schedule local intent saving
+//! without applying a review (SPEC 5.2).
 //!
-//! Exactly two actions write, and both hand a composed plan document to
+//! Review and restoration application both hand a composed plan document to
 //! the same shared operation the command line exposes (SPEC 5.2, 5.5,
 //! 16.9): the confirmed finish of a review — the flow lives in
 //! [`crate::tui::finish`], this shell opens its summary and applies it on
 //! the second `Enter` — and the confirmed restoration of one document,
 //! which the History view previews first and restores on its second
 //! `Enter` through [`crate::tui::history`]. Both reload the read-only
-//! state afterwards. Quit never commits: unapplied selections are
-//! discarded only after one clear notice.
+//! state afterwards. Quit flushes local progress and never commits choices;
+//! save failure requires explicit abandonment of newer in-memory intent.
 //!
 //! The repository moves around the pinned comparison while the surface
 //! stays open, so [`crate::tui::refresh`] observes it: the worker's
@@ -33,10 +33,12 @@
 //! offset, never from a rendered row number (SPEC 11.2) — and so does one
 //! refresh, because the anchor is the position, not a row count.
 
+use crate::tui::session::{self, Anchor, Navigation, Record};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -117,6 +119,7 @@ pub enum Focus {
     Reading,
     /// The action menu, while one stands.
     Actions,
+    Reference,
 }
 
 impl Focus {
@@ -126,6 +129,7 @@ impl Focus {
             Focus::Documents => "document list",
             Focus::Reading => "reading",
             Focus::Actions => "action menu",
+            Focus::Reference => "reference · read-only",
         }
     }
 }
@@ -136,6 +140,11 @@ impl Focus {
 /// there, not commands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Overlay {
+    SavedReviews {
+        selection: usize,
+        inspect: bool,
+        confirm: bool,
+    },
     /// The action menu over the reading column; the number is the
     /// selected entry.
     Menu {
@@ -171,7 +180,8 @@ impl Overlay {
     fn is_text_entry(&self) -> bool {
         matches!(
             self,
-            Overlay::Picker { .. }
+            Overlay::Menu { .. }
+                | Overlay::Picker { .. }
                 | Overlay::Search { .. }
                 | Overlay::WorkspaceSearch
                 | Overlay::Note { .. }
@@ -418,6 +428,8 @@ pub struct TuiOptions {
     pub path: Option<String>,
     /// The initial view.
     pub view: View,
+    /// Whether --view was explicitly supplied, including --view read.
+    pub explicit_view: bool,
     /// How the surface may decorate its text (SPEC 11.4).
     pub color: ColorMode,
     /// Whether the surface redraws only when its frame changed (SPEC
@@ -483,6 +495,12 @@ pub struct Shell<'a> {
     overlay: Option<Overlay>,
     workspace_search: WorkspaceSearch,
     search_worker: Option<SearchWorker>,
+    palette: super::palette::Palette,
+    palette_worker: Option<super::palette::Worker>,
+    menu_origin: Focus,
+    reduced_updates: bool,
+    help_offset: usize,
+    saved_offset: usize,
     /// One requested editor handoff the event loop has not run yet (SPEC
     /// 11.3 `e`, 12.5).
     pending_editor: Option<EditorHandoff>,
@@ -507,9 +525,662 @@ pub struct Shell<'a> {
     /// Whether one quit warning about unapplied selections stands (SPEC 5.2).
     quit_warning: bool,
     quit: bool,
+    session_store: Result<session::Store, String>,
+    saved_reviews: Vec<session::Entry>,
+    saved_omitted: bool,
+    saved_pending: bool,
+    session_error: Option<String>,
+    writer: Option<session::Writer>,
+    draft: Option<Record>,
+    decision_pending: Option<(Instant, Instant)>,
+    navigation_pending: bool,
+    last_save: Instant,
+    explicit_path: bool,
+    explicit_view: bool,
+    repository_identity: String,
+    adoption_identity: String,
+    anchors: Vec<Anchor>,
+    reference: Option<super::reference::Reference>,
+    terminal_columns: u16,
 }
 
 impl<'a> Shell<'a> {
+    pub fn reference(&self) -> Option<&super::reference::Reference> {
+        self.reference.as_ref()
+    }
+    pub fn reference_visible(&self) -> bool {
+        self.reference
+            .as_ref()
+            .is_some_and(|r| r.descriptor.visible)
+            && self.finish.is_none()
+            && !self.history_preview_stands()
+    }
+    pub fn reference_only(&self) -> bool {
+        self.reference_visible() && self.terminal_columns < 140 && self.focus == Focus::Reference
+    }
+    pub fn frame_layout(&self, area: ratatui::layout::Rect) -> layout::FrameLayout {
+        let presented = self.reference_visible()
+            && (area.width >= 140
+                || self.focus == Focus::Reference
+                || (self.focus == Focus::Actions && self.menu_origin == Focus::Reference));
+        let mut frame = layout::frame_layout_with_reference(area, !self.sidebar_hidden, presented);
+        let progress = self.progress_rows(area.width);
+        if progress > 0 {
+            frame.reading.y = frame.reading.y.saturating_add(progress);
+            frame.reading.height = frame.reading.height.saturating_sub(progress);
+            if let Some(rect) = &mut frame.navigator {
+                rect.y = rect.y.saturating_add(progress);
+                rect.height = rect.height.saturating_sub(progress);
+            }
+            if let Some(rect) = &mut frame.reference {
+                rect.y = rect.y.saturating_add(progress);
+                rect.height = rect.height.saturating_sub(progress);
+            }
+        }
+        frame
+    }
+    fn back_to_review(&mut self) {
+        self.focus = Focus::Reading;
+        if self.terminal_columns < 140
+            && let Some(r) = &mut self.reference
+        {
+            r.descriptor.visible = false;
+        }
+        self.notice = Some("Back to review; reference retained".into());
+    }
+    fn pin_document(&mut self) {
+        let Some(d) = self.document.as_ref() else {
+            return;
+        };
+        if self.view != View::Read || !self.fresh_listed(&d.path) {
+            self.notice = Some("Display a safe listed document in Read to pin it".into());
+            return;
+        }
+        let line = self.anchor.as_ref().map_or(1, |a| a.line);
+        let result = if d.saved == SavedState::WorkingFileGone {
+            super::reference::Reference::historical(
+                self.operations,
+                &d.path,
+                d.candidate.as_deref().unwrap_or("HEAD"),
+                line,
+            )
+        } else {
+            super::reference::Reference::snapshot(
+                self.operations,
+                &d.path,
+                d.text.clone(),
+                d.saved == SavedState::UnsavedDraft,
+                d.truncated,
+                line,
+                self.reading_source,
+            )
+        };
+        self.replace_reference(result);
+    }
+    fn pin_version(&mut self) {
+        let Some(row) = self.history.as_ref().and_then(|h| h.selected()) else {
+            return;
+        };
+        let Some(d) = &self.document else {
+            return;
+        };
+        if !self.fresh_listed(&d.path) {
+            self.notice = Some("Reference is outside the current scope".into());
+            return;
+        }
+        let result =
+            super::reference::Reference::historical(self.operations, &d.path, &row.commit, 1);
+        self.replace_reference(result);
+    }
+    fn replace_reference(&mut self, result: Result<super::reference::Reference, String>) {
+        match result {
+            Ok(r) => {
+                let visible = r.descriptor.visible;
+                self.reference = Some(r);
+                if self.terminal_columns < 140 && visible {
+                    self.focus = Focus::Reference;
+                } else if !visible && self.focus == Focus::Reference {
+                    self.focus = Focus::Reading;
+                }
+                self.notice = Some("Reference pinned · read-only".into());
+            }
+            Err(e) => self.notice = Some(e),
+        }
+    }
+    fn refresh_reference(&mut self) {
+        let Some(r) = &self.reference else {
+            return;
+        };
+        let d = r.descriptor.clone();
+        if !self.fresh_listed(&d.path) {
+            self.notice = Some(
+                "Reference source unavailable or outside current scope; snapshot retained".into(),
+            );
+            return;
+        }
+        let result = if let Some(oid) = &d.revision {
+            super::reference::Reference::historical(self.operations, &d.path, oid, d.line)
+        } else {
+            super::reference::Reference::working(
+                self.operations,
+                &self.root,
+                &d.path,
+                d.line,
+                self.workspace.uncaptured_paths.contains(&d.path),
+            )
+        };
+        self.replace_reference(result.map(|mut r| {
+            r.descriptor.source = d.source;
+            r.descriptor.drift = d.drift;
+            r.descriptor.visible = d.visible;
+            r
+        }));
+    }
+
+    fn identity(&self) -> Option<session::Identity> {
+        let c = self.changes.as_ref()?;
+        Some(session::Identity {
+            repository: self.repository_identity.clone(),
+            branch: c.branch_ref().into(),
+            scope: c.scope_id().into(),
+            adoption: self.adoption_identity.clone(),
+            baseline: c.baseline_oid().into(),
+            candidate: c.candidate_oid().into(),
+            review: c.review_id().into(),
+        })
+    }
+
+    fn navigation(&self) -> Navigation {
+        let mut anchors = self.anchors.clone();
+        if let Some(a) = self.current_anchor() {
+            anchors.retain(|p| !(p.path == a.path && p.view == "Read"));
+            anchors.push(Anchor {
+                path: a.path.clone(),
+                view: "Read".into(),
+                line: a.line,
+                drift: self.drift,
+            });
+        }
+        if anchors.len() > 256 {
+            anchors.drain(..anchors.len() - 256);
+        }
+        Navigation {
+            change_position: self.changes.as_ref().and_then(|c| c.source_position()),
+            reading_source: self.reading_source,
+            view: self.view.label().into(),
+            path: self.document.as_ref().map(|d| d.path.clone()),
+            selected: self
+                .changes
+                .as_ref()
+                .and_then(|c| c.selected_group())
+                .map(|g| g.change_id.clone()),
+            source: self.changes.as_ref().is_some_and(|c| c.source_view()),
+            anchors,
+            history_commit: self
+                .history
+                .as_ref()
+                .and_then(|h| h.selected())
+                .map(|r| r.commit.clone()),
+        }
+    }
+
+    fn list_saved_reviews(&mut self) {
+        // A folder without Git has no session directory yet; first use stays quiet.
+        if self.session_store.is_err() && !self.workspace.adopted {
+            return;
+        }
+        match self
+            .session_store
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|s| s.list())
+        {
+            Ok((entries, omitted)) => {
+                self.saved_reviews = entries;
+                self.saved_omitted = omitted;
+                // Receipt lookup is a dry run of the exact prepared plan. Never retry application.
+                for entry in &mut self.saved_reviews {
+                    if let Ok(record) = &mut entry.record
+                        && let Some(attempt) = &record.attempt
+                    {
+                        let proof = self.operations.validate_review(&app::ReviewRequest {
+                            scope: None,
+                            plan: attempt.plan.clone(),
+                            dry_run: true,
+                        });
+                        if let Some(receipt) =
+                            proof.data.as_ref().and_then(|d| d.existing_receipt.clone())
+                        {
+                            entry.completed = Some(receipt);
+                        }
+                    }
+                }
+            }
+            Err(error) => self.session_error = Some(error),
+        }
+    }
+
+    pub fn saved_offset(&self) -> usize {
+        self.saved_offset
+    }
+    pub fn saved_reviews(&self) -> &[session::Entry] {
+        &self.saved_reviews
+    }
+    pub fn saved_reviews_omitted(&self) -> bool {
+        self.saved_omitted
+    }
+    pub fn saved_compatibility(&self, record: &Record) -> String {
+        if self.identity().as_ref() != Some(&record.identity)
+            || self.workspace.head.as_deref() != Some(record.identity.candidate.as_str())
+            || self.workspace.scope_id != record.identity.scope
+            || self.workspace.branch.as_deref()
+                != record.identity.branch.strip_prefix("refs/heads/")
+        {
+            "Stale saved review".into()
+        } else if let Some(why) = self.changes.as_ref().and_then(|c| c.refusal()) {
+            format!("Compatible for inspection · {why}")
+        } else {
+            "Compatible".into()
+        }
+    }
+    pub fn progress_rows(&self, width: u16) -> u16 {
+        self.progress_label().map_or(0, |label| {
+            let width = width.max(1) as usize;
+            unicode_width::UnicodeWidthStr::width(crate::cli::display_escape(&label).as_str())
+                .div_ceil(width)
+                .clamp(1, 3) as u16
+        })
+    }
+
+    pub fn progress_label(&self) -> Option<String> {
+        if self.draft.is_some() {
+            if let Some(e) = &self.session_error {
+                Some(format!("Progress not saved · {e}"))
+            } else if self.decision_pending.is_some() || self.navigation_pending {
+                Some("Review progress saving locally · not applied".into())
+            } else {
+                Some("Review progress saved locally · not applied".into())
+            }
+        } else if let Some(entry) = self.saved_reviews.first() {
+            let detail = match &entry.record {
+                Ok(r) => format!(
+                    " · {} C {} · updated {} UTC ms · {} keep/{} restore · {}",
+                    r.identity.branch.trim_start_matches("refs/heads/"),
+                    render::short(&r.identity.candidate),
+                    r.updated_ms,
+                    r.decisions
+                        .iter()
+                        .filter(|c| c.decision == Decision::Keep)
+                        .count(),
+                    r.decisions
+                        .iter()
+                        .filter(|c| c.decision == Decision::Restore)
+                        .count(),
+                    entry
+                        .completed
+                        .as_ref()
+                        .map_or_else(|| self.saved_compatibility(r), |_| "Completed".into())
+                ),
+                Err(error) => format!(" · {error}"),
+            };
+            Some(format!(
+                "{} saved review{} · : Resume saved review{detail}{}",
+                self.saved_reviews.len(),
+                if self.saved_reviews.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                if self.saved_omitted {
+                    " · more records omitted"
+                } else {
+                    ""
+                }
+            ))
+        } else if self.saved_omitted {
+            Some("Saved review enumeration incomplete · additional records omitted".into())
+        } else {
+            self.session_error
+                .as_ref()
+                .map(|e| format!("Saved reviews unavailable · {e}"))
+        }
+    }
+
+    fn update_progress(&mut self) {
+        let Some(changes) = &self.changes else {
+            return;
+        };
+        if self.draft.is_none() && changes.proposed_count() == 0 {
+            return;
+        }
+        let choices = changes.saved_choices();
+        let visited = changes.visited_ids();
+        let navigation = self.navigation();
+        let now = Instant::now();
+        let reference = self.reference.as_ref().map(|r| r.descriptor.clone());
+        if self.draft.is_none() {
+            let Some(identity) = self.identity() else {
+                return;
+            };
+            let owner = self
+                .session_store
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|s| s.create());
+            let id = owner
+                .as_ref()
+                .map(|o| o.id.clone())
+                .unwrap_or_else(|_| format!("memory-{}", session::now_ms()));
+            match owner.and_then(session::Writer::spawn) {
+                Ok(writer) => self.writer = Some(writer),
+                Err(error) => self.session_error = Some(error),
+            }
+            self.draft = Some(Record {
+                schema_version: 1,
+                id,
+                updated_ms: session::now_ms(),
+                generation: 0,
+                identity,
+                decisions: vec![],
+                visited: vec![],
+                navigation: Navigation::default(),
+                attempt: None,
+                reference: None,
+            });
+        }
+        let draft = self.draft.as_mut().unwrap();
+        let changed_choices = draft.decisions != choices || draft.visited != visited;
+        let changed_navigation = draft.navigation != navigation || draft.reference != reference;
+        if changed_choices || changed_navigation {
+            draft.decisions = choices;
+            draft.visited = visited;
+            draft.navigation = navigation;
+            draft.reference = reference;
+            draft.generation += 1;
+            draft.updated_ms = session::now_ms();
+            if changed_choices {
+                let first = self.decision_pending.map_or(now, |(first, _)| first);
+                self.decision_pending = Some((first, now));
+            }
+            if changed_navigation {
+                self.navigation_pending = true;
+            }
+        }
+    }
+
+    /// Called by the event loop even in reduced-update mode.
+    pub fn workspace_work_pending(&self) -> bool {
+        self.decision_pending.is_some()
+            || self.navigation_pending
+            || self.palette.pending.is_some()
+            || (!self.reduced_updates && self.palette.edited.is_some())
+    }
+
+    pub fn poll_progress(&mut self) {
+        let now = Instant::now();
+        if let Some(writer) = &self.writer {
+            if let Some((generation, result)) = writer.completion()
+                && self
+                    .draft
+                    .as_ref()
+                    .is_some_and(|r| r.generation == generation)
+            {
+                self.decision_pending = None;
+                self.navigation_pending = false;
+                self.session_error = result.err();
+                self.redraw = true;
+            }
+            let due = self.decision_pending.is_some_and(|(first, last)| {
+                now.duration_since(last) >= Duration::from_millis(250)
+                    || now.duration_since(first) >= Duration::from_secs(1)
+            }) || (self.navigation_pending
+                && self.decision_pending.is_none()
+                && now.duration_since(self.last_save) >= Duration::from_secs(1));
+            if due
+                && now.duration_since(self.last_save) >= Duration::from_millis(250)
+                && let Some(record) = &self.draft
+            {
+                writer.submit(record.clone());
+                self.last_save = now;
+            }
+        }
+    }
+
+    pub fn flush_progress(&mut self) -> Result<(), String> {
+        self.update_progress();
+        if self.writer.is_none()
+            && let Some(draft) = &mut self.draft
+        {
+            let result = self
+                .session_store
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|s| s.create())
+                .and_then(session::Writer::spawn);
+            match result {
+                Ok(writer) => {
+                    draft.id = writer.id().into();
+                    self.writer = Some(writer);
+                }
+                Err(error) => self.session_error = Some(error),
+            }
+        }
+        let result = match (&self.writer, &self.draft) {
+            (Some(writer), Some(record)) => writer.flush(record.clone()),
+            (None, Some(_)) => Err(self
+                .session_error
+                .clone()
+                .unwrap_or_else(|| "Local review storage unavailable".into())),
+            _ => Ok(()),
+        };
+        match &result {
+            Ok(()) => {
+                self.last_save = Instant::now();
+                self.decision_pending = None;
+                self.navigation_pending = false;
+                self.session_error = None;
+            }
+            Err(e) => self.session_error = Some(e.clone()),
+        }
+        result
+    }
+
+    fn retire_draft(&mut self) -> bool {
+        if let Err(error) = self.flush_progress() {
+            self.notice = Some(format!(
+                "Progress not saved: {error}; newer choices retained"
+            ));
+            return false;
+        }
+        self.writer.take();
+        self.draft = None;
+        self.decision_pending = None;
+        self.navigation_pending = false;
+        self.list_saved_reviews();
+        true
+    }
+
+    fn discard_saved_review(&mut self, selection: usize) {
+        let Some(id) = self
+            .saved_reviews
+            .get(selection)
+            .map(|entry| entry.id.clone())
+        else {
+            return;
+        };
+        let own = self.writer.as_ref().is_some_and(|w| w.id() == id);
+        let result = if own {
+            self.writer.take().unwrap().remove()
+        } else {
+            self.session_store
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|store| store.acquire(&id))
+                .and_then(|owner| owner.remove())
+        };
+        match result {
+            Ok(()) => {
+                if own {
+                    self.draft = None;
+                    self.decision_pending = None;
+                    self.navigation_pending = false;
+                    self.load_background();
+                }
+                self.list_saved_reviews();
+                self.close_overlay("Saved review discarded; no Git state changed");
+            }
+            Err(e) => self.notice = Some(e),
+        }
+    }
+
+    fn resume_review(&mut self, selection: usize) {
+        if self.draft.is_some() {
+            self.notice =
+                Some("Start a separate draft or finish this review before resuming another".into());
+            return;
+        }
+        let result =
+            (|| -> Result<(Record, session::Owner, ChangesView, WorkspaceInspection), String> {
+                let entry = self
+                    .saved_reviews
+                    .get(selection)
+                    .ok_or("No saved review selected")?;
+                if let Some(receipt) = &entry.completed {
+                    return Err(format!(
+                        "Completed review: matching Git receipt {receipt}; inspect or discard its local record"
+                    ));
+                }
+                entry.record.as_ref().map_err(Clone::clone)?;
+                let store = self.session_store.as_ref().map_err(Clone::clone)?;
+                let owner = store.acquire(&entry.id)?;
+                let record = store.read(&entry.id)?;
+                // Load all details and fresh guards, even when a cached comparison matches.
+                let changes = ChangesView::load(self.operations).ok_or("Comparison unavailable")?;
+                let inspection = self
+                    .operations
+                    .inspect_workspace(&InspectRequest::default())
+                    .data
+                    .ok_or("Workspace inspection unavailable")?;
+                if inspection.head.as_deref() != Some(changes.candidate_oid())
+                    || inspection.scope.digest != changes.scope_id()
+                    || inspection.branch.as_deref() != Some(changes.branch_ref())
+                {
+                    return Err("Stale saved review: the workspace changed while loading".into());
+                }
+                let adoption = self
+                    .operations
+                    .review_start_marker(changes.candidate_oid(), changes.scope_id())
+                    .map_err(|e| e.message)?;
+                let identity = session::Identity {
+                    repository: self.repository_identity.clone(),
+                    branch: changes.branch_ref().into(),
+                    scope: changes.scope_id().into(),
+                    adoption,
+                    baseline: changes.baseline_oid().into(),
+                    candidate: changes.candidate_oid().into(),
+                    review: changes.review_id().into(),
+                };
+                if identity != record.identity {
+                    return Err(
+                        "Stale saved review; inspect saved choices or start a fresh review with n"
+                            .into(),
+                    );
+                }
+                Ok((record, owner, changes, inspection))
+            })();
+        match result {
+            Err(error) => self.notice = Some(error),
+            Ok((record, owner, mut changes, inspection)) => {
+                if let Err(error) = changes.load_choices(&record) {
+                    self.notice = Some(error);
+                    return;
+                }
+                let writer = match session::Writer::spawn(owner) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        self.notice = Some(e);
+                        return;
+                    }
+                };
+                let mut navigation_notice = String::new();
+                if record
+                    .navigation
+                    .selected
+                    .as_ref()
+                    .is_some_and(|id| !changes.groups().iter().any(|g| &g.change_id == id))
+                {
+                    navigation_notice.push_str(" Selected change missing; first group used.");
+                }
+                self.absorb_inspection(inspection);
+                self.pinned = Some(PinnedObservation::of(&self.workspace));
+                self.changes = Some(changes);
+                self.finish = None;
+                self.writer = Some(writer);
+                if !self.explicit_view {
+                    self.view = match record.navigation.view.as_str() {
+                        "Changes" => View::Changes,
+                        "History" => View::History,
+                        _ => View::Read,
+                    };
+                }
+                if !self.explicit_path
+                    && let Some(path) = &record.navigation.path
+                {
+                    if let Some(index) = self.documents.iter().position(|p| p == path) {
+                        self.selection = index;
+                        self.load_document(path);
+                    } else {
+                        navigation_notice
+                            .push_str(" Saved document missing; first listed document retained.");
+                    }
+                }
+                if !self.explicit_view {
+                    self.reading_source = record.navigation.reading_source;
+                }
+                self.anchors = record.navigation.anchors.clone();
+                if !self.explicit_path
+                    && let Some(a) = self.anchors.iter().find(|a| {
+                        a.view == "Read" && self.document.as_ref().is_some_and(|d| d.path == a.path)
+                    })
+                {
+                    let line = a.line.clamp(1, self.source_lines.len().max(1) as u32);
+                    if line != a.line {
+                        navigation_notice
+                            .push_str(" Saved source position moved; nearest valid line used.");
+                    }
+                    self.anchor = Some(SourceAnchor {
+                        path: a.path.clone(),
+                        line,
+                    });
+                    self.drift = a.drift;
+                }
+                if let Some(position) = &record.navigation.change_position
+                    && let Some(c) = &mut self.changes
+                {
+                    c.prepare(self.display_width.max(1), self.viewport_rows);
+                    c.restore_position(position);
+                }
+                if let Some(commit) = &record.navigation.history_commit
+                    && let Some(history) = &mut self.history
+                {
+                    history.select_commit(commit);
+                }
+                self.reference = record.reference.clone().map(|d| {
+                    let listed = self.fresh_listed(&d.path);
+                    super::reference::Reference::resume(self.operations, &self.root, d, listed)
+                });
+                self.draft = Some(record);
+                self.overlay = None;
+                self.focus = Focus::Reading;
+                self.notice = Some(format!(
+                    "Saved choices resumed · not applied; open a fresh finish summary to confirm{navigation_notice}"
+                ));
+                self.session_error = None;
+                self.observe_arrivals();
+            }
+        }
+    }
+
     /// Loads the shell for the folder at `root` through the shared
     /// operations.
     ///
@@ -577,6 +1248,12 @@ impl<'a> Shell<'a> {
             overlay: None,
             workspace_search: WorkspaceSearch::default(),
             search_worker: None,
+            palette: super::palette::Palette::default(),
+            palette_worker: None,
+            menu_origin: Focus::Reading,
+            reduced_updates: options.reduced_updates,
+            help_offset: 0,
+            saved_offset: 0,
             pending_editor: None,
             editor: None,
             capture_after_edit: false,
@@ -586,6 +1263,30 @@ impl<'a> Shell<'a> {
             notice: None,
             quit_warning: false,
             quit: false,
+            session_store: session::Store::from_git(operations.git()),
+            saved_reviews: Vec::new(),
+            saved_omitted: false,
+            saved_pending: false,
+            session_error: None,
+            writer: None,
+            draft: None,
+            decision_pending: None,
+            navigation_pending: false,
+            last_save: Instant::now() - Duration::from_secs(1),
+            explicit_path: options.path.is_some(),
+            explicit_view: options.explicit_view || options.view != View::Read,
+            repository_identity: operations
+                .git()
+                .toplevel()
+                .unwrap_or_else(|_| root.to_path_buf())
+                .canonicalize()
+                .unwrap_or_else(|_| root.to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
+            adoption_identity: String::new(),
+            anchors: Vec::new(),
+            reference: None,
+            terminal_columns: 120,
         };
         let settings = app::read_local_settings(shell.operations.git()).ok();
         shell.editor = settings
@@ -610,6 +1311,11 @@ impl<'a> Shell<'a> {
             None => shell.load_unadopted(&folder),
         }
         shell.select_initial(options.path.as_deref());
+        if load_background_now {
+            shell.list_saved_reviews();
+        } else {
+            shell.saved_pending = true;
+        }
         shell
     }
 
@@ -664,12 +1370,30 @@ impl<'a> Shell<'a> {
     /// The launch path calls this after the first drawn frame; every
     /// rebuild calls it inside [`Shell::load_adopted`].
     fn load_background(&mut self) {
+        if self.draft.is_some() && !self.retire_draft() {
+            return;
+        }
         let previous_notes = self.changes.as_ref().and_then(|changes| {
             self.operations
                 .list_notes(Some(changes.candidate_oid()))
                 .data
         });
         self.changes = ChangesView::load(self.operations);
+        self.adoption_identity.clear();
+        if let Some(changes) = &mut self.changes {
+            match self
+                .operations
+                .review_start_marker(changes.candidate_oid(), changes.scope_id())
+            {
+                Ok(start) => self.adoption_identity = start,
+                Err(error) => {
+                    changes.observe_arrival(&format!(
+                        "Review identity unavailable: {}",
+                        error.message
+                    ));
+                }
+            }
+        }
         if let (Some(changes), Some(notes)) = (&mut self.changes, previous_notes) {
             changes.retire_notes(notes);
         }
@@ -693,8 +1417,14 @@ impl<'a> Shell<'a> {
     /// frame. Returns whether anything loaded, so the loop draws again
     /// before it waits for input.
     pub fn load_pending_background(&mut self) -> bool {
+        let listed = self.saved_pending;
+        if self.saved_pending {
+            self.saved_pending = false;
+            self.list_saved_reviews();
+            self.redraw = true;
+        }
         if !self.background_pending {
-            return false;
+            return listed;
         }
         self.background_pending = false;
         self.load_background();
@@ -708,6 +1438,18 @@ impl<'a> Shell<'a> {
     fn regenerate(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.invalidate_workspace_search();
+        self.invalidate_palette();
+    }
+
+    fn invalidate_palette(&mut self) {
+        self.palette.metadata = None;
+        if let Some(w) = &self.palette_worker {
+            w.cancel();
+        }
+        self.palette.pending = None;
+        if matches!(self.overlay, Some(Overlay::Menu { .. })) {
+            self.palette.edited = Some(Instant::now());
+        }
     }
 
     /// Rereads the local settings (SPEC 8.2): the adopted scope the next
@@ -866,6 +1608,8 @@ impl<'a> Shell<'a> {
 
     /// Stores one loaded document and resets the derived display state.
     fn absorb_document(&mut self, document: DocumentView) {
+        self.anchors = self.navigation().anchors;
+        self.invalidate_palette();
         self.headings = wrap::document_headings(&document.text);
         self.source_lines = document.text.lines().map(str::to_string).collect();
         self.display = Vec::new();
@@ -882,11 +1626,14 @@ impl<'a> Shell<'a> {
     /// afterwards. A changed width restores the reading position from the
     /// anchor plus the best-effort drift (SPEC 11.2).
     pub fn prepare_layout(&mut self, columns: u16, rows: u16) {
+        self.terminal_columns = columns;
         self.layout = layout::classify(columns, rows);
-        let geometry = layout::frame_layout_with_navigator(
-            ratatui::layout::Rect::new(0, 0, columns, rows),
-            !self.sidebar_hidden,
-        );
+        let geometry = self.frame_layout(ratatui::layout::Rect::new(0, 0, columns, rows));
+        if self.reference_visible()
+            && let Some(reference) = &mut self.reference
+        {
+            reference.prepare(geometry.reference.unwrap_or(geometry.reading).width);
+        }
         if geometry.navigator.is_none() && self.focus == Focus::Documents {
             self.focus = Focus::Reading;
         }
@@ -992,9 +1739,21 @@ impl<'a> Shell<'a> {
             // trigger a sequence of global actions; outside text entry it
             // is ignored with one concise notice (SPEC 11.3).
             Event::Paste(text) => self.handle_paste(text),
+            Event::Mouse(mouse)
+                if self.overlay.is_none()
+                    && self.finish.is_none()
+                    && !self.history_preview_stands() =>
+            {
+                match mouse.kind {
+                    crossterm::event::MouseEventKind::ScrollUp => self.step(-3),
+                    crossterm::event::MouseEventKind::ScrollDown => self.step(3),
+                    _ => {}
+                }
+            }
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
             _ => {}
         }
+        self.update_progress();
         if self.fingerprint() != before {
             self.redraw = true;
         }
@@ -1005,6 +1764,15 @@ impl<'a> Shell<'a> {
         let text_entry = self.overlay.as_ref().is_some_and(Overlay::is_text_entry);
         if !text_entry {
             self.notice = Some("pasted text is ignored outside text entry".to_string());
+            return;
+        }
+        if matches!(self.overlay, Some(Overlay::Menu { .. })) {
+            let remaining =
+                super::palette::QUERY_LIMIT.saturating_sub(self.palette.query.chars().count());
+            self.palette
+                .query
+                .extend(pasted_text.chars().take(remaining));
+            self.edit_palette();
             return;
         }
         let pasted: String = pasted_text.chars().take(FIELD_CHARS).collect();
@@ -1075,6 +1843,62 @@ impl<'a> Shell<'a> {
             return;
         };
         match overlay {
+            Overlay::SavedReviews {
+                selection,
+                inspect,
+                confirm,
+            } => match (key.code, control) {
+                (KeyCode::PageDown, false) => {
+                    self.saved_offset = self
+                        .saved_offset
+                        .saturating_add(self.viewport_rows.saturating_sub(3).max(1))
+                        .min(200_000)
+                }
+                (KeyCode::PageUp, false) => {
+                    self.saved_offset = self
+                        .saved_offset
+                        .saturating_sub(self.viewport_rows.saturating_sub(3).max(1))
+                }
+                (KeyCode::Char('c'), true) => self.request_quit(quit_warning_stood),
+                (KeyCode::Esc, false) => self.close_overlay("Saved reviews left unchanged"),
+                (KeyCode::Down, false) => {
+                    self.overlay = Some(Overlay::SavedReviews {
+                        selection: (selection + 1).min(self.saved_reviews.len().saturating_sub(1)),
+                        inspect: false,
+                        confirm: false,
+                    })
+                }
+                (KeyCode::Up, false) => {
+                    self.overlay = Some(Overlay::SavedReviews {
+                        selection: selection.saturating_sub(1),
+                        inspect: false,
+                        confirm: false,
+                    })
+                }
+                (KeyCode::Char('i'), false) => {
+                    self.overlay = Some(Overlay::SavedReviews {
+                        selection,
+                        inspect: !inspect,
+                        confirm: false,
+                    })
+                }
+                (KeyCode::Char('d'), false) => {
+                    self.overlay = Some(Overlay::SavedReviews {
+                        selection,
+                        inspect: true,
+                        confirm: true,
+                    })
+                }
+                (KeyCode::Char('n'), false) => {
+                    self.refresh();
+                    if self.draft.is_none() {
+                        self.close_overlay("Fresh review; no saved choices migrated");
+                    }
+                }
+                (KeyCode::Enter, false) if confirm => self.discard_saved_review(selection),
+                (KeyCode::Enter, false) => self.resume_review(selection),
+                _ => {}
+            },
             Overlay::WorkspaceSearch => match (key.code, control) {
                 (KeyCode::Esc, false) => {
                     self.invalidate_workspace_search();
@@ -1121,43 +1945,64 @@ impl<'a> Shell<'a> {
                 }
             },
             Overlay::Menu { selection } => {
-                let count = self.menu().len().max(1);
                 match (key.code, control) {
-                    (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
-                        self.overlay = Some(Overlay::Menu { selection });
-                        self.request_quit(quit_warning_stood);
+                    (KeyCode::Char('c'), true) => self.request_quit(quit_warning_stood),
+                    (KeyCode::Esc, false) => {
+                        self.close_overlay("Palette closed; nothing ran");
                     }
-                    (KeyCode::Esc, false) | (KeyCode::Char(':'), false) => {
-                        self.close_overlay("the action menu closed; nothing ran");
+                    (KeyCode::Up, false) | (KeyCode::PageUp, false) => {
+                        let step = if key.code == KeyCode::PageUp {
+                            self.viewport_rows.saturating_sub(3).max(1)
+                        } else {
+                            1
+                        };
+                        self.overlay = Some(Overlay::Menu {
+                            selection: selection.saturating_sub(step),
+                        });
                     }
-                    (KeyCode::Tab, _) => {
-                        self.overlay = Some(Overlay::Menu { selection });
-                        self.cycle_focus(true);
+                    (KeyCode::Down, false) | (KeyCode::PageDown, false) => {
+                        let step = if key.code == KeyCode::PageDown {
+                            self.viewport_rows.saturating_sub(3).max(1)
+                        } else {
+                            1
+                        };
+                        self.overlay = Some(Overlay::Menu {
+                            selection: (selection + step)
+                                .min(self.palette.hits.len().saturating_sub(1)),
+                        });
                     }
-                    (KeyCode::BackTab, _) => {
-                        self.overlay = Some(Overlay::Menu { selection });
-                        self.cycle_focus(false);
+                    (KeyCode::Enter, false) => self.submit_palette(selection),
+                    (KeyCode::Backspace, false) => {
+                        self.palette.query.pop();
+                        self.edit_palette();
                     }
-                    (KeyCode::Char('j'), false) | (KeyCode::Down, false) => {
-                        let selection = (selection + 1).min(count - 1);
-                        self.overlay = Some(Overlay::Menu { selection });
+                    (KeyCode::Char(c), false)
+                        if !c.is_control()
+                            && self.palette.query.chars().count() < super::palette::QUERY_LIMIT =>
+                    {
+                        self.palette.query.push(c);
+                        self.edit_palette();
                     }
-                    (KeyCode::Char('k'), false) | (KeyCode::Up, false) => {
-                        let selection = selection.saturating_sub(1);
-                        self.overlay = Some(Overlay::Menu { selection });
-                    }
-                    (KeyCode::Char('?'), false) => {
-                        self.overlay = Some(Overlay::Help);
-                    }
-                    (KeyCode::Enter, false) => self.activate_menu(selection),
-                    _ => {
-                        self.overlay = Some(Overlay::Menu { selection });
-                        self.notice =
-                            Some("j/k choose · Enter runs · Esc closes the menu".to_string());
-                    }
+                    // Modal focus is contained; Tab never exposes background decision keys.
+                    _ => {}
                 }
             }
             Overlay::Help => match (key.code, control) {
+                (KeyCode::Down, false) | (KeyCode::Char('j'), false) => {
+                    self.help_offset = (self.help_offset + 1).min(80)
+                }
+                (KeyCode::Up, false) | (KeyCode::Char('k'), false) => {
+                    self.help_offset = self.help_offset.saturating_sub(1)
+                }
+                (KeyCode::PageDown, false) => {
+                    self.help_offset =
+                        (self.help_offset + self.viewport_rows.saturating_sub(2)).min(80)
+                }
+                (KeyCode::PageUp, false) => {
+                    self.help_offset = self
+                        .help_offset
+                        .saturating_sub(self.viewport_rows.saturating_sub(2))
+                }
                 (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
                     self.overlay = Some(Overlay::Help);
                     self.request_quit(quit_warning_stood);
@@ -1290,16 +2135,230 @@ impl<'a> Shell<'a> {
     fn close_overlay(&mut self, said: &str) {
         self.overlay = None;
         if self.focus == Focus::Actions {
-            self.focus = Focus::Reading;
+            self.focus = self.menu_origin;
         }
+        if let Some(worker) = &self.palette_worker {
+            worker.cancel();
+        }
+        self.palette.pending = None;
+        self.palette.edited = None;
         self.notice = Some(said.to_string());
     }
 
     /// Opens the action menu (SPEC 11.3 `:`): every action, its binding,
     /// and the reason a disabled action cannot run.
     fn open_menu(&mut self) {
+        self.menu_origin = self.focus;
+        self.palette.query.clear();
+        self.palette.matched_query.clear();
+        self.palette.choose_reference = false;
+        self.palette.edited = None;
+        self.palette.pending = None;
+        self.palette.hits = super::palette::matching("", super::palette::actions()).0;
         self.overlay = Some(Overlay::Menu { selection: 0 });
         self.focus = Focus::Actions;
+        self.request_palette();
+    }
+
+    pub fn help_offset(&self) -> usize {
+        self.help_offset
+    }
+
+    pub fn palette(&self) -> &super::palette::Palette {
+        &self.palette
+    }
+
+    fn edit_palette(&mut self) {
+        if let Some(worker) = &self.palette_worker {
+            worker.cancel();
+        }
+        self.palette.pending = None;
+        self.palette.edited = Some(Instant::now());
+        self.overlay = Some(Overlay::Menu { selection: 0 });
+    }
+
+    fn request_palette(&mut self) {
+        if self.palette_worker.is_none() {
+            match super::palette::Worker::spawn() {
+                Ok(w) => self.palette_worker = Some(w),
+                Err(e) => {
+                    self.notice = Some(format!("Palette worker unavailable: {e}"));
+                    return;
+                }
+            }
+        }
+        self.palette.pending = Some(self.palette_worker.as_ref().unwrap().request(
+            self.root.clone(),
+            self.documents.clone(),
+            self.palette.query.clone(),
+            self.palette.metadata.clone(),
+            self.palette.choose_reference,
+        ));
+        self.palette.edited = None;
+    }
+
+    pub fn poll_palette(&mut self) {
+        if matches!(self.overlay, Some(Overlay::Menu { .. }))
+            && !self.reduced_updates
+            && self
+                .palette
+                .edited
+                .is_some_and(|t| t.elapsed() >= Duration::from_millis(100))
+        {
+            self.request_palette();
+        }
+        if let Some(reply) = self.palette_worker.as_ref().and_then(|w| w.receive())
+            && matches!(self.overlay, Some(Overlay::Menu { .. }))
+            && self.palette.pending == Some(reply.id)
+            && self.palette.query == reply.query
+        {
+            let selected = if let Some(Overlay::Menu { selection }) = &self.overlay {
+                self.palette
+                    .hits
+                    .get(*selection)
+                    .map(|h| h.entry.id.clone())
+            } else {
+                None
+            };
+            self.palette.metadata = Some(reply.metadata);
+            self.palette.hits = reply.hits;
+            self.palette.additional = reply.additional;
+            self.palette.matched_query = reply.query;
+            self.palette.pending = None;
+            self.palette.edited = None;
+            let selection = selected
+                .and_then(|id| self.palette.hits.iter().position(|h| h.entry.id == id))
+                .unwrap_or(0);
+            self.overlay = Some(Overlay::Menu { selection });
+            self.redraw = true;
+        }
+    }
+
+    fn fresh_listed(&self, path: &str) -> bool {
+        let settings = app::read_local_settings(self.operations.git()).ok();
+        match settings.and_then(|s| s.scope) {
+            Some(scope) => app::resolve_scope(self.operations.git(), &scope.to_scope_input())
+                .is_ok_and(|resolved| document_paths(&resolved).iter().any(|p| p == path)),
+            None => discover_documents(&self.root).iter().any(|p| p == path),
+        }
+    }
+
+    fn submit_palette(&mut self, selection: usize) {
+        if !self.palette.ready()
+            && !(self.palette.query.is_empty()
+                && self.palette.edited.is_none()
+                && !self.palette.choose_reference)
+        {
+            if self.palette.edited.is_some() || self.palette.pending.is_none() {
+                self.request_palette();
+            }
+            self.notice =
+                Some("Matching edited query; press Enter again after results arrive".into());
+            return;
+        }
+        let Some(entry) = self.palette.hits.get(selection).map(|h| h.entry.clone()) else {
+            return;
+        };
+        if let Some(action) = entry.action {
+            if let Some(data) = self
+                .operations
+                .inspect_workspace(&InspectRequest::default())
+                .data
+            {
+                self.absorb_inspection(data);
+                self.observe_arrivals();
+            }
+            let Some(menu) = self.menu().into_iter().find(|m| m.action == action) else {
+                return;
+            };
+            if let Some(reason) = menu.disabled {
+                self.notice = Some(reason);
+                return;
+            }
+            // The action sees its original pane, including reference restrictions.
+            self.overlay = None;
+            self.focus = self.menu_origin;
+            self.activate(action);
+            return;
+        }
+        if !self.fresh_listed(&entry.path) {
+            self.notice = Some(
+                "Document unavailable or outside the current scope; current review retained".into(),
+            );
+            return;
+        }
+        let current = super::search::read_text(&self.root, &entry.path, READ_VIEW_BYTES as usize);
+        if !current
+            .as_ref()
+            .is_ok_and(|(bytes, _)| super::palette::fingerprint(bytes) == entry.fingerprint)
+        {
+            self.palette.metadata = None;
+            self.request_palette();
+            self.notice = Some(
+                "Source changed; refreshing metadata. Reselect the passage before opening".into(),
+            );
+            return;
+        }
+        let Ok((bytes, truncated)) = current else {
+            return;
+        };
+        let Some(text) = super::search::valid_text(&bytes, truncated) else {
+            self.notice =
+                Some("Document is no longer readable text; current review retained".into());
+            return;
+        };
+        if self.palette.choose_reference {
+            match super::reference::Reference::snapshot(
+                self.operations,
+                &entry.path,
+                prepare_display(text),
+                self.workspace.uncaptured_paths.contains(&entry.path),
+                truncated,
+                entry.line,
+                false,
+            ) {
+                Ok(reference) => {
+                    self.reference = Some(reference);
+                    self.overlay = None;
+                    self.focus = self.menu_origin;
+                    if self.terminal_columns < 140 {
+                        self.focus = Focus::Reference;
+                    }
+                    self.notice = Some("Reference pinned · read-only".into());
+                }
+                Err(error) => self.notice = Some(error),
+            }
+            return;
+        }
+        // Open exactly the bounded bytes whose identity was just validated,
+        // rather than rereading a potentially replaced file after validation.
+        let shown = self.show_candidate(&entry.path);
+        let total = bytes.len() as u64;
+        let (mut document, notice) =
+            document_view(&entry.path, &Ok((bytes, total)), shown.as_ref());
+        document.truncated = truncated;
+        if truncated {
+            document.total_bytes = None;
+        }
+        if let Some(notice) = notice {
+            self.notice = Some(notice);
+        }
+        self.absorb_document(document);
+        self.selection = self
+            .documents
+            .iter()
+            .position(|p| p == &entry.path)
+            .unwrap_or(self.selection);
+        self.view = View::Read;
+        self.focus = Focus::Reading;
+        self.anchor = Some(SourceAnchor {
+            path: entry.path,
+            line: entry.line,
+        });
+        self.drift = 0;
+        self.display_width = 0;
+        self.overlay = None;
+        self.notice = Some("Opened Read at the selected source anchor".into());
     }
 
     fn open_note(&mut self) {
@@ -1357,6 +2416,15 @@ impl<'a> Shell<'a> {
             return;
         }
         let needle = typed.to_lowercase();
+        if self.focus == Focus::Reference {
+            let found = self.reference.as_mut().is_some_and(|r| r.search(&needle));
+            self.notice = Some(if found {
+                "Reference search: match".into()
+            } else {
+                "Reference search: no match".into()
+            });
+            return;
+        }
         let found = match self.view {
             View::Read => self.search_reading(&needle),
             View::Changes => self
@@ -1521,6 +2589,54 @@ impl<'a> Shell<'a> {
     /// Answers one key press of the reading column, where every key but
     /// the finish action changes only what the interface shows.
     fn handle_column_key(&mut self, key: &KeyEvent, control: bool, quit_warning_stood: bool) {
+        if self.focus == Focus::Reference {
+            match (key.code, control) {
+                (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
+                    self.request_quit(quit_warning_stood)
+                }
+                (KeyCode::Esc, false) => self.back_to_review(),
+                (KeyCode::Tab, _) => self.cycle_focus(true),
+                (KeyCode::BackTab, _) => self.cycle_focus(false),
+                (KeyCode::Char(':'), false) => self.open_menu(),
+                (KeyCode::Char('?'), false) => self.overlay = Some(Overlay::Help),
+                (KeyCode::Char('s'), false) => {
+                    if let Some(r) = &mut self.reference {
+                        r.toggle_source();
+                    }
+                }
+                (KeyCode::Char('/'), false) => {
+                    self.overlay = Some(Overlay::Search {
+                        query: String::new(),
+                    })
+                }
+                (KeyCode::Char('j'), false) | (KeyCode::Down, false) => self.step(1),
+                (KeyCode::Char('k'), false) | (KeyCode::Up, false) => self.step(-1),
+                (KeyCode::PageDown, false) => self.page(1),
+                (KeyCode::PageUp, false) => self.page(-1),
+                (KeyCode::Char('d'), false) => {
+                    if let Some(r) = &self.reference {
+                        self.notice = Some(format!(
+                            "Reference {} · {} · fingerprint {} · captured {} ms UTC",
+                            r.descriptor.path,
+                            r.descriptor.revision.as_deref().unwrap_or("working"),
+                            r.descriptor.fingerprint,
+                            r.descriptor.captured_ms
+                        ));
+                    }
+                }
+                _ => {
+                    self.notice = Some(
+                        "Return to review to change decisions, add notes, edit, restore, or finish"
+                            .into(),
+                    )
+                }
+            }
+            return;
+        }
+        if key.code == KeyCode::Esc && self.reference_visible() {
+            self.back_to_review();
+            return;
+        }
         match (key.code, control) {
             (KeyCode::Char('f'), true) => self.open_workspace_search(),
             (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
@@ -1631,6 +2747,32 @@ impl<'a> Shell<'a> {
             .iter()
             .map(|&action| {
                 let disabled = match action {
+                    Action::PinDocument => (self.view != View::Read || self.document.is_none())
+                        .then(|| "Display a document in Read to pin it".into()),
+                    Action::PinVersion => (self.view != View::History
+                        || self.history.as_ref().and_then(|h| h.selected()).is_none())
+                    .then(|| "Select a version in History".into()),
+                    Action::ToggleReference
+                    | Action::FocusReference
+                    | Action::ClearReference
+                    | Action::RefreshReference
+                    | Action::BackToReview => self
+                        .reference
+                        .is_none()
+                        .then(|| "No reference is pinned".into()),
+                    Action::ResumeReview => self.saved_reviews.is_empty().then(|| {
+                        if self.saved_omitted {
+                            "No saved reviews loaded; additional records omitted".into()
+                        } else if let Some(error) = &self.session_error {
+                            format!("Saved reviews unavailable: {error}")
+                        } else {
+                            "No saved reviews".into()
+                        }
+                    }),
+                    Action::QuitWithoutSaving => self
+                        .session_error
+                        .is_none()
+                        .then(|| "Progress has no unsaved failure".into()),
                     Action::NextGroup | Action::PreviousGroup | Action::AddNote => {
                         if !in_changes {
                             Some(changes_only.to_string())
@@ -1690,32 +2832,32 @@ impl<'a> Shell<'a> {
                     }
                     _ => None,
                 };
+                let reference_focus = self.focus == Focus::Reference
+                    || (self.focus == Focus::Actions && self.menu_origin == Focus::Reference);
+                let disabled = if reference_focus
+                    && matches!(
+                        action,
+                        Action::NextGroup
+                            | Action::PreviousGroup
+                            | Action::KeepGroup
+                            | Action::RestoreGroup
+                            | Action::UndoDecision
+                            | Action::AddNote
+                            | Action::EditDocument
+                            | Action::FinishReview
+                    ) {
+                    Some(format!(
+                        "Return to review to {}",
+                        action.name().to_lowercase()
+                    ))
+                } else if reference_focus && action == Action::SourceView {
+                    None
+                } else {
+                    disabled
+                };
                 MenuEntry { action, disabled }
             })
             .collect()
-    }
-
-    /// Runs the selected entry of the action menu (SPEC 11.3): a disabled
-    /// entry states its reason and runs nothing; an enabled entry closes
-    /// the menu and runs the same handler its binding reaches.
-    fn activate_menu(&mut self, selection: usize) {
-        let entry = self.menu().get(selection).cloned();
-        match entry {
-            Some(entry) => {
-                if let Some(reason) = &entry.disabled {
-                    self.overlay = Some(Overlay::Menu { selection });
-                    self.notice = Some(reason.clone());
-                    return;
-                }
-                let action = entry.action;
-                self.overlay = None;
-                if self.focus == Focus::Actions {
-                    self.focus = Focus::Reading;
-                }
-                self.activate(action);
-            }
-            None => self.overlay = Some(Overlay::Menu { selection }),
-        }
     }
 
     /// Runs one action, as the menu's `Enter` does (SPEC 11.3). Every
@@ -1723,11 +2865,73 @@ impl<'a> Shell<'a> {
     /// menu and the keys cannot disagree.
     fn activate(&mut self, action: Action) {
         match action {
+            Action::PinDocument => self.pin_document(),
+            Action::PinVersion => self.pin_version(),
+            Action::ChooseReference => {
+                self.open_menu();
+                self.palette.choose_reference = true;
+                self.palette.hits.clear();
+                self.palette.query.clear();
+                self.request_palette();
+            }
+            Action::ToggleReference => {
+                if self.terminal_columns < 140 {
+                    if self.reference_only() {
+                        self.back_to_review();
+                    } else if let Some(r) = &mut self.reference {
+                        r.descriptor.visible = true;
+                        self.focus = Focus::Reference;
+                    }
+                } else if let Some(r) = &mut self.reference {
+                    r.descriptor.visible = !r.descriptor.visible;
+                    self.focus = Focus::Reading;
+                }
+            }
+            Action::FocusReference => {
+                if let Some(r) = &mut self.reference {
+                    r.descriptor.visible = true;
+                    self.focus = Focus::Reference;
+                }
+            }
+            Action::ClearReference => {
+                self.reference = None;
+                self.focus = Focus::Reading;
+            }
+            Action::RefreshReference => self.refresh_reference(),
+            Action::BackToReview => self.back_to_review(),
+            Action::ResumeReview => {
+                self.saved_offset = 0;
+                self.overlay = Some(Overlay::SavedReviews {
+                    selection: 0,
+                    inspect: false,
+                    confirm: false,
+                })
+            }
+            Action::SeparateReview => {
+                if self.retire_draft() {
+                    self.load_background();
+                    self.notice = Some("Separate review; saved choices left intact".into());
+                }
+            }
+            Action::QuitWithoutSaving => {
+                if self.session_error.is_some() {
+                    self.quit = true;
+                }
+            }
             Action::CycleFocus => self.cycle_focus(true),
             Action::ActionMenu => self.open_menu(),
-            Action::ReadView => self.view = View::Read,
-            Action::ChangesView => self.enter_changes(),
-            Action::HistoryView => self.view = View::History,
+            Action::ReadView => {
+                self.view = View::Read;
+                self.focus = Focus::Reading;
+            }
+            Action::ChangesView => {
+                self.focus = Focus::Reading;
+                self.enter_changes();
+            }
+            Action::HistoryView => {
+                self.view = View::History;
+                self.focus = Focus::Reading;
+            }
             // `Move` is `j` and `k` together and `PageMove` is `PgUp` and
             // `PgDn` together; the menu entries state the binding rather
             // than running one step. `Cancel` from the menu is the menu's
@@ -1742,7 +2946,18 @@ impl<'a> Shell<'a> {
             Action::RestoreGroup => self.toggle_decision(Decision::Restore),
             Action::SourceView => self.toggle_current_source(),
             Action::ToggleSidebar => self.toggle_sidebar(),
-            Action::Details => self.toggle_details(),
+            Action::Details => {
+                if self.focus == Focus::Reference {
+                    if let Some(r) = &self.reference {
+                        self.notice = Some(format!(
+                            "Reference {} · {:?} · fingerprint {}",
+                            r.descriptor.path, r.descriptor.revision, r.descriptor.fingerprint
+                        ));
+                    }
+                } else {
+                    self.toggle_details();
+                }
+            }
             Action::UndoDecision => self.undo_decision(),
             Action::AddNote => self.open_note(),
             Action::DocumentPicker => {
@@ -1878,8 +3093,19 @@ impl<'a> Shell<'a> {
     fn fingerprint(&self) -> String {
         let overlay = match &self.overlay {
             None => "none".to_string(),
-            Some(Overlay::Menu { selection }) => format!("menu:{selection}"),
-            Some(Overlay::Help) => "help".to_string(),
+            Some(Overlay::Menu { selection }) => format!(
+                "menu:{selection}:{}:{:?}",
+                self.palette.query, self.palette.pending
+            ),
+            Some(Overlay::Help) => format!("help:{}", self.help_offset),
+            Some(Overlay::SavedReviews {
+                selection,
+                inspect,
+                confirm,
+            }) => format!(
+                "saved:{selection}:{inspect}:{confirm}:{}",
+                self.saved_offset
+            ),
             Some(Overlay::Picker { filter }) => format!("picker:{filter}"),
             Some(Overlay::Search { query }) => format!("search:{query}"),
             Some(Overlay::WorkspaceSearch) => format!(
@@ -1930,6 +3156,12 @@ impl<'a> Shell<'a> {
         [
             format!("{:?}", self.view),
             format!("{:?}", self.focus),
+            format!(
+                "{:?}",
+                self.reference
+                    .as_ref()
+                    .map(|r| (&r.descriptor, &r.unavailable, r.changed))
+            ),
             overlay,
             format!("{:?}", self.notice),
             format!("{:?}", self.quit),
@@ -2197,6 +3429,9 @@ impl<'a> Shell<'a> {
     /// reading position, restored the same way a resize restores them
     /// (SPEC 11.2).
     fn refresh(&mut self) {
+        if !self.retire_draft() {
+            return;
+        }
         let reset = self.changes.as_ref().map_or(0, ChangesView::proposed_count);
         let descriptor = self.reload_settings();
         match descriptor {
@@ -2267,16 +3502,24 @@ impl<'a> Shell<'a> {
     /// selections earn a warning: one clear notice precedes their explicit
     /// discard, and quitting never commits them (SPEC 5.2).
     fn request_quit(&mut self, quit_warning_stood: bool) {
-        let proposed = self.changes.as_ref().map_or(0, ChangesView::proposed_count);
-        if proposed > 0 && !quit_warning_stood {
-            self.quit_warning = true;
-            self.notice = Some(format!(
-                "{} unapplied selection{}. Press q again to discard them and quit.",
-                proposed,
-                if proposed == 1 { "" } else { "s" },
-            ));
-        } else {
+        self.update_progress();
+        if quit_warning_stood && self.session_error.is_some() {
             self.quit = true;
+            return;
+        }
+        match self.flush_progress() {
+            Ok(()) => {
+                if self.draft.is_some() {
+                    self.notice = Some("Choices remain saved locally and unapplied".into());
+                }
+                self.quit = true;
+            }
+            Err(error) => {
+                self.quit_warning = true;
+                self.notice = Some(format!(
+                    "Progress not saved: {error}. Press q again to quit without saving newer choices."
+                ));
+            }
         }
     }
 
@@ -2311,6 +3554,19 @@ impl<'a> Shell<'a> {
         let Some(panel) = self.finish.take() else {
             return;
         };
+        if let (Some(id), Some(plan)) = (panel.summary.request_id(), panel.summary.plan_document())
+        {
+            self.update_progress();
+            if let Some(draft) = &mut self.draft {
+                draft.attempt = Some(session::Attempt {
+                    request_id: id.into(),
+                    plan: plan.into(),
+                });
+                draft.generation += 1;
+            }
+            // Local save failure never blocks an explicitly confirmed review.
+            let _ = self.flush_progress();
+        }
         let outcome = panel.summary.apply(self.operations);
         let notice = match outcome.data.as_ref() {
             Some(data) if outcome.ok() => match &data.existing_receipt {
@@ -2342,6 +3598,19 @@ impl<'a> Shell<'a> {
         self.notice = Some(notice);
         self.finish_result = Some(outcome);
         if applied {
+            if let Some(writer) = self.writer.take()
+                && let Err(error) = writer.remove()
+            {
+                self.notice = Some(format!(
+                    "{} · review succeeded; draft cleanup failed: {error}",
+                    self.notice.as_deref().unwrap_or("Review recorded")
+                ));
+            }
+            self.draft = None;
+            self.decision_pending = None;
+            self.navigation_pending = false;
+            self.session_error = None;
+            self.list_saved_reviews();
             self.refresh_after_finish();
         }
     }
@@ -2398,6 +3667,7 @@ impl<'a> Shell<'a> {
     pub fn observe_inspection(&mut self, reply: InspectionReply) {
         let before = self.fingerprint();
         let InspectionReply {
+            reference,
             notes,
             generation,
             outcome,
@@ -2412,6 +3682,16 @@ impl<'a> Shell<'a> {
         {
             self.absorb_inspection(data);
             self.observe_arrivals();
+        }
+        if let Some((descriptor, fingerprint)) = reference
+            && let Some(r) = &mut self.reference
+            && r.descriptor.path == descriptor.path
+            && r.descriptor.fingerprint == descriptor.fingerprint
+            && r.descriptor.revision.is_none()
+            && fingerprint.as_deref() != Some(&r.descriptor.fingerprint)
+        {
+            r.changed = true;
+            self.redraw = true;
         }
         if let Some(watched) = document {
             self.absorb_watched_file(watched);
@@ -2442,6 +3722,11 @@ impl<'a> Shell<'a> {
     /// scope's stored input or the discovery walk.
     pub fn watch(&self) -> refresh::Watch {
         refresh::Watch {
+            reference: self
+                .reference
+                .as_ref()
+                .filter(|r| r.descriptor.revision.is_none())
+                .map(|r| r.descriptor.clone()),
             notes_commits: self
                 .changes
                 .iter()
@@ -2506,6 +3791,7 @@ impl<'a> Shell<'a> {
         });
         let line = self.anchor.as_ref().map(|anchor| anchor.line);
         let drift = self.drift;
+        self.invalidate_palette();
         self.headings = wrap::document_headings(&document.text);
         self.source_lines = document.text.lines().map(str::to_string).collect();
         self.display = Vec::new();
@@ -2531,6 +3817,9 @@ impl<'a> Shell<'a> {
     /// on its document by path, and the displayed document stays
     /// untouched even when the list no longer names it.
     fn absorb_document_list(&mut self, paths: Vec<String>) {
+        if self.documents != paths {
+            self.invalidate_palette();
+        }
         if paths == self.documents {
             return;
         }
@@ -2643,10 +3932,14 @@ impl<'a> Shell<'a> {
             stops.push(Focus::Documents);
         }
         stops.push(Focus::Reading);
+        if self.reference_visible() && self.terminal_columns >= 140 {
+            stops.push(Focus::Reference);
+        }
         if menu {
             stops.push(Focus::Actions);
         }
         if stops.len() == 1 {
+            self.focus = stops[0];
             return;
         }
         let next = match stops.iter().position(|stop| *stop == self.focus) {
@@ -2666,6 +3959,11 @@ impl<'a> Shell<'a> {
     /// match with that focus.
     fn step(&mut self, direction: i32) {
         match self.focus {
+            Focus::Reference => {
+                if let Some(r) = &mut self.reference {
+                    r.scroll(direction);
+                }
+            }
             Focus::Documents => self.step_navigator(direction),
             Focus::Reading | Focus::Actions => self.step_reading(direction),
         }
@@ -2705,6 +4003,12 @@ impl<'a> Shell<'a> {
     /// (SPEC 11.3 `PgUp` and `PgDn`): the document list pages its
     /// selection, and the reading position pages by view.
     fn page(&mut self, direction: i32) {
+        if self.focus == Focus::Reference {
+            if let Some(r) = &mut self.reference {
+                r.scroll(direction * self.viewport_rows.saturating_sub(2).max(1) as i32);
+            }
+            return;
+        }
         if self.focus == Focus::Documents {
             let page = self.viewport_rows.saturating_sub(1).max(1);
             let last = self.navigator_entries().len().saturating_sub(1);
@@ -2758,7 +4062,12 @@ impl<'a> Shell<'a> {
         &self.headings
     }
     pub fn navigator_visible(&self) -> bool {
-        self.layout.shows_navigator() && !self.sidebar_hidden
+        self.layout.shows_navigator()
+            && !self.sidebar_hidden
+            && !(self.reference_visible()
+                && (self.terminal_columns >= 140
+                    || self.focus == Focus::Reference
+                    || (self.focus == Focus::Actions && self.menu_origin == Focus::Reference)))
     }
     pub fn sidebar_hidden(&self) -> bool {
         self.sidebar_hidden
@@ -2786,6 +4095,12 @@ impl<'a> Shell<'a> {
     }
 
     fn toggle_current_source(&mut self) {
+        if self.focus == Focus::Reference {
+            if let Some(r) = &mut self.reference {
+                r.toggle_source();
+            }
+            return;
+        }
         if self.view == View::Read {
             self.reading_source = !self.reading_source;
             self.display_width = 0;
@@ -3154,7 +4469,7 @@ fn content_truncated(content: &DocumentContent) -> bool {
 
 /// Prepares raw text for display: tabs become spaces and unsafe control
 /// characters become their visible escapes (SPEC 14.2).
-fn prepare_display(raw: &str) -> String {
+pub(crate) fn prepare_display(raw: &str) -> String {
     crate::cli::display_escape(&raw.replace('\t', "    "))
 }
 
@@ -3229,6 +4544,16 @@ fn walk_documents(root: &Path, prefix: String, depth: usize, found: &mut Vec<Str
             walk_documents(root, format!("{relative}/"), depth + 1, found);
         } else if metadata.is_file() && name.to_lowercase().ends_with(".md") {
             found.push(relative);
+        }
+    }
+}
+
+impl Drop for Shell<'_> {
+    fn drop(&mut self) {
+        // Catchable termination gets a best-effort flush. SIGKILL cannot.
+        if self.draft.is_some() && self.writer.is_some() {
+            let _ =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.flush_progress()));
         }
     }
 }

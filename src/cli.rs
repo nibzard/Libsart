@@ -1617,6 +1617,8 @@ fn dispatch(matches: &ArgMatches) -> Finished {
                 view,
                 color,
                 reduced_updates: sub.get_flag("reduced-updates"),
+                explicit_view: sub.value_source("view")
+                    == Some(clap::parser::ValueSource::CommandLine),
             };
             match crate::tui::launch(&invocation.cwd, &operations, &options) {
                 Ok(()) => Finished {

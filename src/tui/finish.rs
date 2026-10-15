@@ -14,8 +14,7 @@
 //! labeled action, Keep remaining changes and finish, applies it, because
 //! no undecided passage and no unvisited document may be approved by
 //! navigating away. `Esc` leaves the summary, and quit never applies: the
-//! unapplied selections are discarded only after the standing notice of
-//! SPEC 5.2.
+//! unapplied choices are flushed to the local review draft (SPEC 5.2).
 //!
 //! The request identifier is deterministic over the pinned comparison and
 //! the proposed restorations, so a retry after a lost response reuses one

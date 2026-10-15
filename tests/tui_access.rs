@@ -167,7 +167,7 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     // Outside the Changes view, its actions state why they cannot run.
     shell.handle_event(&key(KeyCode::Char('1')));
     shell.handle_event(&key(KeyCode::Char(':')));
-    let page = draw(&mut shell, 110, 40);
+    let page = draw(&mut shell, 110, 110);
     let screen = joined(&page);
     assert!(screen.contains("Action menu"), "the menu opens with :");
     // Every action of the contract is listed with its binding.
@@ -194,9 +194,9 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     assert!(screen.contains("Enter · Finish review — unavailable: the Changes view only"),);
 
     // In the Changes view over a real review, the same actions enable.
-    shell.handle_event(&key(KeyCode::Char(':')));
+    shell.handle_event(&key(KeyCode::Esc));
     shell.handle_event(&key(KeyCode::Char('2')));
-    let page = draw(&mut shell, 110, 40);
+    let page = draw(&mut shell, 110, 110);
     let screen = joined(&page);
     assert!(!screen.contains("K · Keep selected group — unavailable"));
     assert!(!screen.contains("Enter · Finish review — unavailable"));
@@ -204,10 +204,10 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     // Esc closes the menu; nothing ran.
     shell.handle_event(&key(KeyCode::Char(':')));
     shell.handle_event(&key(KeyCode::Esc));
-    let page = draw(&mut shell, 110, 40);
+    let page = draw(&mut shell, 110, 110);
     let screen = joined(&page);
     assert!(!screen.contains("Action menu"));
-    assert!(screen.contains("the action menu closed; nothing ran"));
+    assert!(screen.contains("Palette closed; nothing ran"));
 }
 
 #[test]
@@ -226,13 +226,14 @@ fn the_menu_runs_the_selected_action_and_refuses_disabled_ones() {
         .position(|entry| entry.action == Action::FinishReview)
         .expect("the finish entry exists");
     for _ in 0..finish {
-        shell.handle_event(&key(KeyCode::Char('j')));
+        shell.handle_event(&key(KeyCode::Down));
     }
     let page = draw(&mut shell, 110, 40);
     assert!(
-        joined(&page).contains("› Enter · Finish review"),
+        joined(&page).contains("› Action · Enter · Finish review"),
         "the selected entry shows its marker"
     );
+    wait_palette(&mut shell);
     shell.handle_event(&key(KeyCode::Enter));
     let page = draw(&mut shell, 110, 40);
     let screen = joined(&page);
@@ -251,8 +252,9 @@ fn the_menu_runs_the_selected_action_and_refuses_disabled_ones() {
         .position(|entry| entry.action == Action::KeepGroup)
         .expect("the keep entry exists");
     for _ in 0..keep {
-        shell.handle_event(&key(KeyCode::Char('j')));
+        shell.handle_event(&key(KeyCode::Down));
     }
+    wait_palette(&mut shell);
     shell.handle_event(&key(KeyCode::Enter));
     let page = draw(&mut shell, 110, 40);
     let screen = joined(&page);
@@ -297,21 +299,14 @@ fn focus_cycles_three_stops_both_ways_and_shows_itself() {
     assert_eq!(shell.focus(), margin::tui::Focus::Actions);
     let page = draw(&mut shell, 110, 30);
     assert!(joined(&page).contains("focus action menu"));
-    // The full cycle visits all three stops in order.
+    // The searchable palette owns input focus until it closes.
     shell.handle_event(&key(KeyCode::Tab));
-    assert_eq!(shell.focus(), margin::tui::Focus::Documents);
-    shell.handle_event(&key(KeyCode::Tab));
-    assert_eq!(shell.focus(), margin::tui::Focus::Reading);
-    shell.handle_event(&key(KeyCode::Tab));
-    assert_eq!(shell.focus(), margin::tui::Focus::Actions);
     shell.handle_event(&key(KeyCode::BackTab));
-    assert_eq!(shell.focus(), margin::tui::Focus::Reading);
-
-    // j/k move the menu selection while it holds focus (SPEC 11.3).
-    let before = joined(&draw(&mut shell, 110, 40));
+    assert_eq!(shell.focus(), margin::tui::Focus::Actions);
     shell.handle_event(&key(KeyCode::Char('j')));
-    let after = joined(&draw(&mut shell, 110, 40));
-    assert_ne!(before, after, "the selection marker moved");
+    assert_eq!(shell.palette().query, "j");
+    shell.handle_event(&key(KeyCode::Esc));
+    assert_eq!(shell.focus(), margin::tui::Focus::Documents);
 }
 
 #[test]
@@ -404,14 +399,16 @@ fn ctrl_c_keeps_the_clean_quit_inside_text_entry() {
     );
     shell.handle_event(&key(KeyCode::Char('/')));
     shell.handle_event(&modified(KeyCode::Char('c'), KeyModifiers::CONTROL));
-    assert!(!shell.should_quit(), "the warning stands first");
-    let page = draw(&mut shell, 110, 40);
     assert!(
-        joined(&page).contains("1 unapplied selection"),
-        "the warning states the discard",
+        shell.should_quit(),
+        "Ctrl-C flushes progress inside text entry"
     );
-    shell.handle_event(&modified(KeyCode::Char('c'), KeyModifiers::CONTROL));
-    assert!(shell.should_quit(), "the second Ctrl-C quits");
+    assert!(
+        shell
+            .notice()
+            .unwrap()
+            .contains("saved locally and unapplied")
+    );
 }
 
 #[test]
@@ -800,7 +797,7 @@ fn help_lists_the_keys_and_the_current_blockers() {
     // list states the blocker in words.
     repo.write_file("notes/a.md", b"# One\n\nFirst passage, arrived.\n");
     repo.commit_all("an external edit");
-    shell.handle_event(&key(KeyCode::Char('j')));
+    shell.handle_event(&key(KeyCode::Char('?')));
     shell.handle_event(&key(KeyCode::Char('?')));
     let page = draw(&mut shell, 110, 40);
     let screen = joined(&page);
@@ -1217,4 +1214,13 @@ fn the_editor_capture_policy_saves_one_draft_and_approves_nothing() {
         String::from_utf8_lossy(&repo.git_ok(["log", "--format=%H", "--grep=Margin-Kind: review"]))
             .to_string();
     assert_eq!(reviews_before, reviews_after, "the exit approved nothing");
+}
+
+fn wait_palette(shell: &mut Shell<'_>) {
+    let start = std::time::Instant::now();
+    while !shell.palette().ready() {
+        shell.poll_palette();
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }

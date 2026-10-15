@@ -42,7 +42,8 @@ const MAX_HEX_CHARS: usize = 96;
 const NOTICE_CHARS: usize = 200;
 
 /// One proposed decision of the in-memory plan (SPEC 5.2, 11.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Decision {
     /// Keep the passage as the candidate holds it.
     Keep,
@@ -187,6 +188,7 @@ pub struct ChangesView {
     // top visible row.
     rows: Vec<DisplayRow>,
     starts: Vec<usize>,
+    source_map: Vec<Option<(usize, bool, u32)>>,
     width: u16,
     dirty: bool,
     offset: usize,
@@ -275,11 +277,107 @@ impl ChangesView {
             scroll_to_selected: false,
             rows: Vec::new(),
             starts: Vec::new(),
+            source_map: Vec::new(),
             width: 0,
             dirty: true,
             offset: 0,
             viewport: 1,
         })
+    }
+
+    pub fn saved_choices(&self) -> Vec<super::session::Choice> {
+        self.groups
+            .iter()
+            .filter_map(|g| {
+                self.plan
+                    .choice(&g.change_id)
+                    .map(|decision| super::session::Choice {
+                        id: g.change_id.clone(),
+                        decision,
+                        path: g.path.clone(),
+                        heading: g.presentation.heading.clone(),
+                    })
+            })
+            .collect()
+    }
+
+    pub fn visited_ids(&self) -> Vec<String> {
+        self.plan.visited.iter().cloned().collect()
+    }
+
+    pub fn load_choices(&mut self, record: &super::session::Record) -> Result<(), String> {
+        if self.incomplete.is_some() {
+            return Err("Incomplete comparison; saved decisions cannot be resumed".into());
+        }
+        let known: BTreeSet<_> = self.groups.iter().map(|g| g.change_id.as_str()).collect();
+        if record
+            .decisions
+            .iter()
+            .any(|c| !known.contains(c.id.as_str()))
+            || record.visited.iter().any(|id| !known.contains(id.as_str()))
+        {
+            return Err("Stale saved review: unknown change IDs".into());
+        }
+        self.plan = PlanDraft {
+            decisions: record
+                .decisions
+                .iter()
+                .map(|c| (c.id.clone(), c.decision))
+                .collect(),
+            visited: record.visited.iter().cloned().collect(),
+        };
+        if let Some(id) = &record.navigation.selected
+            && let Some(i) = self.groups.iter().position(|g| &g.change_id == id)
+        {
+            self.selection = i;
+            self.scroll_to_selected = true;
+        }
+        self.source = record.navigation.source;
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub fn source_position(&self) -> Option<super::session::ChangePosition> {
+        let row = self.rows.get(self.offset)?;
+        let (group, before, line) = self
+            .source_map
+            .get(row.source_line.saturating_sub(1) as usize)
+            .copied()
+            .flatten()?;
+        Some(super::session::ChangePosition {
+            id: self.groups.get(group)?.change_id.clone(),
+            before,
+            line,
+            drift: self
+                .offset
+                .saturating_sub(wrap::row_for_anchor(&self.rows, row.source_line)),
+        })
+    }
+
+    pub fn restore_position(&mut self, position: &super::session::ChangePosition) {
+        let Some(group) = self.groups.iter().position(|g| g.change_id == position.id) else {
+            return;
+        };
+        let found = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, row)| {
+                self.source_map
+                    .get(row.source_line.saturating_sub(1) as usize)
+                    .copied()
+                    .flatten()
+                    .filter(|(g, b, _)| *g == group && *b == position.before)
+                    .map(|(_, _, line)| (i, line))
+            })
+            .min_by_key(|(_, line)| line.abs_diff(position.line));
+        if let Some((i, _)) = found {
+            let line = self.rows[i].source_line;
+            self.offset = i + position
+                .drift
+                .min(wrap::rows_of_source(&self.rows, i, line).saturating_sub(1));
+            self.clamp_offset();
+        }
     }
 
     /// The change groups this view holds, in manifest order.
@@ -617,7 +715,13 @@ impl ChangesView {
     pub fn prepare(&mut self, width: u16, viewport_rows: usize) {
         self.viewport = viewport_rows.max(1);
         if self.dirty || self.rows.is_empty() || width != self.width {
+            let position = (!self.scroll_to_selected)
+                .then(|| self.source_position())
+                .flatten();
             self.compose(width);
+            if let Some(position) = position {
+                self.restore_position(&position);
+            }
             self.width = width;
             self.dirty = false;
         }
@@ -775,12 +879,55 @@ impl ChangesView {
             lines.push(ComposedLine::text("No pending changes."));
         }
         let mut starts = Vec::with_capacity(self.groups.len());
+        let mut source_map = vec![None; lines.len()];
         for index in 0..self.groups.len() {
             // The header lands on the next composed line, one-based.
             starts.push((lines.len() + 1) as u32);
-            lines.extend(self.group_block(index));
+            let block = self.group_block(index);
+            let group = &self.groups[index];
+            let mut mapped = vec![None; block.len()];
+            for (before, excerpt) in [
+                (true, &group.presentation.before),
+                (false, &group.presentation.after),
+            ] {
+                if let Some(text) = &excerpt.text {
+                    let mut next = 0;
+                    for (source, raw) in text.lines().enumerate() {
+                        let expected = if self.source {
+                            format!("{}{raw}", if before { '-' } else { '+' })
+                        } else {
+                            format!("  {raw}")
+                        };
+                        let role = if before {
+                            wrap::RowKind::Removed
+                        } else {
+                            wrap::RowKind::Added
+                        };
+                        if let Some(relative) = block
+                            .iter()
+                            .skip(next)
+                            .position(|line| line.kind == role && line.text == expected)
+                        {
+                            let i = next + relative;
+                            mapped[i] = Some((
+                                index,
+                                before,
+                                excerpt
+                                    .first_line
+                                    .saturating_add(source as u64)
+                                    .min(u32::MAX as u64) as u32,
+                            ));
+                            next = i + 1;
+                        }
+                    }
+                }
+            }
+            source_map.extend(mapped);
+            source_map.push(None);
+            lines.extend(block);
             lines.push(ComposedLine::text(String::new()));
         }
+        self.source_map = source_map;
         self.rows = wrap::wrap_rows(&lines, width);
         self.starts = starts
             .into_iter()
@@ -1122,6 +1269,7 @@ mod tests {
             scroll_to_selected: false,
             rows: Vec::new(),
             starts: Vec::new(),
+            source_map: Vec::new(),
             width: 0,
             dirty: true,
             offset: 0,
@@ -1137,6 +1285,79 @@ mod tests {
             .map(|row| row.text.clone())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn source_anchors_survive_source_mode_and_resize() {
+        let mut c = view(vec![detail("first", "a.md", "Before text", "After text")]);
+        c.prepare(20, 1);
+        let row = c
+            .rows
+            .iter()
+            .position(|row| {
+                c.source_map
+                    .get(row.source_line.saturating_sub(1) as usize)
+                    .is_some_and(|p| p.is_some())
+            })
+            .unwrap();
+        c.offset = row;
+        let old = c.source_position().unwrap();
+        c.toggle_source();
+        c.prepare(50, 1);
+        let new = c.source_position().unwrap();
+        assert_eq!(
+            (new.id, new.before, new.line),
+            (old.id.clone(), old.before, old.line)
+        );
+        c.prepare(15, 1);
+        let new = c.source_position().unwrap();
+        assert_eq!(
+            (new.id, new.before, new.line),
+            (old.id, old.before, old.line)
+        );
+    }
+
+    #[test]
+    fn incomplete_details_and_unknown_visited_ids_cannot_resume_intent() {
+        let mut c = view(vec![detail("first", "a.md", "before", "after")]);
+        let record = super::super::session::Record {
+            schema_version: 1,
+            id: "fixture".into(),
+            updated_ms: 0,
+            generation: 1,
+            identity: super::super::session::Identity {
+                repository: "r".into(),
+                branch: "main".into(),
+                scope: "s".into(),
+                adoption: "a".into(),
+                baseline: "b".into(),
+                candidate: "c".into(),
+                review: "review".into(),
+            },
+            decisions: vec![super::super::session::Choice {
+                id: "first".into(),
+                decision: Decision::Restore,
+                path: "a.md".into(),
+                heading: "A".into(),
+            }],
+            visited: vec!["first".into()],
+            navigation: Default::default(),
+            attempt: None,
+            reference: None,
+        };
+        c.incomplete = Some("missing detail page".into());
+        assert!(c.load_choices(&record).unwrap_err().contains("Incomplete"));
+        assert_eq!(c.proposed_count(), 0);
+        c.incomplete = None;
+        let mut bad = record.clone();
+        bad.visited.push("unknown".into());
+        assert!(c.load_choices(&bad).unwrap_err().contains("unknown"));
+        assert_eq!(c.proposed_count(), 0);
+        c.load_choices(&record).unwrap();
+        assert_eq!(c.proposed_count(), 1);
+        c.actionable = false;
+        assert!(c.refusal().is_some());
+        assert_eq!(c.state_of(0), GroupState::Unavailable);
     }
 
     #[test]

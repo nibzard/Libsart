@@ -367,6 +367,22 @@ impl Pty {
         self.shows(needle)
     }
 
+    /// Waits for a phrase on the current replayed screen, excluding old paints.
+    pub fn wait_for_screen(&mut self, needle: &str, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        loop {
+            self.pump(Duration::from_millis(120));
+            if collapse(&replayed_screen(&String::from_utf8_lossy(&self.output)))
+                .contains(&collapse(needle))
+            {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+        }
+    }
+
     /// Says whether the visible output so far contains `needle`,
     /// ignoring escape sequences and whitespace runs.
     pub fn shows(&self, needle: &str) -> bool {

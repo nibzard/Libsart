@@ -32,10 +32,13 @@ pub mod changes;
 pub mod finish;
 pub mod history;
 pub mod layout;
+pub mod palette;
+pub mod reference;
 pub mod refresh;
 pub mod render;
 pub mod run;
 pub mod search;
+pub mod session;
 pub mod shell;
 pub mod wrap;
 

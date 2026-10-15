@@ -172,6 +172,7 @@ fn assert_restored(pty: &mut Pty, exit: i32) {
         "the alternate screen was left",
     );
     assert!(pty.shows_raw("\x1b[?2004l"), "bracketed paste was disabled",);
+    assert!(pty.shows_raw("\x1b[?1000l"), "mouse capture was disabled");
     assert!(pty.shows_raw("\x1b[?25h"), "the cursor is visible again");
     assert!(
         pty.terminal_is_cooked(),
@@ -603,4 +604,123 @@ fn a_failing_editor_child_is_stated_and_the_surface_survives() {
     );
     pty.send_key(b"q");
     assert_restored(&mut pty, 0);
+}
+
+#[test]
+fn quit_flushes_review_intent_and_a_failed_save_requires_explicit_abandonment() {
+    let repo = adopted_repo();
+    let before = support::oracle::snapshot(&repo);
+    let mut pty = spawn_tui(&repo, &[], 110, 32);
+    drew_first_frame(&mut pty);
+    pty.send_key(b"2r");
+    assert!(pty.wait_for("Not applied", LIMIT));
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+    let git = Git::from_env(repo.env().vars().clone()).at(repo.path());
+    let store = margin::tui::session::Store::from_git(&git).unwrap();
+    let entries = store.list().unwrap().0;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].record.as_ref().unwrap().decisions.len(), 1);
+    before.assert_unchanged(
+        &support::oracle::snapshot(&repo),
+        "PTY quit saves intent without approval",
+    );
+
+    let failed = adopted_repo();
+    std::fs::write(failed.path().join(".git/margin"), b"storage blocked").unwrap();
+    let mut pty = spawn_tui(&failed, &[], 110, 32);
+    drew_first_frame(&mut pty);
+    pty.send_key(b"2r");
+    pty.send_key(b"q");
+    assert!(
+        pty.wait_for("quit without saving", LIMIT),
+        "{}",
+        String::from_utf8_lossy(pty.raw_output())
+    );
+    assert!(
+        !pty.terminal_is_cooked(),
+        "the viewer retains newer choices on failure"
+    );
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+}
+
+#[test]
+fn palette_typing_and_paste_own_the_real_terminal_input_focus() {
+    let repo = adopted_repo();
+    let before = support::oracle::snapshot(&repo);
+    let mut pty = spawn_tui(&repo, &[], 120, 32);
+    drew_first_frame(&mut pty);
+    pty.send_key(b":");
+    assert!(pty.wait_for("Find anything", LIMIT));
+    pty.send_key(b"jkqrs:?");
+    pty.send_key(b"\t\x1b[Z");
+    pty.send_key(b"\x1b[200~q:r?s\x1b[201~");
+    assert!(pty.wait_for("jkqrs:?q:r?s", LIMIT));
+    assert!(!pty.terminal_is_cooked());
+    pty.send_key(b"\x1b");
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+    before.assert_unchanged(&support::oracle::snapshot(&repo), "palette literal input");
+}
+
+fn palette_action(pty: &mut Pty, query: &[u8]) {
+    pty.send_key(b":");
+    pty.send_key(query);
+    pty.send_key(b"\r");
+    assert!(
+        pty.wait_for_screen(
+            &format!("› Action · {}", String::from_utf8_lossy(query)),
+            LIMIT,
+        ),
+        "{}",
+        String::from_utf8_lossy(pty.raw_output())
+    );
+    pty.send_key(b"\r");
+}
+
+#[test]
+fn reference_focus_blocks_primary_decisions_in_a_real_terminal_and_survives_resize() {
+    let repo = adopted_repo();
+    let before = support::oracle::snapshot(&repo);
+    let mut pty = spawn_tui_with_args(&repo, &[], &["tui", "--reduced-updates"], 150, 32);
+    drew_first_frame(&mut pty);
+    palette_action(&mut pty, b"Pin current document as reference");
+    assert!(
+        pty.wait_for("Reference", LIMIT),
+        "{}",
+        String::from_utf8_lossy(pty.raw_output())
+    );
+    palette_action(&mut pty, b"Focus reference");
+    assert!(
+        pty.shows_raw("\x1b[?1000h"),
+        "wheel events are enabled on the real terminal"
+    );
+    pty.send_key(b"\x1b[<65;80;10M");
+    pty.send_key(b"rKuNe\r");
+    assert!(pty.wait_for("Return to review", LIMIT));
+    pty.resize(100, 28);
+    assert!(
+        pty.wait_for("Reference", LIMIT),
+        "{}",
+        String::from_utf8_lossy(pty.raw_output())
+    );
+    pty.send_key(b"s/First\r");
+    pty.send_key(b"\x1b");
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+    let git = Git::from_env(repo.env().vars().clone()).at(repo.path());
+    assert!(
+        margin::tui::session::Store::from_git(&git)
+            .unwrap()
+            .list()
+            .unwrap()
+            .0
+            .is_empty(),
+        "reference-focused keys never started a decision draft"
+    );
+    before.assert_unchanged(
+        &support::oracle::snapshot(&repo),
+        "reference focus and resize",
+    );
 }

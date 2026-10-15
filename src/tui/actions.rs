@@ -10,6 +10,17 @@
 /// One action of the keyboard contract (SPEC 11.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    PinDocument,
+    PinVersion,
+    ChooseReference,
+    ToggleReference,
+    FocusReference,
+    ClearReference,
+    RefreshReference,
+    BackToReview,
+    ResumeReview,
+    SeparateReview,
+    QuitWithoutSaving,
     /// Cycle focus through navigation, document, and visible actions.
     CycleFocus,
     /// Open the action menu.
@@ -62,7 +73,7 @@ pub enum Action {
 
 impl Action {
     /// Every action in SPEC 11.3 table order.
-    pub const ALL: [Action; 24] = [
+    pub const ALL: [Action; 35] = [
         Action::CycleFocus,
         Action::ActionMenu,
         Action::ReadView,
@@ -87,11 +98,33 @@ impl Action {
         Action::Details,
         Action::UndoDecision,
         Action::AddNote,
+        Action::ResumeReview,
+        Action::SeparateReview,
+        Action::QuitWithoutSaving,
+        Action::PinDocument,
+        Action::PinVersion,
+        Action::ChooseReference,
+        Action::ToggleReference,
+        Action::FocusReference,
+        Action::ClearReference,
+        Action::RefreshReference,
+        Action::BackToReview,
     ];
 
     /// The name the menu and the help list print.
     pub fn name(self) -> &'static str {
         match self {
+            Action::PinDocument => "Pin current document as reference",
+            Action::PinVersion => "Pin selected version as reference",
+            Action::ChooseReference => "Choose reference…",
+            Action::ToggleReference => "Show/hide reference",
+            Action::FocusReference => "Focus reference",
+            Action::ClearReference => "Clear reference",
+            Action::RefreshReference => "Refresh reference",
+            Action::BackToReview => "Back to review",
+            Action::ResumeReview => "Resume saved review",
+            Action::SeparateReview => "Start a separate review draft",
+            Action::QuitWithoutSaving => "Quit without saving newer choices",
             Action::CycleFocus => "Cycle focus",
             Action::ActionMenu => "Action menu",
             Action::ReadView => "Read view",
@@ -119,9 +152,34 @@ impl Action {
         }
     }
 
+    pub fn aliases(self) -> &'static str {
+        match self {
+            Action::ResumeReview => "resume saved progress draft session",
+            Action::DocumentPicker => "file open document",
+            Action::WorkspaceSearch => "find all files body text",
+            Action::FinishReview => "approve summary complete finish",
+            Action::ReadView => "read prose document",
+            Action::HistoryView => "history revision timeline versions",
+            Action::ChangesView => "changes diff review",
+            Action::RestoreGroup => "reject revert restore passage",
+            Action::KeepGroup => "accept keep passage",
+            Action::Quit => "exit quit close",
+            _ => "",
+        }
+    }
+
     /// The default binding of SPEC 11.3, as the lists print it.
     pub fn binding(self) -> &'static str {
         match self {
+            Action::PinDocument
+            | Action::PinVersion
+            | Action::ChooseReference
+            | Action::ToggleReference
+            | Action::FocusReference
+            | Action::ClearReference
+            | Action::RefreshReference
+            | Action::BackToReview => "",
+            Action::ResumeReview | Action::SeparateReview | Action::QuitWithoutSaving => "",
             Action::CycleFocus => "Tab / Shift-Tab",
             Action::ActionMenu => ":",
             Action::ReadView => "1",

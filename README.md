@@ -130,12 +130,23 @@ in Read until `s` toggles source view; source-line anchors survive both
 navigation and resizing.
 
 Changes shows before/after passages with word-level emphasis. `K` and `r`
-record an in-memory keep or restore decision; `u` clears the selected decision.
+record a proposed keep or restore decision; `u` clears the selected decision.
 `d` shows grouping rationale and review identity; `s` shows exact source.
 The decision count is separate from document saving: decisions are **not
 applied** until confirmed. `Enter` opens a finish summary of the entire writing
 scope, and a second `Enter` keeps the remaining changes and records the review
 through the same operation as `margin review`.
+
+Review choices start a local saved draft under Git's resolved
+`margin/tui/reviews/` directory. `q` and `Ctrl-C` flush progress; a successful
+save leaves choices unapplied. A save failure keeps the plan in memory and
+requires an explicit quit without saving. On return, use `:` and search
+**Resume saved review**. Inspect identity/choices with `i`, explicitly discard
+one draft with `d` then Enter, or leave it with Esc. Resume validates the whole
+comparison and never reopens a finish confirmation. Explicit document-path/`--view`
+choices win over saved navigation. Stale drafts remain inspectable; choices
+never migrate to a different comparison. Another viewer may inspect an owned
+draft and can start a separate draft, but cannot resume or delete that draft.
 
 Notes explain changes without changing document content. After a checkpoint,
 agents use `margin note --text "Why this changed"`, optionally with
@@ -155,16 +166,35 @@ revision kind, full commit, and exact timestamp; `a` expands draft checkpoints.
 `Enter` applies it through `margin restore`. The review baseline stays
 unchanged, and missing files stay distinct from empty ones.
 
-The keyboard contract of the interface is complete: `Tab` and `Shift-Tab`
-cycle focus between the document list, the reading column, and the standing
-action menu, and the footer names the focused element in words; `PgUp` and
-`PgDn` move one viewport, less one held row, in the focused element; `:` opens
-every action with its binding and the reason a disabled action cannot run;
-`?` lists the contextual keys and the current blockers; `/` searches within
-the current view and `f` opens the document picker, and inside those fields
-ordinary characters are text, so `Enter` submits the field rather than
-finishing a review and one bracketed paste never fires a sequence of global
-actions. `e` hands the displayed document to the configured editor (set one
+`Tab` and `Shift-Tab` cycle visibly focused reading/navigation panes, including
+a visible reference. `PgUp`/`PgDn` page the focused pane. `:` opens **Find
+anything**, a searchable action catalog and document/heading picker. The empty
+query lists every action with bindings and disabled reasons; type a name,
+curated alias, document title, path, or heading to narrow it. Arrows select,
+Enter opens, and Esc closes. Printable keys (including `j`, `k`, `q`, `r`, `s`,
+`:`, and `?`) and bracketed paste are literal query text. Tab stays inside the
+palette. In `--reduced-updates`, Enter matches edited input and a later Enter
+opens the displayed result. Metadata is bounded to 256 KiB/file, 16 MiB,
+2,000 files, and 20,000 entries; at most 100 results display, with omissions
+stated. `f` remains the document-only picker and `/` searches the focused view.
+`?` lists contextual keys and blockers; arrows/page scroll help.
+
+Use `:` and **Pin current document as reference** in Read to freeze the
+currently displayed source, or **Pin selected version as reference** in
+History to read an immutable revision. **Choose reference…** selects a listed
+document or heading without moving the primary document. **Show/hide
+reference**, **Focus reference**, **Refresh reference**, and **Clear reference**
+are catalog actions. Working snapshots stay frozen until explicit refresh;
+polling labels changed sources. `d` shows exact reference identity. At 140+
+columns of Margin's own pane, the reference appears beside the primary prose,
+with the navigator hidden and each column capped at 76 cells. At smaller
+supported sizes, showing/focusing it occupies the single content region;
+Esc or **Back to review** restores the primary view. Reference `s`, `/`, paging,
+and wheel operate independently. Keep, restore, undo, notes, editing, and finish
+require returning to review. Reference descriptors survive with review drafts;
+a changed working source resumes as unavailable until explicit refresh.
+
+`e` hands the displayed document to the configured editor (set one
 with `margin init --editor-argv-json`), the editor meets a cooked terminal,
 and its return reloads the document. An editor exit never approves; it
 captures one draft only while `--capture-after-edit` is stored. While the
@@ -176,7 +206,7 @@ Every state is labeled in words and symbols, never hue alone, and
 `--color never` draws a plain monochrome surface. `--reduced-updates`
 redraws only when the frame changed, for terminals and assistive setups
 sensitive to redraws. The surface restores raw mode, the alternate screen,
-bracketed paste, and cursor visibility on quit, `Ctrl-C`, terminal errors,
+bracketed paste, mouse capture, and cursor visibility on quit, `Ctrl-C`, terminal errors,
 resize, and editor return; an uncatchable kill can run no cleanup, so a
 terminal left raw after one recovers with `reset` (or `stty sane`). The
 `edit` command hands one document to the same configured editor from the

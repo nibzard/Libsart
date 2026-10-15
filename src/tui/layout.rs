@@ -75,6 +75,8 @@ pub struct FrameLayout {
     /// The reading column, already capped at the reading measure and
     /// centered in the space the header, footer, and list leave.
     pub reading: Rect,
+    /// Optional explicitly pinned second prose column.
+    pub reference: Option<Rect>,
     /// The retained document and source context row (SPEC 5.4).
     pub context: Rect,
     /// The action footer row.
@@ -146,15 +148,61 @@ pub fn frame_layout_with_navigator(area: Rect, navigator_visible: bool) -> Frame
         tabs,
         navigator,
         reading,
+        reference: None,
         context,
         footer,
     }
+}
+
+/// Pinned companions deliberately hide the navigator; never three columns.
+pub fn frame_layout_with_reference(area: Rect, navigator: bool, reference: bool) -> FrameLayout {
+    let mut frame = frame_layout_with_navigator(area, navigator && !reference);
+    if reference && area.width >= 140 && classify(area.width, area.height) != WidthClass::TooSmall {
+        let body = Rect {
+            y: area.y + 2,
+            height: area.height.saturating_sub(4),
+            ..area
+        };
+        let measure = READING_MEASURE.min(body.width.saturating_sub(1) / 2);
+        let gutter = body.width.saturating_sub(measure * 2 + 1) / 2;
+        frame.reading = Rect {
+            x: body.x + gutter,
+            width: measure,
+            ..body
+        };
+        frame.reference = Some(Rect {
+            x: frame.reading.right() + 1,
+            width: measure,
+            ..body
+        });
+    }
+    frame
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::layout::Position;
+
+    #[test]
+    fn pinned_prose_has_one_separator_and_a_shared_capped_measure() {
+        for width in [140, 154, 160, 200, 300] {
+            let area = Rect::new(3, 2, width, 30);
+            let frame = frame_layout_with_reference(area, true, true);
+            let reference = frame.reference.unwrap();
+            assert!(frame.navigator.is_none());
+            assert_eq!(reference.x, frame.reading.right() + 1);
+            assert_eq!(reference.width, frame.reading.width);
+            assert!(reference.width <= READING_MEASURE);
+            assert!(reference.right() <= area.right());
+            assert_eq!(reference.height, frame.reading.height);
+        }
+        assert!(
+            frame_layout_with_reference(Rect::new(0, 0, 139, 30), true, true)
+                .reference
+                .is_none()
+        );
+    }
 
     #[test]
     fn the_width_classes_follow_the_spec_table() {

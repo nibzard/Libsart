@@ -8603,6 +8603,38 @@ impl<'a> Operations<'a> {
         walk
     }
 
+    /// The validated start boundary of a pinned comparison, independent of
+    /// display filters and of a later review marker used as baseline B.
+    /// Callers supply canonical identities issued by the comparison operation.
+    pub(crate) fn review_start_marker(
+        &self,
+        head: &str,
+        scope: &str,
+    ) -> Result<String, OperationError> {
+        let mut guard = self.history_walk();
+        let walk = guard.as_mut().expect("the constructor fills the walk");
+        let history = walk.own_history(head).map_err(history_walk_failed)?;
+        for commit in history {
+            match walk.validate_marker(&commit) {
+                Ok(marker) if marker.kind == CommitKind::Start => {
+                    if marker.scope_digest != scope {
+                        return Err(OperationError::new(
+                            "STALE_REVIEW",
+                            "The current adoption starts in a different scope",
+                        ));
+                    }
+                    return Ok(marker.commit);
+                }
+                Ok(_) | Err(MarkerError::Invalid(_)) => {}
+                Err(error) => return Err(history_walk_failed(error)),
+            }
+        }
+        Err(OperationError::new(
+            "BASELINE_UNAVAILABLE",
+            "The review has no verified starting marker",
+        ))
+    }
+
     /// Builds the operation layer over `git` with one explicit model-action
     /// trace (SPEC 15.7), so an in-process test drives the same records the
     /// environment variable gives the executable.

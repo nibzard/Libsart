@@ -114,8 +114,16 @@ impl TerminalGuard {
         if let Err(error) = execute!(
             io::stdout(),
             EnterAlternateScreen,
-            crossterm::event::EnableBracketedPaste
+            crossterm::event::EnableBracketedPaste,
+            crossterm::event::EnableMouseCapture
         ) {
+            let _ = execute!(
+                io::stdout(),
+                crossterm::event::DisableMouseCapture,
+                crossterm::event::DisableBracketedPaste,
+                LeaveAlternateScreen,
+                crossterm::cursor::Show
+            );
             let _ = terminal::disable_raw_mode();
             return Err(error);
         }
@@ -138,6 +146,7 @@ impl TerminalGuard {
         let _ = execute!(
             io::stdout(),
             crossterm::event::DisableBracketedPaste,
+            crossterm::event::DisableMouseCapture,
             LeaveAlternateScreen,
             crossterm::cursor::Show,
         );
@@ -157,10 +166,13 @@ impl TerminalGuard {
             return Ok(());
         }
         terminal::enable_raw_mode()?;
+        // If re-entry fails, Drop still owes every interactive mode.
+        self.screen = Screen::Interactive;
         execute!(
             io::stdout(),
             EnterAlternateScreen,
-            crossterm::event::EnableBracketedPaste
+            crossterm::event::EnableBracketedPaste,
+            crossterm::event::EnableMouseCapture
         )?;
         self.screen = Screen::Interactive;
         Ok(())
@@ -181,6 +193,7 @@ impl TerminalGuard {
             let _ = execute!(
                 io::stdout(),
                 crossterm::event::DisableBracketedPaste,
+                crossterm::event::DisableMouseCapture,
                 LeaveAlternateScreen,
             );
         }
@@ -287,6 +300,8 @@ fn drive(
     let mut drawn_once = false;
     loop {
         shell.poll_workspace_search();
+        shell.poll_progress();
+        shell.poll_palette();
         if let Some(worker) = worker.as_mut() {
             // Every answered inspection reaches the shell before the
             // frame that shows it: a reply the shell's generation
@@ -348,6 +363,7 @@ fn drive(
         let mut wait = next_inspection.saturating_duration_since(now);
         if worker.as_ref().is_some_and(RefreshWorker::is_busy)
             || shell.workspace_search().searching()
+            || shell.workspace_work_pending()
         {
             wait = wait.min(BUSY_WAIT);
         }
