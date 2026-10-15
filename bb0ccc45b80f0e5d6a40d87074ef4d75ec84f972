@@ -1,0 +1,25 @@
+# Context
+
+## Why This Way
+The README had grown into a feature-by-feature inventory that mixed
+marketing, keystroke reference, and development status. New readers
+could not tell what Margin does or reach a working review session
+quickly.
+
+The rewrite reorganizes the same facts around user tasks: write,
+review, browse history, work beside an agent, and scope capture.
+Detail moved to the existing guides (docs/source-editing.md,
+docs/desk-links.md, examples/README.md) instead of living inline.
+
+## Gotchas
+- All file and asset references were verified to exist before
+  committing; keep that check when editing the link list.
+- The quick start now applies examples/after/*.md over examples/before
+  and opens the TUI directly, so it must stay runnable as one Bash
+  session (MARGIN_EXAMPLES/MARGIN_DEMO variables).
+- The long "Development status" narrative was replaced by a short
+  limitations list; to-do.json remains a snapshot that can lag.
+
+## Related
+- docs/README.md and docs/remaining-gaps-plan.md now carry the
+  delivery-status detail removed here.
