@@ -538,6 +538,18 @@ fn navigation_keys_change_no_repository_bytes() {
     let operations = Operations::new(&git);
     let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
     let events = [
+        Event::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 3,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        }),
+        Event::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+            column: 3,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        }),
         key(KeyCode::Char('1')),
         key(KeyCode::Char('2')),
         key(KeyCode::Char('3')),

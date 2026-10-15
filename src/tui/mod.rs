@@ -32,6 +32,7 @@ pub mod changes;
 pub mod finish;
 pub mod history;
 pub mod layout;
+pub mod pointer;
 pub mod refresh;
 pub mod render;
 pub mod run;

@@ -259,3 +259,19 @@ Each desk passes a private `MARGIN_DESK_SOCKET` to its agent and viewer. The
 viewer owns cleanup; detaching and reattaching preserves the connection, including
 when narrow layouts put Margin in its own window. No agent configuration is
 changed. Clickable terminal links are a future integration.
+
+### Pointer navigation
+
+Left-click a document or heading, a view tab, a change group, or a revision
+to make the same selection as the keyboard. Click an action-menu entry to run
+it, or a workspace-search result to open its source location. Clicking empty
+pane space moves focus. Right-click opens the action menu with no overlay and
+closes it while the menu stands. Help and text entry ignore clicks; workspace
+search accepts only clicks on its results. The wheel moves
+the focused list by one entry or scrolls the reading column by three rows.
+
+Finish summaries, restoration previews, and text fields keep their keyboard
+confirmation rules and ignore clicks. Dragging, releases, and pointer motion
+have no action. Hold Shift for your terminal's own text selection. Inside tmux,
+pointer reporting needs the user's `mouse on` setting; Margin does not change
+that setting. Every pointer action also has a keyboard binding.

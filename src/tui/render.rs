@@ -1,9 +1,10 @@
 //! Rendering of the terminal surface (SPEC 11.1).
 //!
-//! Rendering is one pure pass over the shell: [`draw`] prepares the
+//! Rendering is one pass over the shell: [`draw`] prepares the
 //! layout for the frame size, then fills the rectangles the layout
-//! module computed. Nothing here reads the repository, and nothing here
-//! writes state the event loop depends on. The palette stays restrained:
+//! module computed. The renderer records typed pointer targets from the
+//! rows it draws; input uses only the last completed frame. The palette stays
+//! restrained:
 //! dim text for chrome, weight for hierarchy, and words for every state
 //! a reader must not deduce from hue (SPEC 11.4). Color-off mode draws
 //! the same surface with no decoration at all, so the words and symbols
@@ -18,8 +19,17 @@ use ratatui::{Frame, widgets};
 use crate::tui::actions::Action;
 use crate::tui::history::PreviewState;
 use crate::tui::layout::{self, WidthClass};
+use crate::tui::pointer::Target;
 use crate::tui::shell::{Focus, Overlay, Shell, View};
 use crate::tui::wrap::{self, RowKind};
+
+fn pointer_row(shell: &Shell<'_>, area: Rect, text: &str, target: Target) {
+    if text.trim().is_empty() {
+        return;
+    }
+    let width = unicode_width::UnicodeWidthStr::width(text).min(area.width as usize) as u16;
+    shell.record_pointer_target(Rect::new(area.x, area.y, width, 1), target);
+}
 
 /// The styles of one frame (SPEC 11.4). Color-off mode replaces every
 /// style with the plain one, so a terminal or an assistive setup that
@@ -90,6 +100,7 @@ impl Palette {
 
 /// Draws one whole frame of the surface.
 pub fn draw(shell: &mut Shell<'_>, frame: &mut Frame<'_>) {
+    shell.clear_pointer_targets();
     let area = frame.area();
     shell.prepare_layout(area.width, area.height);
     let shell = &*shell;
@@ -98,6 +109,18 @@ pub fn draw(shell: &mut Shell<'_>, frame: &mut Frame<'_>) {
         return;
     }
     let geometry = layout::frame_layout_with_navigator(area, !shell.sidebar_hidden());
+    shell.begin_pointer_targets(area);
+    shell.record_pointer_target(
+        geometry.reading,
+        Target::Pane(if matches!(shell.overlay(), Some(Overlay::Menu { .. })) {
+            Focus::Actions
+        } else {
+            Focus::Reading
+        }),
+    );
+    if let Some(navigator) = geometry.navigator {
+        shell.record_pointer_target(navigator, Target::Pane(Focus::Documents));
+    }
     let palette = Palette::of(shell);
     draw_header(frame, geometry.header, shell, palette);
     draw_tabs(frame, geometry.tabs, shell, palette);
@@ -166,6 +189,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
 /// Persistent tabs keep the active mode visible even without color.
 fn draw_tabs(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
     let mut spans = Vec::new();
+    let mut column = area.x;
     for (key, view) in [(1, View::Read), (2, View::Changes), (3, View::History)] {
         let active = shell.view() == view;
         let label = if active {
@@ -173,6 +197,17 @@ fn draw_tabs(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pale
         } else {
             format!("  {key} {}  ", view.label())
         };
+        let width = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
+        shell.record_pointer_target(
+            Rect::new(
+                column,
+                area.y,
+                width.min(area.right().saturating_sub(column)),
+                area.height,
+            ),
+            Target::ViewTab(view),
+        );
+        column = column.saturating_add(width);
         spans.push(Span::styled(
             label,
             if active {
@@ -236,6 +271,17 @@ fn draw_navigator(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette:
                 shell.documents()[document]
             ),
         };
+        pointer_row(
+            shell,
+            Rect::new(
+                area.x,
+                area.y + lines.len() as u16,
+                area.width.saturating_sub(1),
+                1,
+            ),
+            &text,
+            Target::NavigatorEntry(index),
+        );
         lines.push(Line::styled(
             fit_to(&text, area.width.saturating_sub(1) as usize),
             if active {
@@ -432,7 +478,15 @@ fn draw_changes(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
     let rows = changes.rows();
     let offset = changes.offset();
     let shown = &rows[offset.min(rows.len())..];
-    for row in shown.iter().take(body.height as usize) {
+    for (index, row) in shown.iter().take(body.height as usize).enumerate() {
+        if let Some(group) = changes.group_at_row(offset + index) {
+            pointer_row(
+                shell,
+                Rect::new(body.x, body.y + index as u16, body.width, 1),
+                &row.text,
+                Target::ChangeGroup(group),
+            );
+        }
         lines.push(display_line(row, palette));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), body);
@@ -483,10 +537,20 @@ fn draw_history(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
     let rows = history.display_rows();
     let offset = history.offset();
     let shown = &rows[offset.min(rows.len())..];
-    for row in shown
+    let top = lines.len();
+    for (index, row) in shown
         .iter()
-        .take(area.height.saturating_sub(lines.len() as u16) as usize)
+        .take(area.height.saturating_sub(top as u16) as usize)
+        .enumerate()
     {
+        if let Some(revision) = history.revision_at_row(offset + index) {
+            pointer_row(
+                shell,
+                Rect::new(area.x, area.y + top as u16 + index as u16, area.width, 1),
+                &row.text,
+                Target::Revision(revision),
+            );
+        }
         lines.push(display_line(row, palette));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
@@ -519,7 +583,15 @@ fn draw_menu(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pale
     let top = selected.saturating_sub(height.saturating_sub(1));
     let shown = &rows[top.min(rows.len())..];
     let mut lines = Vec::with_capacity(height);
-    for row in shown.iter().take(height) {
+    for (index, row) in shown.iter().take(height).enumerate() {
+        if let Some(entry) = starts.iter().rposition(|start| top + index >= *start) {
+            pointer_row(
+                shell,
+                Rect::new(area.x, area.y + index as u16, area.width, 1),
+                &row.text,
+                Target::MenuEntry(entry),
+            );
+        }
         // The first source line of the page is the overlay's title.
         let style = if row.source_line == 1 {
             palette.heading
@@ -647,6 +719,16 @@ fn draw_workspace_search(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, p
                 &format!("  {}", hit.excerpt),
                 area.width as usize,
             )));
+            for (position, line) in lines.iter().enumerate().skip(lines.len() - 2) {
+                let y = area.y.saturating_add(position as u16);
+                if y < area.bottom() {
+                    let width = line.width().min(area.width as usize) as u16;
+                    shell.record_pointer_target(
+                        Rect::new(area.x, y, width, 1),
+                        Target::SearchHit(index),
+                    );
+                }
+            }
         }
         if results.hits.is_empty() {
             lines.push(Line::raw("No matches in the searched text."));

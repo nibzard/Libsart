@@ -54,7 +54,8 @@ mod ffi {
 mod ffi {
     pub const O_NOCTTY: i32 = 0x20000;
     pub const O_RDWR: i32 = 0o2;
-    pub const O_NONBLOCK: i32 = 0x0004_0000;
+    // Darwin fcntl.h: O_NONBLOCK is 0x4, not the Linux flag value.
+    pub const O_NONBLOCK: i32 = 0x0000_0004;
     pub const O_CLOEXEC: i32 = 0x1000000;
     pub const F_GETFL: i32 = 3;
     pub const F_SETFL: i32 = 4;
@@ -70,7 +71,6 @@ mod ffi {
         pub c_oflag: u64,
         pub c_cflag: u64,
         pub c_lflag: u64,
-        pub c_line: u8,
         pub c_cc: [u8; 20],
         pub c_ispeed: u64,
         pub c_ospeed: u64,
@@ -86,7 +86,7 @@ unsafe extern "C" {
     fn unlockpt(fd: RawFd) -> i32;
     fn ptsname(fd: RawFd) -> *const c_char;
     fn ioctl(fd: RawFd, request: u64, ...) -> i32;
-    fn fcntl(fd: RawFd, command: i32, arg: i32) -> i32;
+    fn fcntl(fd: RawFd, command: i32, ...) -> i32;
     fn tcgetattr(fd: RawFd, termios: *mut ffi::Termios) -> i32;
     fn setsid() -> i32;
     fn open(path: *const c_char, flags: i32, ...) -> RawFd;
@@ -157,7 +157,9 @@ impl OutputPty {
             let slave = open_file(&slave_path, ffi::O_RDWR | ffi::O_NOCTTY | ffi::O_CLOEXEC)?;
             set_window(master, columns, rows);
             let flags = fcntl(master, ffi::F_GETFL, 0);
-            fcntl(master, ffi::F_SETFL, flags | ffi::O_NONBLOCK);
+            if flags < 0 || fcntl(master, ffi::F_SETFL, flags | ffi::O_NONBLOCK) < 0 {
+                return Err(io::Error::last_os_error());
+            }
             Ok(OutputPty {
                 master: File::from_raw_fd(master),
                 slave,
@@ -257,7 +259,9 @@ impl Pty {
             // The reads never block the test: output drains when it is
             // there, and a poll loop decides when to look again.
             let flags = fcntl(master, ffi::F_GETFL, 0);
-            fcntl(master, ffi::F_SETFL, flags | ffi::O_NONBLOCK);
+            if flags < 0 || fcntl(master, ffi::F_SETFL, flags | ffi::O_NONBLOCK) < 0 {
+                return Err(io::Error::last_os_error());
+            }
 
             let mut command = Command::new(binary);
             command
