@@ -1,1 +1,3 @@
 Merge pointer navigation after PR #3 passes post-merge validation. Run pointer access and real terminal lifecycle checks on main before proceeding.
+
+Post-merge pointer access, real terminal lifecycle, shell, and desk-open suites pass.
