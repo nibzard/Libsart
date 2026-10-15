@@ -1,1 +1,3 @@
 Merge PR #1 separately before desk and pointer changes. Run the full PR test gate against this merged commit before the next merge.
+
+Validation: lints pass. Full PR test gate completed with three NO_COLOR-related failures; all three pass when rerun with NO_COLOR removed. Baseline also reproduces the refresh failure with NO_COLOR set.
