@@ -1,1 +1,3 @@
 The upstream TLA+ 1.8.0 release jar changed during this session. The original downloaded bytes matched the official API digest and passed every PR formal profile. Preserve that exact artifact in Git. Shell syntax, checksum, SANY, and the expected negative profile pass after removing network fallback.
+
+Final application validation completes successfully: 934 tests, zero failures. Application source is unchanged by this tool pin. Lints, minimum Rust compatibility, release budgets, and all PR formal profiles pass locally. Hosted checks are running on this commit.
