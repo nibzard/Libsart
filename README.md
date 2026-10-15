@@ -239,3 +239,23 @@ For more detail, see:
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+### Open documents from the agent pane
+
+Inside `margin desk -- claude` (or any shell-capable agent), run
+`margin open notes/article.md` to switch the existing viewer without moving
+keyboard focus. `margin open notes/article.md --line 42` selects source view;
+`--json` returns the usual command envelope. Paths are repository-relative and
+must be eligible for the viewer's current scope. Opening changes no content,
+checkpoint, or review decisions. Close pending dialogs or the external editor
+before opening another document. A closed viewer requires a new desk.
+
+Add this instruction to your agent guidance if useful:
+
+> When asked to show a document in Margin, find its repository-relative path and
+> run `margin open PATH`. Use `--line N` for a particular passage.
+
+Each desk passes a private `MARGIN_DESK_SOCKET` to its agent and viewer. The
+viewer owns cleanup; detaching and reattaching preserves the connection, including
+when narrow layouts put Margin in its own window. No agent configuration is
+changed. Clickable terminal links are a future integration.

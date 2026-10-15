@@ -550,12 +550,12 @@ fn outside_tmux_the_desk_composes_an_agent_pane_and_a_margin_pane() {
     assert!(
         panes.iter().any(|pane| pane.contains(&agent_pid)
             && pane.contains("dead=0")
-            && pane.contains(&format!("start={}", agent.display()))),
+            && pane.contains(&agent.display().to_string())),
         "the agent pane runs the recorded process: {panes:?}"
     );
     assert!(
         panes.iter().any(|pane| pane.contains("dead=0")
-            && pane.contains(&format!("start={}", env!("CARGO_BIN_EXE_margin")))
+            && pane.contains(env!("CARGO_BIN_EXE_margin"))
             && pane.ends_with("tui")),
         "the margin pane runs this build's interactive surface: {panes:?}"
     );
@@ -866,7 +866,7 @@ fn quitting_margin_leaves_the_agent_running() {
         survivor.contains(&agent_pid)
             && survivor.contains("dead=0")
             && survivor.contains("command=sleep")
-            && survivor.contains(&format!("start={}", agent.display())),
+            && survivor.contains(&agent.display().to_string()),
         "the agent process still runs in its pane: {survivor}"
     );
     let drafting = server.windows("writer", "#{window_name}");
@@ -1156,5 +1156,85 @@ fn repeated_desks_target_their_new_windows() {
             .unwrap();
         assert_eq!(server.panes(added, "#{pane_id}").len(), 2);
         assert_eq!(server.panes("writer:0", "#{pane_id} #{pane_pid}"), original);
+    }
+}
+
+#[test]
+fn agent_open_draws_in_existing_viewer_and_survives_detach() {
+    if skip_for_tmux() {
+        return;
+    }
+    for columns in [90, 170] {
+        let repo = TestRepo::init();
+        repo.write_file("notes/a.md", b"# Original document\n");
+        repo.write_file(
+            "notes/résumé 文.md",
+            b"# Agent opened this document\n\nTarget passage.\n",
+        );
+        repo.commit_all("documents");
+        let work = tempfile::TempDir::new().unwrap();
+        let server = DeskServer::new("open");
+        let agent = work.path().join("open-agent.sh");
+        fs::write(&agent, format!(
+            "#!/bin/sh\nprintf '%s' \"$MARGIN_DESK_SOCKET\" > '{}/socket'\n'{}' open 'notes/résumé 文.md' --line 3 --json > '{}/result'\nexec sleep 600\n",
+            work.path().display(), env!("CARGO_BIN_EXE_margin"), work.path().display()
+        )).unwrap();
+        fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut pty = spawn_desk(
+            &repo,
+            &server,
+            &[agent.to_str().unwrap()],
+            columns,
+            40,
+            None,
+        );
+        assert!(pty.wait_for("0:agent", LIMIT));
+        assert!(soon(LIMIT, || fs::read_to_string(
+            work.path().join("result")
+        )
+        .is_ok_and(|s| s.contains("\"ok\":true"))));
+        let target = server
+            .run(&["list-panes", "-a", "-F", "#{pane_id} #{pane_start_command}"])
+            .lines()
+            .find(|line| line.contains(env!("CARGO_BIN_EXE_margin")))
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string();
+        let target = target.as_str();
+        assert!(
+            soon(LIMIT, || server
+                .run(&["capture-pane", "-p", "-t", target])
+                .contains("Target passage")),
+            "viewer capture: {}",
+            server.run(&["capture-pane", "-p", "-t", target])
+        );
+        let panes = server.panes("margin:agent", "#{pane_id}");
+        let focus = server.run(&["display-message", "-p", "-t", "margin:agent", "#{pane_id}"]);
+        detach(&mut pty);
+        assert_eq!(pty.wait_exit(LIMIT).unwrap().code(), Some(0));
+        let socket = fs::read_to_string(work.path().join("socket")).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_margin"))
+            .args(["open", "notes/a.md", "--json"])
+            .env("MARGIN_DESK_SOCKET", socket.trim())
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            server
+                .run(&["capture-pane", "-p", "-t", target])
+                .contains("Original document")
+        );
+        assert_eq!(server.panes("margin:agent", "#{pane_id}"), panes);
+        assert_eq!(
+            server.run(&["display-message", "-p", "-t", "margin:agent", "#{pane_id}"]),
+            focus
+        );
     }
 }

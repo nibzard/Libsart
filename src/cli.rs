@@ -708,6 +708,16 @@ fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("open")
+                .about("interactive: open a document in this desk's viewer")
+                .arg(Arg::new("path").required(true))
+                .arg(
+                    Arg::new("line")
+                        .long("line")
+                        .value_parser(value_parser!(u32).range(1..)),
+                ),
+        )
+        .subcommand(
             Command::new("desk")
                 .about("Compose an optional tmux writing desk (interactive)")
                 .arg(
@@ -1081,7 +1091,7 @@ fn command_effect(path: &str) -> &'static str {
         "init" | "checkpoint" | "review" | "restore" | "hook install" | "hook remove"
         | "hook claude" | "note" => "mutation",
         "status" | "diff" | "show" | "log" | "doctor" | "notes" => "query",
-        "tui" | "edit" | "desk" => "interactive",
+        "tui" | "edit" | "desk" | "open" => "interactive",
         // A test fails when a new command reaches a caller unnamed here.
         _ => "unknown",
     }
@@ -1641,6 +1651,24 @@ fn dispatch(matches: &ArgMatches) -> Finished {
                 .expect("--path is required")
                 .clone();
             edit_finished(&operations, &path)
+        }
+        "open" => {
+            let path = sub.get_one::<String>("path").unwrap().clone();
+            let line = sub.get_one::<u32>("line").copied();
+            match crate::desk::open(
+                crate::desk::Request {
+                    path: path.clone(),
+                    line,
+                },
+                Duration::from_millis(invocation.timeout_ms),
+            ) {
+                Ok(()) => finish_envelope(
+                    &Envelope::success(Some("open"), json!({"path": path, "line": line})),
+                    0,
+                    invocation.json,
+                ),
+                Err(error) => error_finished(Some("open"), &error, invocation.json),
+            }
         }
         "desk" => {
             if let Some(finished) = reject_json("desk", invocation.json) {
@@ -3236,6 +3264,7 @@ mod tests {
                 "log",
                 "note",
                 "notes",
+                "open",
                 "restore",
                 "review",
                 "show",

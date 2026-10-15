@@ -283,9 +283,18 @@ fn drive(
     guard: &mut TerminalGuard,
     reduced_updates: bool,
 ) -> io::Result<()> {
+    let server = crate::desk::Server::start()?;
     let mut next_inspection = Instant::now();
     let mut drawn_once = false;
     loop {
+        let mut acknowledgement = None;
+        if let Some(server) = &server
+            && let Ok(pending) = server.requests.try_recv()
+            && Instant::now() < pending.deadline
+        {
+            let error = shell.desk_open(&pending.request).err();
+            acknowledgement = Some((pending.reply, crate::desk::Reply { error }));
+        }
         shell.poll_workspace_search();
         if let Some(worker) = worker.as_mut() {
             // Every answered inspection reaches the shell before the
@@ -306,6 +315,9 @@ fn drive(
             })?;
             drawn_once = true;
         }
+        if let Some((sender, reply)) = acknowledgement {
+            let _ = sender.send(reply);
+        }
         if shell.should_quit() {
             return Ok(());
         }
@@ -320,6 +332,9 @@ fn drive(
             // The terminal hands itself to the child editor and takes
             // itself back; the shell reloads the document afterwards
             // (SPEC 11.5, 12.5).
+            if let Some(server) = &server {
+                server.set_busy(true);
+            }
             guard.suspend()?;
             let returned = run_editor(&handoff.argv, &handoff.path);
             guard.resume()?;
@@ -331,6 +346,9 @@ fn drive(
             let area = terminal.size()?.into();
             terminal.resize(area)?;
             shell.editor_returned(returned);
+            if let Some(server) = &server {
+                server.set_busy(false);
+            }
             continue;
         }
         let now = Instant::now();
@@ -349,6 +367,9 @@ fn drive(
         if worker.as_ref().is_some_and(RefreshWorker::is_busy)
             || shell.workspace_search().searching()
         {
+            wait = wait.min(BUSY_WAIT);
+        }
+        if server.is_some() {
             wait = wait.min(BUSY_WAIT);
         }
         if event::poll(wait)? {

@@ -355,6 +355,7 @@ This is Margin's own interface guarantee. The supported Git mutation environment
 | `doctor` | Optional `--json` | Read-only diagnostics and bounded recovery argv suggestions |
 | `tui` | Optional initial document/view | Interactive review surface |
 | `edit` | `--path`; configured editor argv | Explicit terminal editor handoff |
+| `open` | `PATH [--line N] [--json]` | Ask this desk viewer to display an eligible document; acknowledge after drawing |
 | `desk` | `-- AGENT ARGS...` | Optional tmux arrangement and explicit child process launch |
 | `hook install\|remove claude` | Optional `--dry-run` | Exact integration configuration changes |
 | `hook claude` | Hook protocol JSON on stdin | Translate a supported Claude hook to a capture operation |
@@ -932,6 +933,16 @@ Use an explicit executable-plus-argument list stored in local settings. Append o
 Editor process exit is a refresh boundary. It is not automatic approval and only becomes a capture boundary when that policy is explicitly enabled. No implementation code inside the core domain depends on a specific editor.
 
 ### 12.6 tmux desk
+
+Each desk gives its agent and viewer a distinct Unix socket address through
+`MARGIN_DESK_SOCKET`. A mode-0700 directory protects the bounded local protocol.
+The viewer owns the socket lifetime, including across detach/reattach. `margin
+open PATH [--line N]` validates the viewer scope and path, opens reading or source
+view, and acknowledges only after drawing. Failures preserve the document;
+unfinished dialogs and editor handoffs return bounded busy errors. This channel
+never injects terminal keys, changes focus, captures a checkpoint, or changes
+review decisions. Closed viewers require a new desk. Clickable links are deferred.
+
 
 tmux already supplies sessions, windows, split panes, selection, and zoom. Margin composes those operations and documents the actual configured switching controls. [I3][I4]
 
@@ -1586,7 +1597,7 @@ And the writer returns to the same document context
 | ADR-007 | Cooperative single writer and explicit recovery | Claimed CAS over arbitrary writers, transaction journal | Clear concurrency/failure boundary; stronger isolation is a separate future workflow |
 | ADR-008 | Identity storage profile initially | Silent Git normalization/filter bypass | Narrower repository compatibility; add profiles with explicit fidelity tests |
 | ADR-009 | One Cargo package and six runtime dependencies | Multi-crate framework, zero-dependency terminal/parser implementations | Small architecture; splits/additions need actual evidence |
-| ADR-010 | Hooks capture boundaries; tmux arranges views | Terminal scraping, send-keys orchestration | Minimal integration; no generalized agent platform |
+| ADR-010 | Hooks capture boundaries; tmux arranges views; private local sockets open documents | Terminal scraping, send-keys orchestration | Minimal integration; no generalized agent platform |
 | ADR-011 | TLA+ plus real tests plus benchmarks | Treating one assurance method as complete | Each method has an explicit boundary and evidence gate |
 | ADR-012 | No durable review-selection journal | Automatic crash replay/resume state | Lost selections are reviewed again; committed history is sufficient to recover content |
 | ADR-013 | Measurements use fixed corpora and actual registered hardware | Anecdotes, cherry-picked microbenchmarks | Results reproducible; targets remain unmeasured until baseline exists |

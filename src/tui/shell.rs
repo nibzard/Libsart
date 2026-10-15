@@ -2857,6 +2857,70 @@ impl<'a> Shell<'a> {
         self.redraw = true;
     }
 
+    /// Apply a desk request only after validating the current viewer scope and disk path.
+    pub fn desk_open(&mut self, request: &crate::desk::Request) -> Result<(), String> {
+        if self.overlay.is_some()
+            || self.finish.is_some()
+            || self.pending_editor.is_some()
+            || self.history.as_ref().is_some_and(|h| h.preview().is_some())
+        {
+            return Err("viewer busy; finish the current dialog first".into());
+        }
+        let path = &request.path;
+        if request.line == Some(0) {
+            return Err("line must be positive".into());
+        }
+        let documents = if let Some(descriptor) = &self.descriptor {
+            let resolved = app::resolve_scope(self.operations.git(), &descriptor.to_scope_input())
+                .map_err(|_| "cannot validate the current document scope".to_string())?;
+            document_paths(&resolved)
+        } else {
+            discover_documents(&self.root)
+        };
+        let selection = documents
+            .iter()
+            .position(|p| p == path)
+            .ok_or_else(|| "document is unsupported or outside this viewer's scope".to_string())?;
+        let mut current = self.root.clone();
+        for part in std::path::Path::new(path).components() {
+            let std::path::Component::Normal(part) = part else {
+                return Err("expected repository-relative document path".into());
+            };
+            current.push(part);
+            let meta = fs::symlink_metadata(&current).map_err(|e| e.to_string())?;
+            if meta.file_type().is_symlink() {
+                return Err("symlink documents are unsupported".into());
+            }
+        }
+        if !current.is_file() {
+            return Err("document is missing or is not a file".into());
+        }
+        let working = read_working(&self.root, path, READ_VIEW_BYTES).map_err(|e| e.to_string())?;
+        let shown = self.show_candidate(path);
+        let (document, _) = document_view(path, &Ok(working), shown.as_ref());
+        self.documents = documents;
+        self.workspace.documents = self.documents.len();
+        self.selection = selection;
+        self.absorb_document(document);
+        if self.history.is_some() {
+            self.reload_history();
+        }
+        self.view = View::Read;
+        self.focus = Focus::Reading;
+        self.reading_source = request.line.is_some();
+        self.anchor = Some(SourceAnchor {
+            path: path.clone(),
+            line: request
+                .line
+                .unwrap_or(1)
+                .min(self.source_lines.len().max(1) as u32),
+        });
+        self.offset = 0;
+        self.drift = 0;
+        self.redraw = true;
+        Ok(())
+    }
+
     /// Says whether the event loop should stop.
     pub fn should_quit(&self) -> bool {
         self.quit

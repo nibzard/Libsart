@@ -8,3 +8,5 @@ pub mod integrations;
 pub mod markdown;
 pub mod notes;
 pub mod tui;
+
+pub mod desk;
