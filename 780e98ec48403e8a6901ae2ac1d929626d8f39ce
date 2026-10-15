@@ -1,0 +1,1 @@
+Resolve pointer branch conflicts against merged PR #3. Keep both pointer handlers and remote navigation. Strict lints and all selected library, pointer, history, changes, desk, real tmux, shell, terminal lifecycle, and smoke suites pass.
