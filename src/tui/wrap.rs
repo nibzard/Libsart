@@ -13,6 +13,8 @@ use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use unicode_width::UnicodeWidthChar as _;
 use unicode_width::UnicodeWidthStr;
 
+use crate::tui::tables;
+
 /// The semantic role of one composed line. The role picks the style the
 /// surface draws the line in; the words and symbols of the line carry
 /// every state on their own, so color-off mode loses nothing (SPEC 11.4).
@@ -190,12 +192,14 @@ pub fn document_headings(text: &str) -> Vec<Heading> {
 }
 
 /// Reading presentation preserves source coordinates while hiding HTML
-/// comments. Raw source remains available with `s`; code examples stay literal.
+/// comments and re-rendering outermost Markdown tables as aligned grids.
+/// Raw source remains available with `s`; code examples stay literal.
 pub fn reading_document(text: &str, width: u16, source: bool) -> Vec<DisplayRow> {
     if source {
         return wrap_document(text, width);
     }
     let headings = document_headings(text);
+    let tables = tables::scan(text);
     // HTML blocks arrive in per-line events; retain comment state across them.
     let mut comments = Vec::new();
     let mut opened = None;
@@ -228,8 +232,30 @@ pub fn reading_document(text: &str, width: u16, source: bool) -> Vec<DisplayRow>
     let mut comment_index = 0;
     let mut rows = Vec::new();
     let mut start = 0;
+    let mut next_table = 0usize;
+    let mut table_skip = 0u32;
     for (index, line) in text.split_inclusive('\n').enumerate() {
         let end = start + line.len();
+        let number = index as u32 + 1;
+        if number <= table_skip {
+            start = end;
+            continue;
+        }
+        while tables
+            .get(next_table)
+            .is_some_and(|table| table.first < number)
+        {
+            next_table += 1;
+        }
+        if let Some(table) = tables.get(next_table)
+            && table.first == number
+        {
+            next_table += 1;
+            table_skip = table.last;
+            rows.extend(table.rows(text, width, &comments));
+            start = end;
+            continue;
+        }
         let mut shown = String::new();
         let mut cursor = start;
         while comment_index < comments.len() && comments[comment_index].end <= start {
@@ -245,7 +271,6 @@ pub fn reading_document(text: &str, width: u16, source: bool) -> Vec<DisplayRow>
         shown.push_str(&text[cursor..end]);
         let hidden = shown.trim().is_empty() && relevant.first().is_some_and(|r| r.start < end);
         if !hidden {
-            let number = index as u32 + 1;
             let kind = if headings.binary_search_by_key(&number, |h| h.line).is_ok() {
                 RowKind::Heading
             } else {
@@ -332,6 +357,18 @@ fn wrap_line(
     kind: RowKind,
     rows: &mut Vec<DisplayRow>,
 ) {
+    for piece in wrap_pieces(line, width) {
+        push_row(rows, source_line, kind, &piece);
+    }
+}
+
+/// Wraps one line of text to pieces of at most `width` cells, with the
+/// trailing spaces of each piece removed. Prose rows and table cells
+/// share this wrapper, so an over-wide cell splits exactly as an
+/// over-wide line of prose does.
+pub fn wrap_pieces(line: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut pieces: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut cells = 0usize;
     for (slice, is_spaces) in tokens(line) {
@@ -342,7 +379,7 @@ fn wrap_line(
                 // run at the start of the row is dropped, never kept as an
                 // over-wide blank row.
                 if cells > 0 {
-                    push_row(rows, source_line, kind, &current);
+                    pieces.push(current.trim_end_matches(' ').to_string());
                     current.clear();
                     cells = 0;
                 }
@@ -352,11 +389,11 @@ fn wrap_line(
                 // One word wider than the row: split it at the cells that
                 // remain, then fill fresh rows with the rest.
                 if !current.is_empty() {
-                    push_row(rows, source_line, kind, &current);
+                    pieces.push(current.trim_end_matches(' ').to_string());
                 }
                 let parts = hard_split(slice, width);
                 for part in &parts[..parts.len() - 1] {
-                    push_row(rows, source_line, kind, part);
+                    pieces.push(part.trim_end_matches(' ').to_string());
                 }
                 current = parts[parts.len() - 1].clone();
                 cells = UnicodeWidthStr::width(current.as_str());
@@ -364,7 +401,7 @@ fn wrap_line(
             }
             // The next word fits a fresh row: break before it.
             if !current.is_empty() {
-                push_row(rows, source_line, kind, &current);
+                pieces.push(current.trim_end_matches(' ').to_string());
             }
             current = slice.to_string();
             cells = slice_cells;
@@ -373,7 +410,8 @@ fn wrap_line(
         current.push_str(slice);
         cells += slice_cells;
     }
-    push_row(rows, source_line, kind, &current);
+    pieces.push(current.trim_end_matches(' ').to_string());
+    pieces
 }
 
 /// Emits one row with its trailing spaces removed.

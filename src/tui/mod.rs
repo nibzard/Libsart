@@ -24,6 +24,8 @@
 //!   13.3).
 //! - [`layout`] classifies sizes and computes geometry (SPEC 11.2).
 //! - [`wrap`] soft-wraps the reading column and keeps source anchors.
+//! - [`tables`] renders the outermost Markdown tables of the reading
+//!   column as aligned grids (SPEC 11.1).
 //! - [`render`] fills one frame from the shell (SPEC 11.1).
 //! - [`run`] owns terminal lifecycle and the event loop (SPEC 11.5).
 
@@ -37,6 +39,7 @@ pub mod render;
 pub mod run;
 pub mod search;
 pub mod shell;
+pub mod tables;
 pub mod wrap;
 
 pub use actions::{Action, MenuEntry};
