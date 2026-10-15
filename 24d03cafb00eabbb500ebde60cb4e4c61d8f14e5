@@ -1,0 +1,1 @@
+Prepare sequential PR integration. Lints pass locally. The official TLA+ download matches the release API digest; SANY passes and model checks are running.
