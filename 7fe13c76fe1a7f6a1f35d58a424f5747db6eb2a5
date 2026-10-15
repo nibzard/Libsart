@@ -1,0 +1,17 @@
+Preserve review decisions while checkpointing source corrections.
+
+Match complete patches, coordinates, modes, and grouping reasons under
+the same baseline, branch, scope, engine, and Git version. Ignore only
+the file-wide index header for independent text groups. Another passage
+can change that header without changing the reviewed patch.
+
+Transfer unique matches to fresh change identifiers. Reset changed,
+shifted, ambiguous, or unverifiable decisions. Explicit refresh still
+clears decisions. Checkpoint failure preserves the existing plan.
+
+Refresh Git stat metadata before restoration without staging content.
+This handles identical file rewrites while preserving unrelated edits.
+
+Validation: 982 tests across 57 targets, including 13 correction workflow
+checks. Lints and Rust 1.89.0 compatibility checks pass.
+Evidence: docs/review-correction-evidence.md.
