@@ -16,9 +16,10 @@
 /bench/results/scratch.*/
 /bench/results/raw/
 
-# Pinned formal tools: only the checksum file is tracked; the jar is fetched
-# and verified by formal/run-profiles.sh.
+# Keep the verified formal tool in Git because upstream release assets can
+# change. Ignore other downloaded tool versions.
 /formal/tools/*.jar
+!/formal/tools/tla2tools-1.8.0.jar
 /formal/states/
 /formal/MarginReview_TTrace_*
 

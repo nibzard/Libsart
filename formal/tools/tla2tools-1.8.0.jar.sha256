@@ -3,5 +3,7 @@
 # The digest below is the asset digest GitHub publishes for the v1.8.0
 # release (API: repos/tlaplus/tlaplus/releases/tags/v1.8.0, asset
 # tla2tools.jar, digest sha256:...). The downloaded jar matched it exactly.
+# Verified on 2026-10-15 before the upstream asset changed again that day.
+# Store this exact verified jar in Git so CI does not follow replacements.
 # Verified by formal/run-profiles.sh before every run.
 0f56d6a813368c48008dfbecb23a73ab43a4a5e1bf09f026782a674aa9d4b3c9  tla2tools-1.8.0.jar

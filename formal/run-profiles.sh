@@ -15,9 +15,8 @@
 # control, and negative profiles, and the nightly tier adds the larger
 # MarginReviewNightly profile. SANY runs in every case.
 #
-# The jar is downloaded from the official GitHub release when absent and its
-# sha256 is verified against formal/tools/tla2tools-<version>.jar.sha256,
-# whose digest is the one GitHub publishes for the release asset.
+# The verified official release jar is stored in Git because upstream
+# release assets can change. Its sha256 is checked before each run.
 
 set -euo pipefail
 
@@ -42,8 +41,8 @@ esac
 mkdir -p "${tools}" "${out}"
 
 if [ ! -f "${jar}" ]; then
-  echo "downloading ${url}" >&2
-  curl -fsSL --retry 3 -o "${jar}" "${url}"
+  echo "missing tracked tool ${jar}; restore it from Git" >&2
+  exit 2
 fi
 
 (cd "${tools}" && sha256sum -c "tla2tools-${version}.jar.sha256") >&2

@@ -102,6 +102,15 @@ exercised against when the desk was built. Raise it together with
 `tmux.sha256` after running the desk suite against a newer release;
 never lower it below 3.1.
 
+## The pinned formal tool
+
+`formal/tools/tla2tools-1.8.0.jar` stores the verified official TLA+ tool.
+`formal/run-profiles.sh` checks its SHA-256 checksum before each run.
+The jar stays in Git because the upstream release asset changed during
+validation on 2026-10-15. CI uses the same bytes as local validation and
+does not download a replacement. Update the jar and checksum together,
+verify the official release digest, and run the formal gate.
+
 ## The pinned Git versions
 
 The nightly matrix runs the deterministic gate against more than the

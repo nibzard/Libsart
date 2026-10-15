@@ -15,7 +15,7 @@
 # environment.txt and summary.tsv for the whole run.
 #
 # The jar is the same pinned official artifact as formal/run-profiles.sh:
-# downloaded when absent and verified against the tracked checksum.
+# stored in Git and verified against the tracked checksum.
 
 set -euo pipefail
 
@@ -46,8 +46,8 @@ done
 mkdir -p "${tools}" "${out}"
 
 if [ ! -f "${jar}" ]; then
-  echo "downloading ${url}" >&2
-  curl -fsSL --retry 3 -o "${jar}" "${url}"
+  echo "missing tracked tool ${jar}; restore it from Git" >&2
+  exit 2
 fi
 
 (cd "${tools}" && sha256sum -c "tla2tools-${version}.jar.sha256") >&2
