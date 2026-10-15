@@ -182,7 +182,7 @@ fn envs_with_term(repo: &TestRepo, term: Option<&str>) -> Vec<(String, String)> 
         .env()
         .vars()
         .iter()
-        .filter(|(key, _)| key.as_os_str() != "TERM")
+        .filter(|(key, _)| key.as_os_str() != "TERM" && key.as_os_str() != "NO_COLOR")
         .map(|(key, value)| {
             (
                 key.to_string_lossy().into_owned(),

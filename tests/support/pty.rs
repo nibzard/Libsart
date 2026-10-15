@@ -54,7 +54,7 @@ mod ffi {
 mod ffi {
     pub const O_NOCTTY: i32 = 0x20000;
     pub const O_RDWR: i32 = 0o2;
-    pub const O_NONBLOCK: i32 = 0x0004_0000;
+    pub const O_NONBLOCK: i32 = 0x0004;
     pub const O_CLOEXEC: i32 = 0x1000000;
     pub const F_GETFL: i32 = 3;
     pub const F_SETFL: i32 = 4;
@@ -70,7 +70,6 @@ mod ffi {
         pub c_oflag: u64,
         pub c_cflag: u64,
         pub c_lflag: u64,
-        pub c_line: u8,
         pub c_cc: [u8; 20],
         pub c_ispeed: u64,
         pub c_ospeed: u64,
@@ -86,7 +85,7 @@ unsafe extern "C" {
     fn unlockpt(fd: RawFd) -> i32;
     fn ptsname(fd: RawFd) -> *const c_char;
     fn ioctl(fd: RawFd, request: u64, ...) -> i32;
-    fn fcntl(fd: RawFd, command: i32, arg: i32) -> i32;
+    fn fcntl(fd: RawFd, command: i32, ...) -> i32;
     fn tcgetattr(fd: RawFd, termios: *mut ffi::Termios) -> i32;
     fn setsid() -> i32;
     fn open(path: *const c_char, flags: i32, ...) -> RawFd;
@@ -434,7 +433,11 @@ impl Pty {
         unsafe {
             let mut termios = std::mem::zeroed::<ffi::Termios>();
             if tcgetattr(self.slave.as_raw_fd(), &mut termios) != 0 {
-                return false;
+                // macOS invalidates the slave's ioctl surface when its
+                // controlling session exits. The master retains termios.
+                if tcgetattr(self.master.as_raw_fd(), &mut termios) != 0 {
+                    return false;
+                }
             }
             (termios.c_lflag & ffi::ICANON) != 0 && (termios.c_lflag & ffi::ECHO) != 0
         }
@@ -506,7 +509,86 @@ pub fn visible(bytes: &[u8]) -> String {
             _ => {}
         }
     }
+    out.push_str(&replayed_screen(&text));
     collapse(&out)
+}
+
+/// Ratatui emits cell diffs, which can split a visible word around cursor
+/// moves and unchanged letters. Replay its basic cursor/erase vocabulary so
+/// PTY assertions describe the displayed screen instead of raw paint fragments.
+fn replayed_screen(text: &str) -> String {
+    let mut cells = vec![vec![' '; 300]; 120];
+    let (mut x, mut y) = (0usize, 0usize);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.next() {
+                Some('[') => {
+                    let mut args = String::new();
+                    let mut op = ' ';
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            op = c;
+                            break;
+                        }
+                        args.push(c);
+                    }
+                    let values: Vec<usize> =
+                        args.split(';').map(|s| s.parse().unwrap_or(0)).collect();
+                    let n = values.first().copied().unwrap_or(0).max(1);
+                    match op {
+                        'H' | 'f' => {
+                            y = n.saturating_sub(1).min(119);
+                            x = values
+                                .get(1)
+                                .copied()
+                                .unwrap_or(1)
+                                .max(1)
+                                .saturating_sub(1)
+                                .min(299);
+                        }
+                        'G' => x = n.saturating_sub(1).min(299),
+                        'd' => y = n.saturating_sub(1).min(119),
+                        'A' => y = y.saturating_sub(n),
+                        'B' => y = (y + n).min(119),
+                        'C' => x = (x + n).min(299),
+                        'D' => x = x.saturating_sub(n),
+                        'J' if args == "2" || args == "3" => {
+                            for row in &mut cells {
+                                row.fill(' ');
+                            }
+                        }
+                        'K' => {
+                            for c in &mut cells[y][x..] {
+                                *c = ' ';
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' {
+                            break;
+                        }
+                        if c == '\x1b' {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if c == '\r' {
+            x = 0;
+        } else if c == '\n' {
+            y = (y + 1).min(119);
+        } else if !c.is_control() {
+            cells[y][x] = c;
+            x = (x + unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).min(299);
+        }
+    }
+    cells.iter().flat_map(|r| r.iter()).collect()
 }
 
 /// Removes every whitespace character, so wrapped rows still match.
