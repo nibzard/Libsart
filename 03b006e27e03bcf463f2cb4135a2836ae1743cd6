@@ -1,0 +1,1 @@
+Integrate hover changes after PR #4. Fix remote navigation overriding a queued preview and stale pointer targets. Strict lints pass. Selected library, desk, tmux, pointer, changes, history, hover, refresh, finish, lifecycle, smoke, and shell tests pass after updating deferred-load expectations.
