@@ -58,6 +58,58 @@ const MAX_HEX_CHARS: usize = 96;
 /// answers (SPEC 5.5, 9.5).
 const DIRTY_SCOPE: &str = "DIRTY_SCOPE";
 
+/// How many patch lines the hover excerpt of one revision shows. The
+/// excerpt is a reading aid beside the hovered revision, not the
+/// restoration preview `Enter` opens; it states the bound when it
+/// truncates.
+const EXCERPT_LINES: usize = 16;
+
+/// The bounded before/after the hovered revision shows against the
+/// current candidate: the literal patch lines of the displayed document
+/// between the revision and the candidate, read-only, under the fixed
+/// diff contract of SPEC 10.1. The excerpt never feeds a plan; the
+/// restoration preview `Enter` opens computes its own proof.
+#[derive(Clone, Debug)]
+pub struct HoverExcerpt {
+    /// The hovered revision the excerpt was computed for.
+    commit: String,
+    /// The candidate the excerpt was computed against.
+    head: String,
+    /// The bounded, display-escaped patch lines.
+    lines: Vec<String>,
+    /// Whether the patch held more lines than the excerpt shows.
+    truncated: bool,
+}
+
+/// Parses the bounded excerpt lines of one single-file patch. The
+/// structural header lines (`diff`, `index`, `old/new mode`, `---`, `+++`)
+/// carry no prose: the excerpt keeps the hunk headers and the changed
+/// lines themselves, display-escaped, and states its bound when the patch
+/// holds more.
+fn excerpt_lines(patch: &[u8]) -> (Vec<String>, bool) {
+    let text = String::from_utf8_lossy(patch);
+    let mut lines = Vec::new();
+    let mut truncated = false;
+    for line in text.lines() {
+        if line.starts_with("diff ")
+            || line.starts_with("index ")
+            || line.starts_with("old mode ")
+            || line.starts_with("new mode ")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("Binary files ")
+        {
+            continue;
+        }
+        if lines.len() == EXCERPT_LINES {
+            truncated = true;
+            break;
+        }
+        lines.push(crate::cli::display_escape(line));
+    }
+    (lines, truncated)
+}
+
 /// One row of the editorial timeline (SPEC 5.5).
 #[derive(Clone, Debug)]
 pub struct HistoryRow {
@@ -320,6 +372,9 @@ pub struct HistoryView {
     selection: usize,
     /// The standing restoration preview, when one stands (SPEC 5.5).
     preview: Option<RestorePreview>,
+    /// The before/after excerpt of the hovered revision, when one was
+    /// computed for the hover and candidate that stand.
+    excerpt: Option<HoverExcerpt>,
     // The derived display state: the wrapped rows of the column, the first
     // row of every timeline entry, the width they were wrapped at, and the
     // top visible row.
@@ -394,6 +449,7 @@ impl HistoryView {
             path_filter,
             selection: 0,
             preview: None,
+            excerpt: None,
             display: Vec::new(),
             starts: Vec::new(),
             width: 0,
@@ -458,6 +514,81 @@ impl HistoryView {
     /// The standing restoration preview, when one stands.
     pub fn preview(&self) -> Option<&RestorePreview> {
         self.preview.as_ref()
+    }
+
+    /// The before/after excerpt of the hovered revision, when one stands.
+    pub fn excerpt(&self) -> Option<&HoverExcerpt> {
+        self.excerpt.as_ref()
+    }
+
+    /// Drops the hover excerpt; the next quiet pass recomputes it.
+    pub fn clear_excerpt(&mut self) {
+        if self.excerpt.take().is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// Says whether the standing excerpt matches the hovered revision and
+    /// the candidate, so one quiet pass can skip recomputing it. A
+    /// standing restoration preview and an empty timeline want no excerpt;
+    /// a missing candidate wants the excerpt gone.
+    pub fn excerpt_settled(&self, head: Option<&str>) -> bool {
+        if self.preview.is_some() || self.rows.is_empty() {
+            return true;
+        }
+        match (self.excerpt.as_ref(), head) {
+            (None, None) => true,
+            (Some(excerpt), Some(head)) => {
+                excerpt.head == head
+                    && self
+                        .rows
+                        .get(self.selection)
+                        .is_some_and(|row| row.commit == excerpt.commit)
+            }
+            _ => false,
+        }
+    }
+
+    /// Computes the hover excerpt of the selected revision for `path`
+    /// against `head`, one bounded patch through the fixed diff contract,
+    /// only when the hover or the candidate moved since the excerpt that
+    /// stands. The excerpt names both sides, so an unchanged excerpt over
+    /// a moved hover can never stand.
+    pub fn refresh_excerpt(&mut self, operations: &Operations<'_>, head: &str, path: &str) {
+        let Some(row) = self.rows.get(self.selection) else {
+            self.clear_excerpt();
+            return;
+        };
+        let commit = row.commit.clone();
+        if self
+            .excerpt
+            .as_ref()
+            .is_some_and(|excerpt| excerpt.commit == commit && excerpt.head == head)
+        {
+            return;
+        }
+        let patch = operations
+            .git()
+            .diff_tree_patch(&commit, head, &[OsString::from(path)]);
+        let excerpt = match patch {
+            Ok(patch) => {
+                let (lines, truncated) = excerpt_lines(&patch);
+                HoverExcerpt {
+                    commit,
+                    head: head.to_string(),
+                    lines,
+                    truncated,
+                }
+            }
+            Err(_) => HoverExcerpt {
+                commit,
+                head: head.to_string(),
+                lines: vec!["the before/after could not be read".to_string()],
+                truncated: false,
+            },
+        };
+        self.excerpt = Some(excerpt);
+        self.dirty = true;
     }
 
     /// The state of the standing preview, as the keys that answer it name
@@ -672,6 +803,31 @@ impl HistoryView {
             }
             if let Some(reason) = &self.rows[index].notes.unreadable {
                 lines.push(ComposedLine::warning(reason));
+            }
+            // The hover excerpt stands under the revision it belongs to,
+            // bounded, beside the action that opens the full preview
+            // (SPEC 5.5): the reader sees what the revision holds against
+            // the candidate without leaving the timeline.
+            if index == self.selection
+                && let Some(excerpt) = &self.excerpt
+            {
+                if excerpt.lines.is_empty() {
+                    lines.push(ComposedLine::meta(
+                        "  Identical to the current candidate; Enter previews the restoration",
+                    ));
+                } else {
+                    lines.push(ComposedLine::meta(
+                        "  Against the current candidate · Enter previews the restoration",
+                    ));
+                    for line in &excerpt.lines {
+                        lines.push(ComposedLine::text(format!("  {line}")));
+                    }
+                    if excerpt.truncated {
+                        lines.push(ComposedLine::meta(
+                            "  …the excerpt is bounded; Enter previews the whole comparison",
+                        ));
+                    }
+                }
             }
             if self.details && index == self.selection {
                 let row = &self.rows[index];
@@ -1066,6 +1222,61 @@ mod tests {
         assert_eq!(
             lines[1].text,
             "  the document view failed; no honest preview exists",
+        );
+    }
+
+    /// One single-file patch with every structural header kind and more
+    /// changed lines than the excerpt bound.
+    fn long_patch() -> String {
+        let mut patch = String::from(
+            "diff --git a/notes/a.md b/notes/a.md\nindex 111..222 100644\n--- a/notes/a.md\n+++ b/notes/a.md\n",
+        );
+        patch.push_str("@@ -1,3 +1,4 @@\n");
+        for number in 0..(EXCERPT_LINES + 5) {
+            patch.push_str(&format!("{number}\n"));
+        }
+        patch
+    }
+
+    #[test]
+    fn the_hover_excerpt_keeps_hunks_and_changed_lines_and_states_its_bound() {
+        let (lines, truncated) = excerpt_lines(long_patch().as_bytes());
+        assert!(
+            lines.iter().all(|line| !line.starts_with("diff ")
+                && !line.starts_with("index ")
+                && !line.starts_with("--- ")
+                && !line.starts_with("+++ ")),
+            "no structural header line survives: {lines:?}",
+        );
+        assert!(lines.contains(&"@@ -1,3 +1,4 @@".to_string()));
+        assert_eq!(lines.len(), EXCERPT_LINES);
+        assert!(truncated, "the patch held more lines than the bound");
+
+        let (lines, truncated) = excerpt_lines(
+            b"diff --git a/x b/x\nindex 1..2\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "@@ -1 +1 @@".to_string(),
+                "-old".to_string(),
+                "+new".to_string()
+            ]
+        );
+        assert!(!truncated);
+
+        let (lines, _) = excerpt_lines(b"");
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn the_hover_excerpt_escapes_terminal_controls() {
+        let (lines, _) = excerpt_lines(b"@@ -1 +1 @@\n+safe\x1b[31mred\x1b[0m\n");
+        assert_eq!(lines.len(), 2);
+        assert!(
+            !lines[1].contains('\x1b'),
+            "the escape never reaches the frame: {:?}",
+            lines[1],
         );
     }
 }

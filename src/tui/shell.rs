@@ -75,7 +75,7 @@ const FIELD_CHARS: usize = 120;
 const WHEEL_ROWS: usize = 3;
 
 /// How many documents the pre-adoption discovery lists (SPEC 5.1).
-const MAX_DISCOVERED_DOCUMENTS: usize = 500;
+pub(crate) const MAX_DISCOVERED_DOCUMENTS: usize = 500;
 
 /// How deep the pre-adoption discovery walks.
 const MAX_DISCOVERY_DEPTH: usize = 8;
@@ -441,6 +441,21 @@ struct FinishPanel {
     width: u16,
 }
 
+/// One saved reading position of a document the writer left (SPEC 5.4):
+/// the source anchor is the position; the drift is the best-effort display
+/// offset inside the anchor's source line (SPEC 11.2).
+#[derive(Clone)]
+struct SavedPosition {
+    path: String,
+    line: u32,
+    drift: usize,
+}
+
+/// How many documents keep their reading position (SPEC 5.4). The map is
+/// disposable interface state: losing one position costs one scroll, never
+/// one decision or one draft.
+const MAX_SAVED_POSITIONS: usize = 64;
+
 /// The terminal shell.
 pub struct Shell<'a> {
     root: PathBuf,
@@ -463,6 +478,20 @@ pub struct Shell<'a> {
     drift: usize,
     viewport_rows: usize,
     anchor: Option<SourceAnchor>,
+    /// The reading positions of documents the writer left, most recently
+    /// left first (SPEC 5.4): one view switch or one document return
+    /// restores the position the anchor names, never a rendered row.
+    saved_positions: Vec<SavedPosition>,
+    /// The document navigation is moving to, when movement outran the
+    /// load: the target the next quiet pass loads. While it stands, the
+    /// reading column keeps the last settled content and every
+    /// content-dependent action states its reason instead of running — a
+    /// decision must never land on the passage the column does not show.
+    pending_document: Option<String>,
+    /// Whether the unadopted discovery stopped at its document bound, so
+    /// the navigator says the list is bounded instead of showing a quietly
+    /// short list (SPEC 11.3).
+    discovery_truncated: bool,
     /// The adopted scope descriptor the document list resolved against,
     /// held so the polling watch can name the same input without one Git
     /// query per tick; `None` before adoption.
@@ -577,6 +606,9 @@ impl<'a> Shell<'a> {
             drift: 0,
             viewport_rows: 0,
             anchor: None,
+            saved_positions: Vec::new(),
+            pending_document: None,
+            discovery_truncated: false,
             descriptor: None,
             workspace: WorkspaceSnapshot::unadopted(&folder, None),
             changes: None,
@@ -641,6 +673,11 @@ impl<'a> Shell<'a> {
     /// at that frame, so nothing it does not show may delay it).
     fn load_visible(&mut self, descriptor: ScopeDescriptor) {
         self.regenerate();
+        // One rebuild recomputes the whole read-only state, so a pending
+        // navigation target from the rebuilt state is void: the reload
+        // below carries the displayed document, and the writer navigates
+        // again over what the rebuild now shows.
+        self.pending_document = None;
         self.descriptor = Some(descriptor.clone());
         self.workspace.adopted = true;
         let inspection = self.operations.inspect_workspace(&InspectRequest {
@@ -682,7 +719,24 @@ impl<'a> Shell<'a> {
                 .list_notes(Some(changes.candidate_oid()))
                 .data
         });
+        // One reload of the same pinned review keeps the hovered group by
+        // its change ID (SPEC 5.4); a new review pins new IDs, so its
+        // hover starts at the first group.
+        let hovered = self.changes.as_ref().map(|changes| {
+            (
+                changes.review_id().to_string(),
+                changes
+                    .selected_group()
+                    .map(|group| group.change_id.clone()),
+            )
+        });
         self.changes = ChangesView::load(self.operations);
+        if let (Some((review, change)), Some(changes)) = (hovered, &mut self.changes)
+            && changes.review_id() == review
+            && let Some(change) = change
+        {
+            changes.select_change(&change);
+        }
         if let (Some(changes), Some(notes)) = (&mut self.changes, previous_notes) {
             changes.retire_notes(notes);
         }
@@ -807,7 +861,10 @@ impl<'a> Shell<'a> {
     fn load_unadopted(&mut self, folder: &str) {
         self.regenerate();
         self.descriptor = None;
-        self.documents = discover_documents(&self.root);
+        let (documents, truncated) = discover_documents(&self.root);
+        self.documents = documents;
+        self.discovery_truncated = truncated;
+        self.pending_document = None;
         let note = self.workspace.note.take();
         self.workspace = WorkspaceSnapshot::unadopted(folder, note);
         self.workspace.documents = self.documents.len();
@@ -843,6 +900,7 @@ impl<'a> Shell<'a> {
     /// The comparison of the two decides the label, so the label is about
     /// the bytes, never a guess.
     fn load_document(&mut self, path: &str) {
+        self.save_position();
         self.offset = 0;
         self.drift = 0;
         let shown = self.show_candidate(path);
@@ -852,6 +910,7 @@ impl<'a> Shell<'a> {
             self.notice = Some(text);
         }
         self.absorb_document(document);
+        self.restore_position(path);
         if self.history.is_some() {
             self.reload_history();
         }
@@ -1174,7 +1233,7 @@ impl<'a> Shell<'a> {
                 .map_err(|e| e.to_string())?;
             document_paths(&resolved).contains(&request.path)
         } else {
-            discover_documents(&self.root).contains(&request.path)
+            discover_documents(&self.root).0.contains(&request.path)
         };
         if !eligible {
             return Err("document is missing, unsupported, or outside the viewer scope".into());
@@ -1206,6 +1265,9 @@ impl<'a> Shell<'a> {
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Err("opening request expired before navigation; retry".into());
         }
+        self.save_position();
+        self.pending_document = None;
+        self.clear_pointer_targets();
         self.absorb_document(document);
         if self.history.is_some() {
             self.reload_history();
@@ -1224,6 +1286,7 @@ impl<'a> Shell<'a> {
         self.view = View::Read;
         self.focus = Focus::Reading;
         self.reading_source = request.line.is_some();
+        self.reposition_navigator_cursor();
         self.anchor = Some(SourceAnchor {
             path: request.path.clone(),
             line: request
@@ -1649,10 +1712,8 @@ impl<'a> Shell<'a> {
             .position(|path| path.to_lowercase().contains(&needle))
         {
             Some(index) => {
-                self.selection = index;
-                let path = self.documents[index].clone();
-                self.load_document(&path);
-                self.notice = Some(format!("opened {path}"));
+                self.navigate_document(index);
+                self.notice = Some(format!("opening {}", self.documents[index]));
             }
             None => {
                 self.notice = Some(format!("no listed document matches {filter}"));
@@ -1835,6 +1896,33 @@ impl<'a> Shell<'a> {
     /// Answers one key press of the reading column, where every key but
     /// the finish action changes only what the interface shows.
     fn handle_column_key(&mut self, key: &KeyEvent, control: bool, quit_warning_stood: bool) {
+        // While one navigation target is still opening, the actions that
+        // depend on the displayed content state their reason and run
+        // nothing: a rejected action is not queued and never replays when
+        // the target settles. Navigation, search, and cancellation stay
+        // available.
+        if let Some(reason) = self.pending_preview() {
+            let gated = match (key.code, control) {
+                (
+                    KeyCode::Char('d')
+                    | KeyCode::Char('u')
+                    | KeyCode::Char('N')
+                    | KeyCode::Char('e')
+                    | KeyCode::Char('K')
+                    | KeyCode::Char('r'),
+                    false,
+                ) => true,
+                // `Enter` on the navigator opens the hovered entry —
+                // navigation — while the finish summary and the
+                // restoration preview act on the content below.
+                (KeyCode::Enter, false) => self.focus != Focus::Documents,
+                _ => false,
+            };
+            if gated {
+                self.notice = Some(reason);
+                return;
+            }
+        }
         match (key.code, control) {
             (KeyCode::Char('f'), true) => self.open_workspace_search(),
             (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
@@ -1941,10 +2029,22 @@ impl<'a> Shell<'a> {
             .changes
             .as_ref()
             .map_or(0, |changes| changes.groups().len());
+        let opening = self.pending_preview();
         Action::ALL
             .iter()
             .map(|&action| {
                 let disabled = match action {
+                    Action::KeepGroup
+                    | Action::RestoreGroup
+                    | Action::UndoDecision
+                    | Action::AddNote
+                    | Action::Details
+                    | Action::FinishReview
+                    | Action::EditDocument
+                        if opening.is_some() =>
+                    {
+                        opening.clone()
+                    }
                     Action::NextGroup | Action::PreviousGroup | Action::AddNote => {
                         if !in_changes {
                             Some(changes_only.to_string())
@@ -2262,6 +2362,8 @@ impl<'a> Shell<'a> {
             format!("{}", self.drift),
             format!("{}", self.display_width),
             format!("{:?}", self.anchor),
+            format!("{:?}", self.pending_document),
+            format!("{}", self.discovery_truncated),
             changes,
             history,
             format!("{}", self.finish.is_some()),
@@ -2846,9 +2948,15 @@ impl<'a> Shell<'a> {
         }
     }
 
-    /// Absorbs one rebuilt document list (SPEC 13.3): the selection stays
-    /// on its document by path, and the displayed document stays
-    /// untouched even when the list no longer names it.
+    /// Absorbs one rebuilt document list (SPEC 13.3). The hover stays on
+    /// its document by path, so insertions and deletions in one reload
+    /// never move it off a surviving document; only when the hovered
+    /// document disappeared does the selection fall back to its old index
+    /// clamped to the new list, and the fallback obeys the pending-preview
+    /// rule: its content loads on the next quiet pass, and the
+    /// content-dependent actions state their reason until then. An empty
+    /// list clears the hover; the displayed document stays untouched even
+    /// when the list no longer names it.
     fn absorb_document_list(&mut self, paths: Vec<String>) {
         if paths == self.documents {
             return;
@@ -2862,7 +2970,28 @@ impl<'a> Shell<'a> {
             .as_ref()
             .and_then(|path| self.documents.iter().position(|name| name == path))
             .unwrap_or(self.selection.min(last));
+        self.reposition_navigator_cursor();
         self.redraw = true;
+        if self.documents.is_empty() {
+            return;
+        }
+        // The fallback selection names a document the column may not show
+        // yet: gate on it exactly as one explicit navigation does, so no
+        // content-dependent action lands beside content it did not load.
+        let shown = self.document.as_ref().map(|document| document.path.clone());
+        if shown.is_none_or(|shown| shown != self.documents[self.selection]) {
+            self.pending_document = Some(self.documents[self.selection].clone());
+        }
+    }
+
+    /// Points the navigator cursor at the selected document's row, so one
+    /// absorbed reload keeps the outline marker on the hover it kept.
+    fn reposition_navigator_cursor(&mut self) {
+        self.navigator_cursor = self
+            .navigator_entries()
+            .iter()
+            .position(|entry| *entry == (self.selection, None))
+            .unwrap_or(self.selection);
     }
 
     /// Compares the observed workspace against the pinned observation
@@ -2892,6 +3021,113 @@ impl<'a> Shell<'a> {
     /// inspection job carries.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Loads the pending navigation target, when one stands, and refreshes
+    /// the History view's hover excerpt. The event loop calls this only on
+    /// a pass no input waits on, so one rapid run of navigation steps
+    /// loads exactly the document it ends on and computes exactly the
+    /// excerpt of the revision it rests on.
+    pub fn settle_preview(&mut self) {
+        if let Some(path) = self.pending_document.take() {
+            if self
+                .document
+                .as_ref()
+                .is_none_or(|document| document.path != path)
+            {
+                self.load_document(&path);
+            }
+            self.redraw = true;
+        }
+        self.refresh_history_excerpt();
+    }
+
+    /// Whether one navigation target waits for its quiet pass.
+    pub fn has_pending_preview(&self) -> bool {
+        self.pending_document.is_some()
+    }
+
+    /// Whether one quiet pass owes work: a pending navigation target, or
+    /// a hover excerpt that no longer matches the hover it belongs to.
+    pub fn has_deferred_work(&self) -> bool {
+        self.pending_document.is_some()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| !history.excerpt_settled(self.workspace.head.as_deref()))
+    }
+
+    /// The sentence that labels the pending target (SPEC 11.4): while the
+    /// target stands, it is the visible reason every content-dependent
+    /// action gives for not running.
+    pub fn pending_preview(&self) -> Option<String> {
+        self.pending_document
+            .as_ref()
+            .map(|path| bounded(&format!("{path} is still opening; wait for it to settle")))
+    }
+
+    /// Refreshes the History view's hover excerpt (the hover of the
+    /// timeline): the bounded before/after of the displayed document
+    /// between the hovered revision and the current candidate, read-only,
+    /// recomputed only when the hover or the candidate moved.
+    fn refresh_history_excerpt(&mut self) {
+        let Some(history) = &mut self.history else {
+            return;
+        };
+        if history.preview().is_some() {
+            history.clear_excerpt();
+            return;
+        }
+        let adopted = self.workspace.adopted;
+        let head = self.workspace.head.clone();
+        let path = self.document.as_ref().map(|document| document.path.clone());
+        match (adopted, head, path) {
+            (true, Some(head), Some(path)) => {
+                history.refresh_excerpt(self.operations, &head, &path);
+            }
+            _ => history.clear_excerpt(),
+        }
+    }
+
+    /// Saves the reading position of the displayed document (SPEC 5.4):
+    /// the anchor plus its drift, most recently left first, capped. The
+    /// positions are disposable interface state — losing one costs one
+    /// scroll, never one decision.
+    fn save_position(&mut self) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let Some(anchor) = &self.anchor else {
+            return;
+        };
+        let position = SavedPosition {
+            path: document.path.clone(),
+            line: anchor.line,
+            drift: self.drift,
+        };
+        self.saved_positions
+            .retain(|saved| saved.path != position.path);
+        self.saved_positions.insert(0, position);
+        self.saved_positions.truncate(MAX_SAVED_POSITIONS);
+    }
+
+    /// Restores the saved reading position of `path` after one load; a
+    /// document without one starts at its first line.
+    fn restore_position(&mut self, path: &str) {
+        let Some(saved) = self
+            .saved_positions
+            .iter()
+            .find(|saved| saved.path == path)
+            .cloned()
+        else {
+            return;
+        };
+        let last = self.source_lines.len().clamp(1, u32::MAX as usize) as u32;
+        self.anchor = Some(SourceAnchor {
+            path: path.to_string(),
+            line: saved.line.min(last),
+        });
+        self.drift = saved.drift;
     }
 
     /// Moves the selection between canonical change groups (SPEC 11.3).
@@ -3079,6 +3315,11 @@ impl<'a> Shell<'a> {
     pub fn navigator_visible(&self) -> bool {
         self.layout.shows_navigator() && !self.sidebar_hidden
     }
+    /// Whether the unadopted discovery stopped at its document bound, so
+    /// the navigator must say the list is bounded (SPEC 11.3).
+    pub fn discovery_truncated(&self) -> bool {
+        self.discovery_truncated
+    }
     pub fn sidebar_hidden(&self) -> bool {
         self.sidebar_hidden
     }
@@ -3163,17 +3404,32 @@ impl<'a> Shell<'a> {
             self.prepare_reading(self.display_width.max(1));
             self.offset = wrap::row_for_anchor(&self.display, self.headings[heading].line);
             self.sync_anchor();
-        } else if document != self.selection {
-            self.selection = document;
-            let path = self.documents[document].clone();
-            self.load_document(&path);
-            self.navigator_cursor = self
-                .navigator_entries()
-                .iter()
-                .position(|entry| *entry == (document, None))
-                .unwrap_or(0);
+        } else {
+            self.navigate_document(document);
         }
         self.redraw = true;
+    }
+
+    /// Moves the document hover to `index` and defers the load: the
+    /// reading column follows the hover (SPEC 5.4), but one rapid run of
+    /// navigation steps loads only the document the run ends on — the
+    /// last settled content stays readable while the target stands, and
+    /// one quiet pass loads it.
+    fn navigate_document(&mut self, index: usize) {
+        let path = match self.documents.get(index) {
+            Some(path) => path.clone(),
+            None => return,
+        };
+        self.selection = index;
+        self.reposition_navigator_cursor();
+        if self
+            .document
+            .as_ref()
+            .is_some_and(|document| document.path == path)
+        {
+            return;
+        }
+        self.pending_document = Some(path);
     }
 
     /// Says whether the event loop should stop.
@@ -3493,14 +3749,19 @@ fn bounded(text: &str) -> String {
     bounded
 }
 
-/// Discovers the Markdown documents of one folder before adoption
-/// (SPEC 5.1).
-pub(crate) fn discover_documents(root: &Path) -> Vec<String> {
+/// The one total order of the document list (SPEC 11.2): ascending UTF-8
+/// path bytes. Paths are unique, so the order has no ties to break, and
+/// both list builders below sort by it — the adopted resolution through
+/// BTreeMap iteration, the discovery walk through an explicit sort — so
+/// every reload lists the same set in the same order and a preserved
+/// hover never moves.
+pub(crate) fn discover_documents(root: &Path) -> (Vec<String>, bool) {
     let mut found = Vec::new();
     walk_documents(root, String::new(), 0, &mut found);
     found.sort();
+    let truncated = found.len() > MAX_DISCOVERED_DOCUMENTS;
     found.truncate(MAX_DISCOVERED_DOCUMENTS);
-    found
+    (found, truncated)
 }
 
 /// The document paths of one resolved scope: the tracked and untracked

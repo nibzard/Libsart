@@ -310,6 +310,7 @@ fn the_read_view_shows_the_document_with_saved_and_review_state() {
     shell.handle_event(&key(KeyCode::Tab));
     shell.handle_event(&key(KeyCode::Left));
     shell.handle_event(&key(KeyCode::Char('j')));
+    shell.settle_preview();
     let page = draw(&mut shell, 110, 30);
     let screen = joined(&page);
     assert!(screen.contains("notes/b.md"));

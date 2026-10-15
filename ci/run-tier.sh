@@ -48,9 +48,9 @@ pr | nightly) ;;
 esac
 
 case $gate in
-lints | msrv | tests | formal | mutations | stress) ;;
+lints | msrv | tests | formal | mutations | stress | budgets) ;;
 *)
-    echo "usage: ci/run-tier.sh <lints|msrv|tests|formal|mutations|stress> [pr|nightly]" >&2
+    echo "usage: ci/run-tier.sh <lints|msrv|tests|formal|mutations|stress|budgets> [pr|nightly]" >&2
     exit 2
     ;;
 esac
@@ -176,6 +176,53 @@ stress)
     } >>"$artifacts/environment.txt"
     export RUST_BACKTRACE=1
     run_logged cargo test --test bench_corpora --locked || status=$?
+    ;;
+
+budgets)
+    # The two SPEC 17 initial rules a shared runner can enforce: the
+    # stripped release executable stays within 16 MiB, and a fresh
+    # `--help` process stays far inside the P-HELP budget. Shared-runner
+    # timing is smoke evidence only (SPEC 17): the startup ceiling is ten
+    # times the budget, so a real regression fails while runner noise
+    # does not.
+    run_logged cargo build --release --locked --quiet || status=$?
+    if [ "$status" -eq 0 ]; then
+        binary=target/release/margin
+        cp "$binary" "$artifacts/margin-release-stripped" 2>>"$artifacts/run.log"
+        strip "$artifacts/margin-release-stripped" 2>>"$artifacts/run.log" || true
+        size_bytes=$(wc -c <"$artifacts/margin-release-stripped" | tr -d ' ')
+        size_limit=$((16 * 1024 * 1024))
+        p95_ms=$(python3 - "$binary" <<'PY'
+import subprocess, sys, time
+binary = sys.argv[1]
+samples = []
+for _ in range(30):
+    start = time.monotonic()
+    subprocess.run(
+        [binary, "--help"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    samples.append((time.monotonic() - start) * 1000.0)
+samples.sort()
+print(f"{samples[min(len(samples) - 1, int(len(samples) * 0.95))]:.1f}")
+PY
+        )
+        startup_limit_ms=750
+        size_verdict=over
+        [ "$size_bytes" -le "$size_limit" ] && size_verdict=within
+        time_verdict=$(python3 -c "print('within' if $p95_ms <= $startup_limit_ms else 'over')")
+        {
+            printf 'metric\tvalue\tlimit\tverdict\n'
+            printf 'stripped_release_bytes\t%s\t%s\t%s\n' \
+                "$size_bytes" "$size_limit" "$size_verdict"
+            printf 'help_p95_ms\t%s\t%s\t%s\n' \
+                "$p95_ms" "$startup_limit_ms" "$time_verdict"
+        } | tee "$artifacts/budgets.tsv" >&2
+        [ "$size_verdict" = within ] || status=1
+        [ "$time_verdict" = within ] || status=1
+    fi
     ;;
 esac
 
