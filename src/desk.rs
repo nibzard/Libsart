@@ -26,6 +26,20 @@ pub struct Request {
     pub path: String,
     pub line: Option<u32>,
 }
+/// Versioned control operations. Queue content stays in repository metadata.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Control {
+    Open { path: String, line: Option<u32> },
+    Status,
+    Notify,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Envelope {
+    pub schema_version: u32,
+    pub request: Control,
+}
 #[derive(Debug, Serialize, Deserialize)]
 /// A successful reply follows a completed terminal draw.
 #[serde(deny_unknown_fields)]
@@ -145,11 +159,15 @@ pub struct Pending {
 pub struct Server {
     pub requests: mpsc::Receiver<Pending>,
     busy: Arc<AtomicBool>,
+    notified: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
     path: PathBuf,
 }
 impl Server {
+    pub fn take_notification(&self) -> bool {
+        self.notified.swap(false, Ordering::AcqRel)
+    }
     pub fn set_busy(&self, busy: bool) {
         self.busy.store(busy, Ordering::Release);
     }
@@ -179,6 +197,8 @@ impl Server {
         let stopped = stop.clone();
         let busy = Arc::new(AtomicBool::new(false));
         let b = busy.clone();
+        let notified = Arc::new(AtomicBool::new(false));
+        let notification = notified.clone();
         let thread = thread::spawn(move || {
             while !stopped.load(Ordering::Relaxed) {
                 let Ok((mut stream, _)) = listener.accept() else {
@@ -187,16 +207,33 @@ impl Server {
                 };
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
                 let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
-                let reply = match packet::<Request>(&mut stream, Duration::from_millis(500)) {
-                    Err(_) => Reply {
+                let decoded = packet::<serde_json::Value>(&mut stream, Duration::from_millis(500));
+                let decoded = decoded.and_then(|value| {
+                    if value.get("schema_version").is_none() { return serde_json::from_value::<Request>(value).map(Some).map_err(io::Error::other); }
+                    let envelope: Envelope = serde_json::from_value(value).map_err(io::Error::other)?;
+                    if envelope.schema_version != 1 { return Err(io::Error::other("unsupported desk schema version")); }
+                    match envelope.request {
+                        Control::Open { path, line } => Ok(Some(Request { path, line })),
+                        Control::Status | Control::Notify => {
+                            let notify = matches!(envelope.request, Control::Notify);
+                            if notify { notification.store(true, Ordering::Release); }
+                            let response = serde_json::json!({"schema_version": 1, "busy": b.load(Ordering::Acquire), "notified": notify});
+                            stream.write_all(&serde_json::to_vec(&response).unwrap())?;
+                            Ok(None)
+                        }
+                    }
+                });
+                let reply = match decoded {
+                    Ok(None) => continue,
+                    Err(error) => Reply {
                         displayed: false,
-                        error: Some("invalid or oversized desk request".into()),
+                        error: Some(format!("invalid or oversized desk request: {error}")),
                     },
                     Ok(_) if b.load(Ordering::Acquire) => Reply {
                         displayed: false,
                         error: Some("viewer busy; finish the editor or dialog and retry".into()),
                     },
-                    Ok(request) => {
+                    Ok(Some(request)) => {
                         let (reply, rx) = mpsc::channel();
                         let pending = Pending {
                             request,
@@ -219,6 +256,7 @@ impl Server {
         Ok(Self {
             requests,
             busy,
+            notified,
             stop,
             thread: Some(thread),
             path,
@@ -303,4 +341,27 @@ pub fn parse_link(url: &str) -> Result<(PathBuf, Request), OperationError> {
             line: (line != 0).then_some(line),
         },
     ))
+}
+
+/// Send a bounded versioned status or notification operation.
+pub fn control_at(
+    path: &std::path::Path,
+    request: Control,
+) -> Result<serde_json::Value, OperationError> {
+    let fail = |e: io::Error| OperationError::new("OPERATION_UNAVAILABLE", e.to_string());
+    let mut stream = UnixStream::connect(path).map_err(fail)?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(200)))
+        .map_err(fail)?;
+    stream
+        .write_all(
+            &serde_json::to_vec(&Envelope {
+                schema_version: 1,
+                request,
+            })
+            .unwrap(),
+        )
+        .map_err(fail)?;
+    stream.shutdown(std::net::Shutdown::Write).map_err(fail)?;
+    packet(&mut stream, Duration::from_millis(250)).map_err(fail)
 }

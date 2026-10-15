@@ -416,7 +416,19 @@ pub fn run(operations: &Operations<'_>, workspace_root: &Path, bytes: &[u8]) -> 
             workspace_root.display(),
         ));
     }
-    let feedback = (event.name == "UserPromptSubmit").then(|| crate::notes::feedback(operations));
+    let feedback = (event.name == "UserPromptSubmit").then(|| {
+        let notes = crate::notes::feedback(operations)?;
+        let requests = operations.edit_request_feedback()?;
+        Ok::<_, OperationError>(match (notes, requests) {
+            (Some(notes), Some(requests)) => Some(
+                format!("{requests}\n\n{notes}")
+                    .chars()
+                    .take(9000)
+                    .collect(),
+            ),
+            (notes, requests) => notes.or(requests),
+        })
+    });
     let mut outcome = translate(operations, &event);
     let mut response = outcome
         .stdout

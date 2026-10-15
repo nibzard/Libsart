@@ -736,6 +736,57 @@ fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("requests")
+                .about("Exchange durable document edit requests")
+                .subcommand_required(true)
+                .subcommand(Command::new("list").about("List request status (query)"))
+                .subcommand(
+                    Command::new("inspect")
+                        .about("Read a request and its captured source (query)")
+                        .arg(Arg::new("id").required(true)),
+                )
+                .subcommand(
+                    Command::new("claim")
+                        .about("Claim a queued request (mutation)")
+                        .arg(Arg::new("id").required(true))
+                        .arg(Arg::new("owner").long("owner").required(true)),
+                )
+                .subcommand(
+                    Command::new("submit")
+                        .about("Submit a replacement for the captured span (mutation)")
+                        .arg(Arg::new("id").required(true))
+                        .arg(Arg::new("owner").long("owner").required(true))
+                        .arg(Arg::new("input").long("input").required(true))
+                        .arg(Arg::new("explanation").long("explanation").required(true)),
+                )
+                .subcommand(
+                    Command::new("cancel")
+                        .about("Cancel a pending request (mutation)")
+                        .arg(Arg::new("id").required(true)),
+                )
+                .subcommand(
+                    Command::new("resume")
+                        .about("Move a pending request to this desk (mutation)")
+                        .arg(Arg::new("id").required(true)),
+                )
+                .subcommand(
+                    Command::new("reconcile")
+                        .about("Inspect and resolve interrupted application state (mutation)")
+                        .arg(Arg::new("id").required(true)),
+                )
+                .subcommand(
+                    Command::new("release")
+                        .about("Release an interrupted claim (mutation)")
+                        .arg(Arg::new("id").required(true))
+                        .arg(Arg::new("owner").long("owner").required(true)),
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove a finished request (mutation)")
+                        .arg(Arg::new("id").required(true)),
+                ),
+        )
+        .subcommand(
             Command::new("desk")
                 .about("Compose an optional tmux writing desk (interactive)")
                 .arg(
@@ -1108,6 +1159,9 @@ fn command_effect(path: &str) -> &'static str {
     match path {
         "init" | "checkpoint" | "review" | "restore" | "hook install" | "hook remove"
         | "hook claude" | "note" => "mutation",
+        "requests list" | "requests inspect" => "query",
+        "requests claim" | "requests submit" | "requests cancel" | "requests resume"
+        | "requests release" | "requests remove" | "requests reconcile" => "mutation",
         "status" | "diff" | "show" | "log" | "doctor" | "notes" => "query",
         "tui" | "edit" | "desk" | "open" => "interactive",
         // A test fails when a new command reaches a caller unnamed here.
@@ -1669,6 +1723,78 @@ fn dispatch(matches: &ArgMatches) -> Finished {
                 .expect("--path is required")
                 .clone();
             edit_finished(&operations, &path)
+        }
+        "requests" => {
+            let (operation, args) = sub.subcommand().expect("request operation");
+            let command_name = format!("requests {operation}");
+            let id = args
+                .try_get_one::<String>("id")
+                .ok()
+                .flatten()
+                .map(String::as_str)
+                .unwrap_or("");
+            let mutating = !matches!(operation, "list" | "inspect");
+            let before = if mutating {
+                operations
+                    .inspect_edit_request(id)
+                    .ok()
+                    .and_then(|r| serde_json::to_value(r).ok())
+            } else {
+                None
+            };
+            let result: Result<Value, OperationError> = (|| {
+                match operation {
+                    "list" => Ok(Value::Array(operations.list_edit_requests()?.into_iter().map(|r| json!({"id": r.id, "path": r.base.path, "state": r.state, "owner": r.owner, "error": r.error, "desk": r.desk})).collect())),
+                    "inspect" => serde_json::to_value(operations.inspect_edit_request(id)?).map_err(crate::editing::io),
+                    "claim" => serde_json::to_value(operations.claim_edit_request(id, args.get_one::<String>("owner").unwrap())?).map_err(crate::editing::io),
+                    "reconcile" => serde_json::to_value(operations.reconcile_edit_request(id)?).map_err(crate::editing::io),
+                    "resume" => serde_json::to_value(operations.resume_edit_request(id)?).map_err(crate::editing::io),
+                    "release" => serde_json::to_value(operations.release_edit_request(id, args.get_one::<String>("owner").unwrap())?).map_err(crate::editing::io),
+                    "remove" => { operations.remove_edit_request(id)?; Ok(json!({"id": id, "removed": true})) },
+                    "cancel" => serde_json::to_value(operations.cancel_edit_request(id)?).map_err(crate::editing::io),
+                    "submit" => {
+                        let bytes = crate::editing::read(&PathBuf::from(args.get_one::<String>("input").unwrap()), crate::editing::MAX_SOURCE_BYTES)?;
+                        let text = String::from_utf8(bytes).map_err(|_| OperationError::new("INVALID_ARGUMENT", "replacement must be UTF-8"))?;
+                        let r = operations.submit_edit_result(id, args.get_one::<String>("owner").unwrap(), &text, args.get_one::<String>("explanation").unwrap())?;
+                        Ok(json!({"id": r.id, "state": r.state, "applied": r.state == crate::requests::State::Applied}))
+                    }
+                    _ => unreachable!(),
+                }
+            })();
+            match result {
+                Ok(data) => {
+                    let mut envelope = Envelope::success(Some(&command_name), data.clone());
+                    if mutating {
+                        let after = operations
+                            .inspect_edit_request(id)
+                            .ok()
+                            .and_then(|r| serde_json::to_value(r).ok());
+                        if before != after {
+                            envelope.effects.integration = "changed".into();
+                        }
+                    }
+                    if invocation.json {
+                        finish_envelope(&envelope, 0, true)
+                    } else {
+                        Finished {
+                            exit: 0,
+                            stdout: Some(format!(
+                                "{}\n",
+                                serde_json::to_string_pretty(&data).unwrap()
+                            )),
+                            stdout_bytes: None,
+                            stderr: None,
+                        }
+                    }
+                }
+                Err(error) => {
+                    let mut envelope = Envelope::from_error(Some(&command_name), &error);
+                    if mutating && matches!(error.code, "IO_FAILED" | "OUTCOME_UNKNOWN") {
+                        envelope.effects.integration = "unknown".into();
+                    }
+                    finish_envelope(&envelope, exit_class(error.code), invocation.json)
+                }
+            }
         }
         "open" => {
             let target = if let Some(url) = sub.get_one::<String>("url") {
@@ -3312,6 +3438,15 @@ mod tests {
                 "note",
                 "notes",
                 "open",
+                "requests cancel",
+                "requests claim",
+                "requests inspect",
+                "requests list",
+                "requests reconcile",
+                "requests release",
+                "requests remove",
+                "requests resume",
+                "requests submit",
                 "restore",
                 "review",
                 "show",

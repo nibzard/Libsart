@@ -670,3 +670,13 @@ mod outline_tests {
         );
     }
 }
+
+/// Wrap plain dialog text using the same escaped cells for drawing and scrolling.
+pub fn dialog_rows(text: &str, width: u16) -> Vec<DisplayRow> {
+    let safe = text
+        .lines()
+        .map(crate::cli::display_escape)
+        .collect::<Vec<_>>()
+        .join("\n");
+    wrap_text(&safe, width.max(1))
+}

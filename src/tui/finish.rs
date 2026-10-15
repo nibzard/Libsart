@@ -179,7 +179,7 @@ impl FinishSummary {
             plural(counts.groups),
         )));
         lines.push(ComposedLine::text(format!(
-            "{} passage{} restored · {} kept · {} undecided",
+            "{} passage{} restored · {} kept · {} undecided → kept on finish",
             counts.restored,
             plural(counts.restored),
             counts.kept,
@@ -209,6 +209,7 @@ impl FinishSummary {
         lines.push(ComposedLine::meta(
             "Enter  Keep remaining changes and finish",
         ));
+        lines.push(ComposedLine::meta("]      Go to next undecided group"));
         lines.push(ComposedLine::meta("Esc    Cancel; nothing is applied"));
         lines
     }

@@ -5,6 +5,9 @@ use ratatui::layout::Rect;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     NavigatorEntry(usize),
+    SourceLine(u32),
+    SourceOffset(usize),
+    PickerEntry(usize),
     ViewTab(View),
     ChangeGroup(usize),
     Revision(usize),

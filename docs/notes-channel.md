@@ -1,6 +1,8 @@
 # The notes channel
 
-Status: implemented; acceptance coverage lives in `tests/notes_channel.rs`
+Status: Implemented. This is a completed design record, not an active plan.
+Acknowledgment tracking remains deliberately deferred; see the
+[remaining gaps plan](remaining-gaps-plan.md). Acceptance coverage lives in `tests/notes_channel.rs`
 and the notes/instruction parser unit tests. The contract of record is
 [SPEC 12.7](../SPEC.md) and [the notes schema](../schemas/notes-v1.json);
 this document holds the reasoning and the staged build order.
@@ -107,6 +109,15 @@ After you checkpoint a draft, explain each meaningful change with Margin:
 answer with their own; `margin notes --json` lists theirs. Native Git
 equivalent: `git notes --ref=margin`; `margin notes --schema` prints
 the envelope schema. IDs must also be unique within each commit's notes.
+
+For a queued edit request, use `margin requests list --json`, then
+`margin requests inspect ID --json` and `margin requests claim ID --owner SESSION --json`.
+Read the captured source and replace only its start..end byte span.
+Write the replacement to a temporary UTF-8 file outside the writing scope, then use
+`margin requests submit ID --owner SESSION --input FILE --explanation TEXT --json`.
+Margin applies results after saving pending input and checking the captured passage.
+Keep edits inside the requested span. Respect cancelled and undone requests.
+Do not write the requested document directly. A request never approves edits.
 <!-- /margin:notes -->
 ```
 

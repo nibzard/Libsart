@@ -1,5 +1,9 @@
 # TUI hover and navigation plan
 
+Status: Implemented for all 11 numbered items. This is a completed design
+record, not an active plan. Here, hover means keyboard selection. Pointer
+hover remains separate; see the [remaining gaps plan](remaining-gaps-plan.md).
+
 This document records the hover interaction design and the navigation improvements taken from Yazi (`sxyazi/yazi`). Each item states its value and cost. Items that do not earn their complexity are listed as deliberately skipped.
 
 Source of the ideas: a review of Yazi's folder model (`yazi-core/src/tab/folder.rs`), external-change reconciler (`yazi-core/src/reconciler.rs`), directory scanner (`yazi-fs/src/scanner/scanner.rs`), and preview locking (`yazi-core/src/tab/preview_lock.rs`), mapped onto the Margin SPEC.
@@ -54,6 +58,8 @@ These items were considered and rejected. The reason is recorded so they are not
 
 - **Three-column layout.** Margin has one reading measure (SPEC 11.1). A second live column competes with it. Hover gives the behavior without the geometry.
 - **Tabs, marks, yank/paste verbs, relative motion counts (`5j`).** This is file-manager machinery. A writing desk does not review five documents at once.
-- **Mouse support.** The keyboard contract is the accessibility story (SPEC 11.3, 11.4). Mouse support can be added later without a redesign, so it earns nothing now.
+- **Mouse support (historical decision, superseded).** Wheel and click support
+  are now implemented. See the [pointer design](tui-pointer-clicks.md). Pointer
+  hover remains separate.
 - **Kitty keyboard protocol.** The keymap is single-key simple. The default crossterm parsing is sufficient.
 - **Crate split, async runtime, plugin system.** Rejected by SPEC 13.1, 13.4, and 13.6. Yazi's scale justifies them; Margin's does not.

@@ -9544,6 +9544,30 @@ impl<'a> Operations<'a> {
     /// `capture_staged_recovery`, the guarded recovery capture of SPEC 9.7
     /// and the one narrow exception to the clean-index rule above.
     pub fn create_checkpoint(&self, request: &CheckpointRequest) -> CheckpointResult {
+        let mut result = self.create_checkpoint_inner(request);
+        if result.ok()
+            && !request.dry_run
+            && let Some(commit) = result.data.as_ref().and_then(|data| data.commit.as_deref())
+        {
+            match self.attach_edit_request_notes(commit) {
+                Ok(true) => result.effects.notes_ref = ObservedEffect::Changed,
+                Ok(false) => {}
+                Err(error) => {
+                    result.effects.notes_ref = ObservedEffect::Unknown;
+                    result.warnings.push(Warning {
+                        code: error.code,
+                        message: format!(
+                            "Checkpoint saved; agent explanation remains in its request: {}",
+                            error.message
+                        ),
+                    });
+                }
+            }
+        }
+        result
+    }
+
+    fn create_checkpoint_inner(&self, request: &CheckpointRequest) -> CheckpointResult {
         // The guarded recovery capture of SPEC 9.7 is the one narrow path
         // that adopts inspected staged content; the normal algorithm below
         // never consumes a pre-existing staged selection.
@@ -13402,6 +13426,48 @@ impl<'a> Operations<'a> {
         require_work_tree(self.git)?;
         let input = self.context_scope_input(scope)?;
         resolve_scope(self.git, &input).map_err(OperationError::from)
+    }
+
+    /// Validate the context shared by source saves and agent submissions.
+    pub(crate) fn editing_context(
+        &self,
+        path: &str,
+    ) -> Result<(String, Option<String>, Option<String>), OperationError> {
+        let scope = self.query_context(None)?;
+        if !scope.blockers.is_empty() {
+            return Err(scope_blockers_refusal(&scope.blockers));
+        }
+        if !scope.paths.contains_key(std::ffi::OsStr::new(path)) {
+            return Err(OperationError::new(
+                "INVALID_ARGUMENT",
+                "document is outside the adopted writing scope",
+            ));
+        }
+        let settings = self.effective_settings()?;
+        let branch = self.enforce_mutation_guards_except_staged(&scope, &settings)?;
+        let adoption = self.git.head_commit().map_err(OperationError::from)?;
+        // Reuse the prefetched history rather than spawning Git for every ancestor.
+        let adoption = if let Some(head) = adoption {
+            let mut cached = self.history_walk();
+            let walk = cached.as_mut().expect("history walk initialized");
+            let offset = walk
+                .history_offset(&head)
+                .map_err(|e| OperationError::new("GIT_FAILED", e.to_string()))?;
+            let mut found = None;
+            for index in offset..walk.history_len() {
+                let commit = walk.commit_at(index);
+                if let Ok(marker) = walk.validate_marker(&commit)
+                    && marker.kind == CommitKind::Start
+                {
+                    found = Some(commit);
+                    break;
+                }
+            }
+            found
+        } else {
+            None
+        };
+        Ok((scope.digest.id(), branch, adoption))
     }
 
     /// The effective local settings, read through the shared engine.

@@ -324,6 +324,9 @@ fn drive(
         let mut acknowledgement = None;
         if let Some(server) = &server {
             server.set_busy(shell.remote_busy());
+            if server.take_notification() {
+                shell.notify_edit_requests();
+            }
             if let Ok(pending) = server.requests.try_recv()
                 && Instant::now() < pending.deadline
             {
@@ -340,6 +343,9 @@ fn drive(
             }
         }
         shell.poll_workspace_search();
+        if acknowledgement.is_none() {
+            shell.poll_edit_requests();
+        }
         if let Some(worker) = worker.as_mut() {
             // Every answered inspection reaches the shell before the
             // frame that shows it: a reply the shell's generation
@@ -418,6 +424,9 @@ fn drive(
         // The input wait ends at the next tick, so polling stays
         // two-second and every key press answers at once (SPEC 13.3).
         let mut wait = next_inspection.saturating_duration_since(now);
+        if let Some(autosave_wait) = shell.autosave_wait(now) {
+            wait = wait.min(autosave_wait);
+        }
         if worker.as_ref().is_some_and(RefreshWorker::is_busy)
             || shell.workspace_search().searching()
         {

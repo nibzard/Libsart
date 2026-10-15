@@ -296,7 +296,7 @@ fn external_editor_handoff_keeps_transport_responsive() {
     );
     let mut pty = viewer(&repo, &socket);
     assert!(pty.wait_for("Original text", WAIT));
-    pty.send(b"e");
+    pty.send(b"E");
     assert!(pty.wait_for("EDITOR-HANDOFF", WAIT));
     let started = Instant::now();
     let result = command(&repo, &socket, &["open", "a.md", "--json"]);

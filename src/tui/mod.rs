@@ -2,9 +2,9 @@
 //!
 //! The terminal interface is one more surface over the shared operations
 //! of [`crate::app`]: the command line and this surface read the same
-//! repository through the same contract, and the one mutation this surface
-//! offers — finishing a review — travels the same operation the command
-//! line exposes (SPEC 16.9). The modules split by concern:
+//! repository through the same contract. Saves, requests, checkpoints,
+//! reviews, and restorations use shared application operations.
+//! The modules split by concern:
 //!
 //! - [`shell`] holds the state: the views, the retained context, the
 //!   read-only loading, the key answers, and the overlays those keys
@@ -31,6 +31,7 @@
 
 pub mod actions;
 pub mod changes;
+pub mod editor;
 pub mod finish;
 pub mod history;
 pub mod layout;

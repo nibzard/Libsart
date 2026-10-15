@@ -213,7 +213,7 @@ impl ColorMode {
 }
 
 /// One requested handoff of the displayed document to the configured
-/// editor (SPEC 11.3 `e`, 12.5): the explicit argv from the local
+/// editor (SPEC 11.3 `E`, 12.5): the explicit argv from the local
 /// settings and the literal path of the document to edit. The shell only
 /// requests; the event loop suspends the terminal, runs the child, and
 /// reports the return, so the shell itself never owns a terminal.
@@ -477,6 +477,7 @@ pub struct Shell<'a> {
     offset: usize,
     drift: usize,
     viewport_rows: usize,
+    viewport_columns: u16,
     anchor: Option<SourceAnchor>,
     /// The reading positions of documents the writer left, most recently
     /// left first (SPEC 5.4): one view switch or one document return
@@ -517,12 +518,36 @@ pub struct Shell<'a> {
     pinned: Option<PinnedObservation>,
     /// The standing overlay, when one stands (SPEC 11.3).
     overlay: Option<Overlay>,
+    pub(crate) help_scroll: usize,
+    pub(crate) help_query: String,
+    pub(crate) help_filtering: bool,
+    pub(crate) help_all: bool,
+    help_return: Option<Overlay>,
+    pub(crate) menu_query: String,
+    pub(crate) menu_filtering: bool,
+    pub(crate) picker_selected: Option<String>,
+    pub(crate) finish_scroll: usize,
+    pub(crate) request_scroll: usize,
+    pub(crate) agent_status: String,
     pointer: RefCell<super::pointer::PointerTargets>,
     workspace_search: WorkspaceSearch,
     search_worker: Option<SearchWorker>,
     /// One requested editor handoff the event loop has not run yet (SPEC
-    /// 11.3 `e`, 12.5).
+    /// 11.3 `E`, 12.5).
     pending_editor: Option<EditorHandoff>,
+    source_editor: Option<super::editor::Editor>,
+    retained_editors: Vec<super::editor::Editor>,
+    autosave_worker: Option<super::editor::SaveWorker>,
+    history_pending: bool,
+    history_error: Option<String>,
+    agent_prompt: Option<(
+        crate::editing::Version,
+        Option<std::ops::Range<usize>>,
+        String,
+    )>,
+    request_poll: std::time::Instant,
+    recovery_poll: std::time::Instant,
+    request_panel: Option<String>,
     /// The configured editor argv of the local settings (SPEC 12.5),
     /// cached at open and at every rebuild so the menu states its reason
     /// without one Git query per frame.
@@ -605,6 +630,7 @@ impl<'a> Shell<'a> {
             offset: 0,
             drift: 0,
             viewport_rows: 0,
+            viewport_columns: 76,
             anchor: None,
             saved_positions: Vec::new(),
             pending_document: None,
@@ -619,10 +645,30 @@ impl<'a> Shell<'a> {
             generation: 0,
             pinned: None,
             overlay: None,
+            help_scroll: 0,
+            help_query: String::new(),
+            help_filtering: false,
+            help_all: false,
+            help_return: None,
+            menu_query: String::new(),
+            menu_filtering: false,
+            picker_selected: None,
+            finish_scroll: 0,
+            request_scroll: 0,
+            agent_status: String::new(),
             pointer: RefCell::default(),
             workspace_search: WorkspaceSearch::default(),
             search_worker: None,
             pending_editor: None,
+            source_editor: None,
+            retained_editors: Vec::new(),
+            autosave_worker: None,
+            history_pending: false,
+            history_error: None,
+            agent_prompt: None,
+            request_poll: std::time::Instant::now(),
+            recovery_poll: std::time::Instant::now(),
+            request_panel: None,
             editor: None,
             capture_after_edit: false,
             redraw: true,
@@ -964,6 +1010,7 @@ impl<'a> Shell<'a> {
         }
         self.viewport_rows = geometry.reading.height as usize;
         let width = geometry.reading.width;
+        self.viewport_columns = width;
         match self.view {
             View::Read => self.prepare_reading(width),
             // The Changes column keeps its own viewport, one row smaller
@@ -987,6 +1034,27 @@ impl<'a> Shell<'a> {
                     history.prepare(width, self.viewport_rows.saturating_sub(2));
                 }
             }
+        }
+        if self.overlay == Some(Overlay::Help) {
+            self.help_scroll = self.help_scroll.min(
+                wrap::dialog_rows(&self.help_text(), width)
+                    .len()
+                    .saturating_sub(1),
+            );
+        }
+        self.finish_scroll = self
+            .finish_scroll
+            .min(self.finish_rows().len().saturating_sub(1));
+        if let Some(text) = &self.request_panel {
+            self.request_scroll = self
+                .request_scroll
+                .min(wrap::dialog_rows(text, width).len().saturating_sub(1));
+        }
+        if let Some(editor) = &mut self.source_editor
+            && let Some(super::editor::EditorDialog::Comparison { text, offset, .. }) =
+                &mut editor.dialog
+        {
+            *offset = (*offset).min(wrap::dialog_rows(text, width).len().saturating_sub(1));
         }
     }
 
@@ -1044,10 +1112,9 @@ impl<'a> Shell<'a> {
             .map(|h| h.title.clone())
     }
 
-    /// Answers one terminal event. Navigation changes only what the
-    /// interface shows; the only actions that write are the confirmed
-    /// finish of a review (SPEC 5.2) and the confirmed restoration of one
-    /// document (SPEC 5.5), both through their shared operations.
+    /// Answers one terminal event. Source saves, checkpoints, requests,
+    /// reviews, and restorations use the shared application operations.
+    /// Navigation changes only the displayed context.
     ///
     /// The event also feeds the redraw signal of the reduced-update mode
     /// (SPEC 11.4): one fingerprint of the frame-visible state is taken
@@ -1056,6 +1123,172 @@ impl<'a> Shell<'a> {
     /// prepares them.
     pub fn handle_event(&mut self, event: &Event) {
         if super::pointer::ignored(event) {
+            return;
+        }
+        if self.overlay == Some(Overlay::Help) {
+            let before = self.fingerprint();
+            if self.view == View::Changes && matches!(event, Event::Key(_)) {
+                self.observe_changes_head();
+            }
+            match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_help_key(key),
+                Event::Mouse(mouse)
+                    if matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    ) =>
+                {
+                    let key = KeyEvent::new(
+                        if mouse.kind == MouseEventKind::ScrollUp {
+                            KeyCode::Up
+                        } else {
+                            KeyCode::Down
+                        },
+                        KeyModifiers::NONE,
+                    );
+                    self.handle_help_key(&key);
+                }
+                Event::Paste(text) if self.help_filtering => {
+                    self.help_query.extend(
+                        text.chars()
+                            .filter(|c| !c.is_control())
+                            .take(FIELD_CHARS.saturating_sub(self.help_query.chars().count())),
+                    );
+                    self.help_scroll = 0;
+                }
+                _ => {}
+            }
+            if self.fingerprint() != before || matches!(event, Event::Resize(_, _)) {
+                self.redraw = true;
+                self.clear_pointer_targets();
+            }
+            return;
+        }
+        if self.request_panel.is_some() {
+            if let Event::Key(key) = event {
+                if scroll_key(
+                    key,
+                    &mut self.request_scroll,
+                    self.viewport_rows,
+                    wrap::dialog_rows(
+                        self.request_panel.as_deref().unwrap_or(""),
+                        self.viewport_columns.max(1),
+                    )
+                    .len(),
+                ) {
+                } else if key.code == KeyCode::Esc {
+                    self.request_panel = None;
+                } else if key.code == KeyCode::Char('q')
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
+                {
+                    self.request_panel = None;
+                    self.request_quit(false);
+                }
+            }
+            self.redraw = true;
+            return;
+        }
+        if self.agent_prompt.is_some() {
+            self.handle_agent_event(event);
+            self.redraw = true;
+            self.clear_pointer_targets();
+            return;
+        }
+        if self.source_editor.is_some() {
+            self.source_editor.as_mut().unwrap().rejected = false;
+            match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_source_key(key),
+                Event::Mouse(mouse)
+                    if matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    ) && matches!(
+                        self.source_editor.as_ref().unwrap().dialog,
+                        Some(super::editor::EditorDialog::Comparison { .. })
+                    ) =>
+                {
+                    if let Some(super::editor::EditorDialog::Comparison { text, offset, .. }) =
+                        self.source_editor.as_mut().unwrap().dialog.as_mut()
+                    {
+                        let rows = wrap::dialog_rows(text, self.viewport_columns).len();
+                        *offset = offset
+                            .saturating_add_signed(if mouse.kind == MouseEventKind::ScrollUp {
+                                -3
+                            } else {
+                                3
+                            })
+                            .min(rows.saturating_sub(1));
+                    }
+                }
+                _ if self
+                    .source_editor
+                    .as_ref()
+                    .is_some_and(|e| e.dialog.is_some()) => {}
+                Event::Paste(text)
+                    if !self
+                        .source_editor
+                        .as_ref()
+                        .is_some_and(|e| e.dialog.is_some()) =>
+                {
+                    self.source_editor.as_mut().unwrap().insert(text);
+                }
+                Event::Mouse(mouse)
+                    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) =>
+                {
+                    if self.park_source_editor() {
+                        self.handle_click(MouseButton::Right, mouse.column, mouse.row);
+                    }
+                }
+                Event::Mouse(mouse)
+                    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
+                {
+                    let target = self.pointer.borrow().at(mouse.column, mouse.row);
+                    if let Some(super::pointer::Target::SourceOffset(offset)) = target {
+                        if !self.source_editor.as_ref().unwrap().dialog.is_some() {
+                            self.source_editor.as_mut().unwrap().place_cursor(
+                                offset,
+                                mouse.modifiers.contains(KeyModifiers::SHIFT),
+                            );
+                        }
+                    } else if matches!(
+                        target,
+                        Some(
+                            super::pointer::Target::NavigatorEntry(_)
+                                | super::pointer::Target::ViewTab(_)
+                        )
+                    ) && self.park_source_editor()
+                    {
+                        self.handle_click(MouseButton::Left, mouse.column, mouse.row);
+                        self.settle_preview();
+                        if matches!(target, Some(super::pointer::Target::NavigatorEntry(_))) {
+                            self.open_source_editor();
+                        }
+                    }
+                }
+                Event::Mouse(mouse)
+                    if !self.source_editor.as_ref().unwrap().dialog.is_some()
+                        && matches!(
+                            mouse.kind,
+                            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                        ) =>
+                {
+                    self.source_editor.as_mut().unwrap().scroll(
+                        if mouse.kind == MouseEventKind::ScrollUp {
+                            -1
+                        } else {
+                            1
+                        },
+                    );
+                }
+                _ => {}
+            }
+            if self.source_editor.as_ref().is_some_and(|e| e.rejected) {
+                self.notice =
+                    Some("Source exceeds the 1 MiB editing limit; input was not inserted".into());
+            }
+            self.redraw = true;
+            self.clear_pointer_targets();
             return;
         }
         let before = self.fingerprint();
@@ -1081,7 +1314,11 @@ impl<'a> Shell<'a> {
             },
             _ => {}
         }
-        if self.fingerprint() != before {
+        if self.fingerprint() != before
+            || self.agent_prompt.is_some()
+            || self.source_editor.is_some()
+            || self.request_panel.is_some()
+        {
             self.clear_pointer_targets();
             self.redraw = true;
         }
@@ -1104,10 +1341,9 @@ impl<'a> Shell<'a> {
         use super::pointer::Target;
         if self.finish.is_some()
             || self.history_preview_stands()
-            || self
-                .overlay
-                .as_ref()
-                .is_some_and(|o| o.is_text_entry() && *o != Overlay::WorkspaceSearch)
+            || self.overlay.as_ref().is_some_and(|o| {
+                o.is_text_entry() && !matches!(o, Overlay::WorkspaceSearch | Overlay::Picker { .. })
+            })
         {
             return;
         }
@@ -1143,6 +1379,7 @@ impl<'a> Shell<'a> {
                     Target::MenuEntry(_) | Target::Pane(Focus::Actions)
                 )
                 | (Some(Overlay::WorkspaceSearch), Target::SearchHit(_))
+                | (Some(Overlay::Picker { .. }), Target::PickerEntry(_))
         );
         if !allowed {
             return;
@@ -1153,6 +1390,14 @@ impl<'a> Shell<'a> {
             (Some(Overlay::Menu { .. }), Target::MenuEntry(index)) => {
                 self.overlay = Some(Overlay::Menu { selection: index });
                 self.activate_menu(index);
+            }
+            (Some(Overlay::Picker { filter }), Target::PickerEntry(index)) => {
+                let filter = filter.clone();
+                self.picker_selected = self
+                    .picker_matches(&filter)
+                    .get(index)
+                    .map(|p| p.to_string());
+                self.submit_picker(&filter);
             }
             (Some(Overlay::WorkspaceSearch), Target::SearchHit(index)) => {
                 self.workspace_search.selection = index;
@@ -1190,6 +1435,15 @@ impl<'a> Shell<'a> {
                     history.select(index);
                 }
             }
+            (None, Target::SourceLine(line)) if self.view == View::Read => {
+                if let Some(document) = &self.document {
+                    self.anchor = Some(SourceAnchor {
+                        path: document.path.clone(),
+                        line,
+                    });
+                }
+                self.open_source_editor();
+            }
             (None, Target::Pane(focus)) => {
                 self.focus = focus;
             }
@@ -1200,7 +1454,12 @@ impl<'a> Shell<'a> {
     /// Remote navigation refuses unfinished local interactions and never
     /// changes the pinned comparison or the writer's review decisions.
     pub fn remote_busy(&self) -> bool {
-        self.overlay.is_some()
+        self.source_editor
+            .as_ref()
+            .is_some_and(|editor| editor.dialog.is_some())
+            || self.agent_prompt.is_some()
+            || self.request_panel.is_some()
+            || self.overlay.is_some()
             || self.finish.is_some()
             || self.history_preview_stands()
             || self.pending_editor.is_some()
@@ -1265,6 +1524,12 @@ impl<'a> Shell<'a> {
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Err("opening request expired before navigation; retry".into());
         }
+        if !self.park_source_editor() {
+            return Err(
+                "buffer retention limit reached; resolve an unsaved buffer before navigating"
+                    .into(),
+            );
+        }
         self.save_position();
         self.pending_document = None;
         self.clear_pointer_targets();
@@ -1305,6 +1570,16 @@ impl<'a> Shell<'a> {
 
     /// Absorbs one bracketed paste (SPEC 11.3).
     fn handle_paste(&mut self, pasted_text: &str) {
+        if matches!(self.overlay, Some(Overlay::Menu { .. })) && self.menu_filtering {
+            self.menu_query.extend(
+                pasted_text
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(FIELD_CHARS.saturating_sub(self.menu_query.chars().count())),
+            );
+            self.overlay = Some(Overlay::Menu { selection: 0 });
+            return;
+        }
         let text_entry = self.overlay.as_ref().is_some_and(Overlay::is_text_entry);
         if !text_entry {
             self.notice = Some("pasted text is ignored outside text entry".to_string());
@@ -1312,8 +1587,20 @@ impl<'a> Shell<'a> {
         }
         let pasted: String = pasted_text.chars().take(FIELD_CHARS).collect();
         match self.overlay.as_mut() {
-            Some(Overlay::Picker { filter }) => filter.push_str(&pasted),
-            Some(Overlay::Search { query }) => query.push_str(&pasted),
+            Some(Overlay::Picker { filter }) => {
+                filter.extend(
+                    pasted
+                        .chars()
+                        .take(FIELD_CHARS.saturating_sub(filter.chars().count())),
+                );
+            }
+            Some(Overlay::Search { query }) => {
+                query.extend(
+                    pasted
+                        .chars()
+                        .take(FIELD_CHARS.saturating_sub(query.chars().count())),
+                );
+            }
             Some(Overlay::WorkspaceSearch) => {
                 let remaining =
                     FIELD_CHARS.saturating_sub(self.workspace_search.query.chars().count());
@@ -1327,6 +1614,19 @@ impl<'a> Shell<'a> {
                 text.extend(pasted_text.chars().take(remaining));
             }
             _ => {}
+        }
+        if let Some(Overlay::Picker { filter }) = &self.overlay {
+            let paths: Vec<String> = self
+                .picker_matches(filter)
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            if !paths
+                .iter()
+                .any(|p| Some(p) == self.picker_selected.as_ref())
+            {
+                self.picker_selected = paths.first().cloned();
+            }
         }
     }
 
@@ -1343,6 +1643,16 @@ impl<'a> Shell<'a> {
             // of the three applies anything on its own.
             match (key.code, control) {
                 (KeyCode::Enter, false) => self.apply_finish(),
+                (KeyCode::Char(']'), false) => {
+                    self.cancel_finish();
+                    self.next_undecided();
+                }
+                _ if scroll_key(
+                    key,
+                    &mut self.finish_scroll,
+                    self.viewport_rows,
+                    self.finish.as_ref().map_or(0, |p| p.rows.len()),
+                ) => {}
                 (KeyCode::Esc, false) => self.cancel_finish(),
                 (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
                     self.request_quit(quit_warning_stood)
@@ -1377,8 +1687,10 @@ impl<'a> Shell<'a> {
         self.notice = None;
         self.quit_warning = false;
         if self.finish.is_some() {
-            // The finish summary is not scrollable; it answers only its
-            // labeled actions and quit (SPEC 11.3).
+            self.finish_scroll = self
+                .finish_scroll
+                .saturating_add_signed(direction as isize * 3)
+                .min(self.finish_rows().len().saturating_sub(1));
             return;
         }
         if self.view == View::History && self.history_preview_stands() {
@@ -1386,7 +1698,7 @@ impl<'a> Shell<'a> {
         } else if let Some(overlay) = self.overlay.clone() {
             match overlay {
                 Overlay::Menu { selection } => {
-                    let count = self.menu().len().max(1);
+                    let count = self.visible_menu().len().max(1);
                     let selection = if direction > 0 {
                         (selection + 1).min(count - 1)
                     } else {
@@ -1406,8 +1718,19 @@ impl<'a> Shell<'a> {
                         self.workspace_search.selection.saturating_sub(1)
                     };
                 }
-                // Help shows fixed rows and the other overlays are text
-                // entry; none of them scrolls.
+                Overlay::Picker { filter } => {
+                    let paths: Vec<String> = self
+                        .picker_matches(&filter)
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect();
+                    let index = self
+                        .picker_index(&paths)
+                        .saturating_add_signed(direction as isize)
+                        .min(paths.len().saturating_sub(1));
+                    self.picker_selected = paths.get(index).cloned();
+                }
+                // Help handles its own scroll events; ordinary fields ignore the wheel.
                 _ => {}
             }
         } else {
@@ -1498,8 +1821,53 @@ impl<'a> Shell<'a> {
                 }
             },
             Overlay::Menu { selection } => {
-                let count = self.menu().len().max(1);
+                let entries = self.visible_menu();
+                let count = entries.len().max(1);
+                let labels: Vec<String> = entries.iter().map(|entry| entry.line(false)).collect();
+                if let Some(index) = choice_move(
+                    key,
+                    selection,
+                    &labels,
+                    self.viewport_columns,
+                    self.viewport_rows.saturating_sub(4),
+                ) {
+                    self.overlay = Some(Overlay::Menu { selection: index });
+                    return;
+                }
+                if self.menu_filtering {
+                    if control && key.code == KeyCode::Char('c') {
+                        self.request_quit(quit_warning_stood);
+                        return;
+                    }
+                    match key.code {
+                        KeyCode::Esc => self.menu_filtering = false,
+                        KeyCode::Enter => self.activate_menu(selection),
+                        KeyCode::Backspace => {
+                            self.menu_query.pop();
+                        }
+                        KeyCode::Char(c)
+                            if !key
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                && self.menu_query.chars().count() < FIELD_CHARS =>
+                        {
+                            self.menu_query.push(c)
+                        }
+                        _ => {}
+                    }
+                    if self.overlay.is_some() {
+                        let action = entries.get(selection).map(|e| e.action);
+                        let selection = self
+                            .visible_menu()
+                            .iter()
+                            .position(|e| Some(e.action) == action)
+                            .unwrap_or(0);
+                        self.overlay = Some(Overlay::Menu { selection });
+                    }
+                    return;
+                }
                 match (key.code, control) {
+                    (KeyCode::Char('/'), false) => self.menu_filtering = true,
                     (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
                         self.overlay = Some(Overlay::Menu { selection });
                         self.request_quit(quit_warning_stood);
@@ -1524,7 +1892,7 @@ impl<'a> Shell<'a> {
                         self.overlay = Some(Overlay::Menu { selection });
                     }
                     (KeyCode::Char('?'), false) => {
-                        self.overlay = Some(Overlay::Help);
+                        self.open_help();
                     }
                     (KeyCode::Enter, false) => self.activate_menu(selection),
                     _ => {
@@ -1534,31 +1902,43 @@ impl<'a> Shell<'a> {
                     }
                 }
             }
-            Overlay::Help => match (key.code, control) {
-                (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
-                    self.overlay = Some(Overlay::Help);
-                    self.request_quit(quit_warning_stood);
-                }
-                (KeyCode::Esc, false) | (KeyCode::Char('?'), false) => {
-                    self.close_overlay("help closed");
-                }
-                _ => {
-                    self.overlay = Some(Overlay::Help);
-                    self.notice = Some("Esc closes help".to_string());
-                }
-            },
+            Overlay::Help => self.handle_help_key(key),
             Overlay::Picker { mut filter } => {
-                if self.handle_field_key(&mut filter, key, control, quit_warning_stood) {
-                    self.overlay = Some(Overlay::Picker { filter });
+                let paths: Vec<String> = self
+                    .picker_matches(&filter)
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect();
+                let labels: Vec<String> = paths
+                    .iter()
+                    .map(|p| format!("  {}", crate::cli::display_escape(p)))
+                    .collect();
+                if let Some(index) = choice_move(
+                    key,
+                    self.picker_index(&paths),
+                    &labels,
+                    self.viewport_columns,
+                    self.viewport_rows.saturating_sub(4),
+                ) {
+                    self.picker_selected = paths.get(index).cloned();
+                } else if key.code == KeyCode::Enter {
+                    self.submit_picker(&filter);
+                } else if key.code == KeyCode::Esc {
+                    self.close_overlay("the document picker closed");
                 } else {
-                    // Enter and Esc end the field.
-                    self.overlay = None;
-                    match key.code {
-                        KeyCode::Enter => self.submit_picker(&filter),
-                        _ => {
-                            self.notice = Some("the document picker closed".to_string());
-                        }
+                    self.handle_field_key(&mut filter, key, control, quit_warning_stood);
+                    let paths: Vec<String> = self
+                        .picker_matches(&filter)
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect();
+                    if !paths
+                        .iter()
+                        .any(|p| Some(p) == self.picker_selected.as_ref())
+                    {
+                        self.picker_selected = paths.first().cloned();
                     }
+                    self.overlay = Some(Overlay::Picker { filter });
                 }
             }
             Overlay::Search { mut query } => {
@@ -1675,8 +2055,179 @@ impl<'a> Shell<'a> {
     /// Opens the action menu (SPEC 11.3 `:`): every action, its binding,
     /// and the reason a disabled action cannot run.
     fn open_menu(&mut self) {
+        self.menu_query.clear();
+        self.menu_filtering = false;
         self.overlay = Some(Overlay::Menu { selection: 0 });
         self.focus = Focus::Actions;
+    }
+
+    pub(crate) fn picker_index(&self, paths: &[String]) -> usize {
+        paths
+            .iter()
+            .position(|p| Some(p) == self.picker_selected.as_ref())
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn visible_menu(&self) -> Vec<MenuEntry> {
+        let query = self.menu_query.to_lowercase();
+        self.menu()
+            .into_iter()
+            .filter(|entry| {
+                entry.action.executable()
+                    && format!(
+                        "{} {} {}",
+                        entry.action.group().1,
+                        entry.action.name(),
+                        entry.action.binding()
+                    )
+                    .to_lowercase()
+                    .contains(&query)
+            })
+            .collect()
+    }
+
+    fn open_help(&mut self) {
+        self.help_return = self.overlay.take();
+        self.help_scroll = 0;
+        self.help_query.clear();
+        self.help_filtering = false;
+        self.help_all = false;
+        self.overlay = Some(Overlay::Help);
+    }
+
+    pub(crate) fn help_text(&self) -> String {
+        let mut text = format!(
+            "Margin keys · {:?}{}\n",
+            self.view,
+            if self.source_editor.is_some() {
+                " · Editing"
+            } else {
+                ""
+            }
+        );
+        text.push_str("/ search · a all shortcuts · arrows/PgUp/PgDn scroll · Esc closes help\n\nCurrent blockers\n");
+        let blockers = self.blockers();
+        if blockers.is_empty() {
+            text.push_str("  none\n");
+        }
+        for blocker in blockers {
+            text.push_str(&format!("  {blocker}\n"));
+        }
+        if let Some(editor) = &self.source_editor
+            && let Some(error) = &editor.autosave_error
+        {
+            text.push_str(&format!("  Autosave paused: {error}\n"));
+        }
+        text.push('\n');
+        let query = self.help_query.to_lowercase();
+        if self.source_editor.is_some() || self.help_all {
+            for line in super::editor::help_text().lines() {
+                if line.to_lowercase().contains(&query) {
+                    text.push_str(line);
+                    text.push('\n');
+                }
+            }
+        }
+        if self.source_editor.is_none() || self.help_all {
+            for entry in self.action_entries() {
+                if !self.help_all
+                    && matches!(
+                        entry.action,
+                        Action::HistoryCheckpoints | Action::PreviewRestore
+                    )
+                    && self.view != View::History
+                {
+                    continue;
+                }
+                if !self.help_all
+                    && matches!(
+                        entry.action,
+                        Action::NextGroup
+                            | Action::PreviousGroup
+                            | Action::NextUndecided
+                            | Action::KeepGroup
+                            | Action::RestoreGroup
+                            | Action::UndoDecision
+                            | Action::AddNote
+                            | Action::FinishReview
+                    )
+                    && self.view != View::Changes
+                {
+                    continue;
+                }
+                let line = entry.line(false);
+                if line.to_lowercase().contains(&query) {
+                    text.push_str(&line);
+                    text.push('\n');
+                }
+            }
+            text.push_str("Left/right · Fold/expand outline when documents have focus\n");
+        }
+        text
+    }
+
+    fn handle_help_key(&mut self, key: &KeyEvent) {
+        let quit_warning_stood = self.quit_warning;
+        self.quit_warning = false;
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.source_editor.is_some() {
+                self.overlay = self.help_return.take();
+            } else {
+                self.request_quit(quit_warning_stood);
+            }
+            return;
+        }
+        if self.help_filtering {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => self.help_filtering = false,
+                KeyCode::Backspace => {
+                    self.help_query.pop();
+                    self.help_scroll = 0;
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && self.help_query.chars().count() < FIELD_CHARS =>
+                {
+                    self.help_query.push(c);
+                    self.help_scroll = 0;
+                }
+                _ => {}
+            }
+        } else {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1) => {
+                    self.overlay = self.help_return.take();
+                }
+                KeyCode::Char('/') => self.help_filtering = true,
+                KeyCode::Char('a') => {
+                    self.help_all = !self.help_all;
+                    self.help_scroll = 0;
+                }
+                KeyCode::Char('q') if self.source_editor.is_none() => {
+                    self.request_quit(quit_warning_stood)
+                }
+                _ => {
+                    let total = wrap::dialog_rows(&self.help_text(), self.viewport_columns).len();
+                    scroll_key(key, &mut self.help_scroll, self.viewport_rows, total);
+                }
+            }
+        }
+    }
+
+    fn next_undecided(&mut self) {
+        if let Some(changes) = &mut self.changes {
+            let count = changes.groups().len();
+            let next = (1..=count)
+                .map(|n| (changes.selection() + n) % count)
+                .find(|i| changes.state_of(*i) == super::changes::GroupState::Undecided);
+            if let Some(index) = next {
+                changes.select(index);
+            } else {
+                self.notice = Some("No undecided groups remain in the loaded comparison".into());
+            }
+        }
     }
 
     fn open_note(&mut self) {
@@ -1701,23 +2252,17 @@ impl<'a> Shell<'a> {
     /// first listed document whose path contains it, case-blind.
     fn submit_picker(&mut self, filter: &str) {
         self.overlay = None;
-        let needle = filter.trim().to_lowercase();
-        if needle.is_empty() {
-            self.notice = Some("the document picker closed".to_string());
-            return;
-        }
-        match self
-            .documents
-            .iter()
-            .position(|path| path.to_lowercase().contains(&needle))
-        {
-            Some(index) => {
-                self.navigate_document(index);
-                self.notice = Some(format!("opening {}", self.documents[index]));
-            }
-            None => {
-                self.notice = Some(format!("no listed document matches {filter}"));
-            }
+        let paths: Vec<String> = self
+            .picker_matches(filter)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let path = paths.get(self.picker_index(&paths));
+        if let Some(index) = path.and_then(|path| self.documents.iter().position(|p| p == path)) {
+            self.navigate_document(index);
+            self.notice = Some(format!("opening {}", self.documents[index]));
+        } else {
+            self.notice = Some(format!("no listed document matches {filter}"));
         }
     }
 
@@ -1901,128 +2446,66 @@ impl<'a> Shell<'a> {
         // nothing: a rejected action is not queued and never replays when
         // the target settles. Navigation, search, and cancellation stay
         // available.
-        if let Some(reason) = self.pending_preview() {
-            let gated = match (key.code, control) {
-                (
-                    KeyCode::Char('d')
-                    | KeyCode::Char('u')
-                    | KeyCode::Char('N')
-                    | KeyCode::Char('e')
-                    | KeyCode::Char('K')
-                    | KeyCode::Char('r'),
-                    false,
-                ) => true,
-                // `Enter` on the navigator opens the hovered entry —
-                // navigation — while the finish summary and the
-                // restoration preview act on the content below.
-                (KeyCode::Enter, false) => self.focus != Focus::Documents,
-                _ => false,
-            };
-            if gated {
-                self.notice = Some(reason);
-                return;
-            }
+        if let Some(action) = Action::from_key(key) {
+            self.execute_action(action);
+            return;
         }
         match (key.code, control) {
-            (KeyCode::Char('f'), true) => self.open_workspace_search(),
             (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
                 self.request_quit(quit_warning_stood)
             }
-            (KeyCode::Char('['), false) => self.toggle_sidebar(),
-            (KeyCode::Char('d'), false) => self.toggle_details(),
-            (KeyCode::Char('u'), false) if self.view == View::Changes => self.undo_decision(),
             (KeyCode::Left, false) if self.focus == Focus::Documents => {
                 self.outline_folded = true;
                 self.navigator_cursor = self.selection;
-                self.redraw = true;
             }
             (KeyCode::Right, false) if self.focus == Focus::Documents => {
-                self.outline_folded = false;
-                self.redraw = true;
+                self.outline_folded = false
             }
             (KeyCode::Enter, false) if self.focus == Focus::Documents => {
                 self.open_navigator_entry();
                 self.view = View::Read;
                 self.focus = Focus::Reading;
             }
-            (KeyCode::Char('s'), false) if self.view == View::Read => self.toggle_current_source(),
-            (KeyCode::Char('1'), false) => self.view = View::Read,
-            (KeyCode::Char('2'), false) => self.enter_changes(),
-            (KeyCode::Char('3'), false) => self.view = View::History,
-            (KeyCode::Char('N'), false) => self.open_note(),
-            // `R` refreshes the read-only state explicitly (SPEC 5.3);
-            // lowercase `r` stays one proposed restoration.
-            (KeyCode::Char('R'), false) => self.refresh(),
-            // `:` opens every action with its binding and its disabled
-            // reason (SPEC 11.3).
-            (KeyCode::Char(':'), false) => self.open_menu(),
-            // `?` lists the contextual keys and the current blockers
-            // (SPEC 11.3).
-            (KeyCode::Char('?'), false) => self.overlay = Some(Overlay::Help),
-            // `/` searches within the current view; the field takes
-            // precedence over every command key while it stands (SPEC
-            // 11.3).
-            (KeyCode::Char('/'), false) => {
-                self.overlay = Some(Overlay::Search {
-                    query: String::new(),
-                });
+            (KeyCode::Enter, false) if self.view == View::Changes => {
+                self.execute_action(Action::FinishReview)
             }
-            // `f` opens the document picker (SPEC 11.3).
-            (KeyCode::Char('f'), false) => {
-                if self.documents.is_empty() {
-                    self.notice = Some("no documents are listed to find".to_string());
-                } else {
-                    self.overlay = Some(Overlay::Picker {
-                        filter: String::new(),
-                    });
-                }
+            (KeyCode::Enter, false) if self.view == View::History => {
+                self.execute_action(Action::PreviewRestore)
             }
-            // `e` hands the displayed document to the configured editor
-            // (SPEC 11.3, 12.5); the event loop runs the handoff while the
-            // terminal is suspended.
-            (KeyCode::Char('e'), false) => self.request_editor(),
             (KeyCode::Tab, _) => self.cycle_focus(true),
             (KeyCode::BackTab, _) => self.cycle_focus(false),
             (KeyCode::Char('j'), false) | (KeyCode::Down, false) => self.step(1),
             (KeyCode::Char('k'), false) | (KeyCode::Up, false) => self.step(-1),
             (KeyCode::PageDown, false) => self.page(1),
             (KeyCode::PageUp, false) => self.page(-1),
-            (KeyCode::Char('n'), false) if self.view == View::Changes => self.step_group(1),
-            (KeyCode::Char('p'), false) if self.view == View::Changes => self.step_group(-1),
-            // `K` records a proposed keep; lowercase `k` stays navigation
-            // (SPEC 11.3).
-            (KeyCode::Char('K'), false) if self.view == View::Changes => {
-                self.toggle_decision(Decision::Keep)
-            }
-            // `r` toggles a proposed restoration, never a disk write (SPEC
-            // 5.2, 11.3).
-            (KeyCode::Char('r'), false) if self.view == View::Changes => {
-                self.toggle_decision(Decision::Restore)
-            }
-            // `s` shows the exact Markdown changes of every group (SPEC
-            // 11.3).
-            (KeyCode::Char('s'), false) if self.view == View::Changes => self.toggle_source_view(),
-            // `Enter` opens the finish summary of the whole scope (SPEC
-            // 5.2, 11.3); only its second press applies.
-            (KeyCode::Enter, false) if self.view == View::Changes => self.open_finish(),
-            // `Enter` opens the restoration preview of the displayed
-            // document at the selected revision (SPEC 5.5, 11.3); only its
-            // second press restores.
-            (KeyCode::Enter, false) if self.view == View::History => self.open_history_preview(),
-            // `a` keeps collapsed checkpoints reachable: the timeline lists
-            // every one of them instead of one row per writing pass (SPEC
-            // 5.5).
-            (KeyCode::Char('a'), false) if self.view == View::History => {
-                self.toggle_history_checkpoints()
-            }
             _ => {}
         }
+    }
+
+    fn execute_action(&mut self, action: Action) {
+        if let Some(entry) = self.menu().into_iter().find(|entry| entry.action == action)
+            && let Some(reason) = entry.disabled
+        {
+            self.notice = Some(reason);
+            return;
+        }
+        self.activate(action);
     }
 
     /// The action menu this shell offers right now (SPEC 11.3): every
     /// action of the keyboard contract, each with the reason in words
     /// when the current context cannot run it.
     pub fn menu(&self) -> Vec<MenuEntry> {
+        let mut entries: Vec<_> = self
+            .action_entries()
+            .into_iter()
+            .filter(|e| e.action.executable())
+            .collect();
+        entries.sort_by_key(|e| e.action.group().0);
+        entries
+    }
+
+    fn action_entries(&self) -> Vec<MenuEntry> {
         let changes_only = "the Changes view only; press 2 to switch";
         let in_changes = self.view == View::Changes;
         let groups = self
@@ -2034,18 +2517,26 @@ impl<'a> Shell<'a> {
             .iter()
             .map(|&action| {
                 let disabled = match action {
-                    Action::KeepGroup
+                    Action::PreviewRestore
+                    | Action::UndoAgentEdit
+                    | Action::KeepGroup
                     | Action::RestoreGroup
                     | Action::UndoDecision
                     | Action::AddNote
                     | Action::Details
                     | Action::FinishReview
                     | Action::EditDocument
+                    | Action::ExternalEditor
+                    | Action::AskAgent
+                    | Action::CheckpointDraft
                         if opening.is_some() =>
                     {
                         opening.clone()
                     }
-                    Action::NextGroup | Action::PreviousGroup | Action::AddNote => {
+                    Action::NextGroup
+                    | Action::PreviousGroup
+                    | Action::NextUndecided
+                    | Action::AddNote => {
                         if !in_changes {
                             Some(changes_only.to_string())
                         } else if groups == 0 {
@@ -2058,8 +2549,16 @@ impl<'a> Shell<'a> {
                         if !in_changes {
                             Some(changes_only.to_string())
                         } else {
-                            self.changes.as_ref().and_then(|changes| changes.refusal())
+                            self.changes.as_ref().map_or_else(
+                                || Some("no comparison exists to decide".into()),
+                                |changes| changes.refusal(),
+                            )
                         }
+                    }
+                    Action::HistoryCheckpoints | Action::PreviewRestore
+                        if self.view != View::History =>
+                    {
+                        Some("History view only; press 3 to switch".into())
                     }
                     Action::SourceView => {
                         if self.view == View::Read {
@@ -2067,7 +2566,7 @@ impl<'a> Shell<'a> {
                         } else if !in_changes {
                             Some("Read or Changes view only".into())
                         } else if self.changes.is_none() {
-                            Some("the comparison is unavailable right now".to_string())
+                            Some("no comparison exists; source changes are unavailable".to_string())
                         } else {
                             None
                         }
@@ -2078,12 +2577,19 @@ impl<'a> Shell<'a> {
                         } else if groups == 0 {
                             Some("nothing waits for review".to_string())
                         } else {
-                            self.changes.as_ref().and_then(|changes| changes.refusal())
+                            self.changes.as_ref().map_or_else(
+                                || Some("no comparison exists to decide".into()),
+                                |changes| changes.refusal(),
+                            )
                         }
                     }
                     Action::DocumentPicker | Action::WorkspaceSearch => (self.documents.is_empty())
                         .then(|| "no documents are listed to find".to_string()),
-                    Action::EditDocument => {
+                    Action::EditDocument | Action::AskAgent => self
+                        .document
+                        .is_none()
+                        .then(|| "no document is displayed".into()),
+                    Action::ExternalEditor => {
                         if self.document.is_none() {
                             Some("no document is displayed".to_string())
                         } else if self.editor.is_none() {
@@ -2113,7 +2619,7 @@ impl<'a> Shell<'a> {
     /// entry states its reason and runs nothing; an enabled entry closes
     /// the menu and runs the same handler its binding reaches.
     fn activate_menu(&mut self, selection: usize) {
-        let entry = self.menu().get(selection).cloned();
+        let entry = self.visible_menu().get(selection).cloned();
         match entry {
             Some(entry) => {
                 if let Some(reason) = &entry.disabled {
@@ -2122,11 +2628,15 @@ impl<'a> Shell<'a> {
                     return;
                 }
                 let action = entry.action;
+                if action == Action::Help {
+                    self.open_help();
+                    return;
+                }
                 self.overlay = None;
                 if self.focus == Focus::Actions {
                     self.focus = Focus::Reading;
                 }
-                self.activate(action);
+                self.execute_action(action);
             }
             None => self.overlay = Some(Overlay::Menu { selection }),
         }
@@ -2137,6 +2647,10 @@ impl<'a> Shell<'a> {
     /// menu and the keys cannot disagree.
     fn activate(&mut self, action: Action) {
         match action {
+            Action::Refresh => self.refresh(),
+            Action::HistoryCheckpoints => self.toggle_history_checkpoints(),
+            Action::PreviewRestore => self.open_history_preview(),
+            Action::NextUndecided => self.next_undecided(),
             Action::CycleFocus => self.cycle_focus(true),
             Action::ActionMenu => self.open_menu(),
             Action::ReadView => self.view = View::Read,
@@ -2160,6 +2674,7 @@ impl<'a> Shell<'a> {
             Action::UndoDecision => self.undo_decision(),
             Action::AddNote => self.open_note(),
             Action::DocumentPicker => {
+                self.picker_selected = self.document.as_ref().map(|d| d.path.clone());
                 if self.documents.is_empty() {
                     self.notice = Some("no documents are listed to find".to_string());
                 } else {
@@ -2174,15 +2689,905 @@ impl<'a> Shell<'a> {
                 });
             }
             Action::WorkspaceSearch => self.open_workspace_search(),
-            Action::EditDocument => self.request_editor(),
+            Action::EditDocument => self.open_source_editor(),
+            Action::ExternalEditor => self.request_editor(),
+            Action::AskAgent => self.open_agent_request(),
+            Action::AgentRequests => self.open_request_panel(),
+            Action::CheckpointDraft => self.checkpoint_edited_draft(),
+            Action::UndoAgentEdit => self.undo_agent_edit(),
             Action::FinishReview => self.open_finish(),
-            Action::Help => self.overlay = Some(Overlay::Help),
+            Action::Help => self.open_help(),
             Action::Quit => self.request_quit(false),
         }
     }
 
+    fn checkpoint_edited_draft(&mut self) {
+        if self
+            .changes
+            .as_ref()
+            .is_some_and(|c| c.proposed_count() > 0)
+        {
+            self.notice =
+                Some("Finish or clear your review decisions before checkpointing edits".into());
+            return;
+        }
+        let outcome = self.operations.create_checkpoint(&CheckpointRequest {
+            scope: None,
+            message: None,
+            include_staged: false,
+            expect_head: None,
+            expect_index: None,
+            expect_working: None,
+            dry_run: false,
+        });
+        if let Some(error) = outcome.error {
+            self.notice = Some(format!("{}: {}", error.code, error.message));
+            return;
+        }
+        if let Some(warning) = outcome.warnings.first() {
+            self.notice = Some(warning.message.clone());
+        }
+        let notice = self.notice.take();
+        self.refresh();
+        self.enter_changes();
+        self.notice = notice.or_else(|| Some("Checkpoint saved; changes await your review".into()));
+    }
+    fn checkpoint_boundary(&mut self) -> bool {
+        let result = self.operations.create_checkpoint(&CheckpointRequest {
+            scope: None,
+            message: Some("Preserve an agent edit boundary".into()),
+            include_staged: false,
+            expect_head: None,
+            expect_index: None,
+            expect_working: None,
+            dry_run: false,
+        });
+        if let Some(error) = result.error {
+            self.history_pending = true;
+            self.history_error = Some(format!(
+                "File saved; version history paused: {}",
+                error.message
+            ));
+            if error.code != "BUSY" {
+                self.notice = self.history_error.clone();
+            }
+            return false;
+        }
+        self.history_pending = false;
+        self.history_error = None;
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.starts_with("File saved; version history paused:"))
+        {
+            self.notice = None;
+        }
+        if let Some(warning) = result.warnings.first() {
+            self.notice = Some(warning.message.clone());
+        }
+        if !self
+            .changes
+            .as_ref()
+            .is_some_and(|changes| changes.proposed_count() > 0)
+        {
+            let notice = self.notice.take();
+            self.refresh();
+            self.notice = notice;
+        }
+        true
+    }
+    fn sync_editors(&mut self, path: &str) {
+        let Ok(base) = self.operations.edit_document(path) else {
+            return;
+        };
+        for editor in self
+            .source_editor
+            .iter_mut()
+            .chain(self.retained_editors.iter_mut())
+            .filter(|e| e.base.path == path && !e.dirty())
+        {
+            editor.accept_disk(base.clone());
+        }
+        if self.source_editor.is_none() && self.document.as_ref().is_some_and(|d| d.path == path) {
+            self.reload_document();
+        }
+    }
+    fn undo_agent_edit(&mut self) {
+        if self.source_editor.as_ref().is_some_and(|e| e.dirty())
+            && !self.save_source_editor_with_policy(false)
+        {
+            return;
+        }
+        let Some(path) = self
+            .source_editor
+            .as_ref()
+            .map(|e| e.base.path.clone())
+            .or_else(|| self.document.as_ref().map(|d| d.path.clone()))
+        else {
+            return;
+        };
+        let request = self
+            .operations
+            .list_edit_requests()
+            .ok()
+            .and_then(|requests| {
+                requests
+                    .into_iter()
+                    .rev()
+                    .find(|r| r.base.path == path && r.state == crate::requests::State::Applied)
+            });
+        let Some(request) = request else {
+            self.notice = Some("No applied agent edit exists for this document".into());
+            return;
+        };
+        match self.operations.undo_edit_result(&request.id) {
+            Ok(_) => {
+                self.sync_editors(&path);
+                if self.checkpoint_boundary() {
+                    let result = self.operations.append_note(&crate::notes::AppendRequest {
+                        commit: None,
+                        group: None,
+                        by: crate::notes::Author::Writer,
+                        text: format!(
+                            "Undid agent request {}. Keep the preceding wording.",
+                            request.id
+                        ),
+                    });
+                    self.notice = Some(if let Some(error) = result.error {
+                        format!(
+                            "Agent edit undone; feedback remains in the request: {}",
+                            error.message
+                        )
+                    } else {
+                        "Agent edit undone; your preceding text is restored".into()
+                    });
+                }
+            }
+            Err(error) => self.notice = Some(error.message),
+        }
+        self.redraw = true;
+    }
+    fn resolve_agent_conflict(&mut self, use_agent: bool) {
+        let Some(editor) = &self.source_editor else {
+            return;
+        };
+        let Some(id) = editor.conflicting_request.clone() else {
+            self.notice = Some("No agent conflict is selected".into());
+            return;
+        };
+        if use_agent && editor.dirty() {
+            self.notice = Some("Compare your latest text before choosing the agent version".into());
+            return;
+        }
+        let result = if use_agent {
+            self.operations.choose_agent_result(&id, &editor.base)
+        } else {
+            self.operations.cancel_edit_request(&id)
+        };
+        match result {
+            Ok(result) => {
+                if use_agent && result.state != crate::requests::State::Applied {
+                    self.notice = Some("The changed passage cannot be isolated safely. Both versions remain available for manual comparison.".into());
+                    return;
+                }
+                self.sync_editors(&result.base.path);
+                if let Some(editor) = &mut self.source_editor {
+                    editor.conflicting_request = None;
+                    editor.conflict = None;
+                    editor.dialog = None;
+                }
+                if use_agent {
+                    self.checkpoint_boundary();
+                }
+                self.notice = Some(
+                    if use_agent {
+                        "Agent version applied; Ctrl+U undoes it"
+                    } else {
+                        "Your text kept; the agent proposal remains in the cancelled request"
+                    }
+                    .into(),
+                );
+            }
+            Err(error) => self.notice = Some(error.message),
+        }
+    }
+    pub fn request_panel(&self) -> Option<&str> {
+        self.request_panel.as_deref()
+    }
+    fn open_request_panel(&mut self) {
+        self.request_scroll = 0;
+        self.request_panel = Some(match self.operations.list_edit_requests() {
+            Ok(requests) => {
+                let mut text = "Agent requests · Esc closes\nUse margin requests inspect ID --json for full context.\n".to_string();
+                for r in requests.into_iter().rev() {
+                    let passage: String = r.base.text[r.start..r.end].chars().take(160).collect();
+                    text.push_str(&format!(
+                        "\n{} · {} · {}\nPassage: {}\nYou: {}\nAgent: {}\n{}\n",
+                        r.base.path,
+                        r.state.label(),
+                        r.id,
+                        passage,
+                        r.instruction,
+                        r.explanation.unwrap_or_default(),
+                        r.error.unwrap_or_default()
+                    ));
+                }
+                text
+            }
+            Err(e) => e.message,
+        });
+    }
+    pub fn agent_prompt(&self) -> Option<(&str, &str)> {
+        self.agent_prompt
+            .as_ref()
+            .map(|(base, _, text)| (base.path.as_str(), text.as_str()))
+    }
+    fn open_agent_request(&mut self) {
+        self.finish_autosave();
+        if let Some(reason) = self.pending_preview() {
+            self.notice = Some(reason);
+            return;
+        }
+        if self.source_editor.as_ref().is_some_and(|e| e.dirty())
+            && !self.save_source_editor_with_policy(false)
+        {
+            return;
+        }
+        let (base, span) = if let Some(editor) = &self.source_editor {
+            let range = editor.selection();
+            (editor.base.clone(), (!range.is_empty()).then_some(range))
+        } else {
+            let Some(path) = self.document.as_ref().map(|d| d.path.clone()) else {
+                return;
+            };
+            if let Some(editor) = self
+                .retained_editors
+                .iter_mut()
+                .find(|e| e.base.path == path && e.dirty())
+            {
+                match self.operations.save_document(&editor.base, &editor.text) {
+                    Ok(base) => {
+                        editor.saved(base);
+                        let _ = self.operations.forget_edit_buffer(&editor.recovery_id);
+                    }
+                    Err(error) => {
+                        editor.autosave_error = Some(error.message.clone());
+                        self.notice = Some(error.message);
+                        return;
+                    }
+                }
+            }
+            match self.operations.edit_document(&path) {
+                Ok(base) => (base, None),
+                Err(e) => {
+                    self.notice = Some(e.message);
+                    return;
+                }
+            }
+        };
+        self.agent_prompt = Some((base, span, String::new()));
+        self.overlay = None;
+        self.notice = None;
+    }
+    fn handle_agent_event(&mut self, event: &Event) {
+        match event {
+            Event::Paste(text) => {
+                let prompt = &mut self.agent_prompt.as_mut().unwrap().2;
+                for c in text.chars() {
+                    if prompt.len() + c.len_utf8() > 8000 {
+                        break;
+                    }
+                    prompt.push(c);
+                }
+            }
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Esc => {
+                    self.agent_prompt = None;
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.agent_prompt = None;
+                }
+                KeyCode::Enter => {
+                    self.checkpoint_boundary();
+                    let (base, span, text) = self.agent_prompt.as_ref().unwrap();
+                    match self
+                        .operations
+                        .create_edit_request(base.clone(), span.clone(), text)
+                    {
+                        Ok(request) => {
+                            self.agent_prompt = None;
+                            self.notice = Some(format!(
+                                "Request {} queued; Claude receives it on the next prompt; other agents use margin requests list --json",
+                                request.id
+                            ));
+                        }
+                        Err(e) => self.notice = Some(e.message),
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.agent_prompt.as_mut().unwrap().2.pop();
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && !c.is_control() =>
+                {
+                    let prompt = &mut self.agent_prompt.as_mut().unwrap().2;
+                    if prompt.len() + c.len_utf8() <= 8000 {
+                        prompt.push(c);
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    pub fn notify_edit_requests(&mut self) {
+        self.request_poll = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    }
+    pub fn poll_edit_requests(&mut self) {
+        self.poll_autosave_at(std::time::Instant::now());
+        if self.recovery_poll.elapsed() >= std::time::Duration::from_secs(2) {
+            self.recovery_poll = std::time::Instant::now();
+            if let Some(editor) = &self.source_editor
+                && editor.dirty()
+                && let Err(e) = self.operations.retain_edit_buffer(
+                    &editor.recovery_id,
+                    &editor.base,
+                    &editor.text,
+                )
+            {
+                self.notice = Some(format!("Recovery buffer could not be saved: {}", e.message));
+                self.redraw = true;
+            }
+        }
+        if self.request_poll.elapsed() < std::time::Duration::from_secs(2) {
+            return;
+        }
+        self.request_poll = std::time::Instant::now();
+        let Ok(requests) = self.operations.list_edit_requests() else {
+            return;
+        };
+        let desk = std::env::var("MARGIN_DESK_SOCKET").ok();
+        let owned = requests
+            .iter()
+            .filter(|r| r.desk == desk || r.desk.is_none());
+        let pending = owned
+            .clone()
+            .filter(|r| {
+                matches!(
+                    r.state,
+                    crate::requests::State::Queued
+                        | crate::requests::State::Claimed
+                        | crate::requests::State::ResultReady
+                )
+            })
+            .count();
+        let attention = owned
+            .filter(|r| {
+                matches!(
+                    r.state,
+                    crate::requests::State::Stale
+                        | crate::requests::State::Failed
+                        | crate::requests::State::Applying
+                        | crate::requests::State::Undoing
+                )
+            })
+            .count();
+        let status = if pending + attention > 0 {
+            format!("Agent: {pending} pending · {attention} need attention")
+        } else {
+            String::new()
+        };
+        self.redraw |= status != self.agent_status;
+        self.agent_status = status;
+        if self.remote_busy()
+            || self.pending_document.is_some()
+            || self
+                .changes
+                .as_ref()
+                .is_some_and(|c| c.proposed_count() > 0)
+        {
+            return;
+        }
+        if self.history_pending && !self.autosave_pending() {
+            self.checkpoint_boundary();
+        }
+        for editor in self
+            .source_editor
+            .iter_mut()
+            .chain(self.retained_editors.iter_mut())
+        {
+            let latest = requests
+                .iter()
+                .rev()
+                .find(|r| r.base.path == editor.base.path && (r.desk == desk || r.desk.is_none()));
+            let previous_activity = editor.activity.clone();
+            editor.activity = latest.and_then(|r| match r.state {
+                crate::requests::State::Queued => {
+                    Some("Request queued · delivered on the next agent turn".into())
+                }
+                crate::requests::State::Claimed => Some("Agent working on your request".into()),
+                crate::requests::State::ResultReady => {
+                    Some("Agent result waiting for your typing pause".into())
+                }
+                crate::requests::State::Applied => Some("Agent edit applied · Ctrl+U undo".into()),
+                crate::requests::State::Stale => Some("Agent result needs comparison".into()),
+                _ => None,
+            });
+            self.redraw |= editor.activity != previous_activity;
+            if let Some(request) = latest.filter(|r| {
+                r.state == crate::requests::State::Stale
+                    && editor.conflicting_request.as_deref() != Some(r.id.as_str())
+            }) {
+                editor.conflicting_request = Some(request.id.clone());
+                editor.conflict = Some(format!(
+                    "Agent proposal overlaps your changes. Your text is retained above.\nF3: use agent version · F4: keep mine\nInstruction: {}\nAgent proposal:\n{}",
+                    request.instruction,
+                    request.result.as_deref().unwrap_or_default()
+                ));
+            }
+        }
+        if let Some(request) = requests.into_iter().find(|r| {
+            r.state == crate::requests::State::ResultReady
+                && (r.desk == desk || r.desk.is_none())
+                && !self
+                    .source_editor
+                    .iter()
+                    .chain(self.retained_editors.iter())
+                    .any(|e| e.base.path == r.base.path && e.dirty())
+        }) {
+            match self.operations.apply_edit_result(&request.id) {
+                Ok(result) => {
+                    self.sync_editors(&result.base.path);
+                    if result.state == crate::requests::State::Applied {
+                        let preserved = self.checkpoint_boundary();
+                        if preserved {
+                            self.notice = Some(format!(
+                                "Agent edit applied to {}; version preserved · U / Ctrl+U undo · {}",
+                                result.base.path,
+                                result.explanation.unwrap_or_default()
+                            ));
+                        }
+                    } else {
+                        self.notice = Some(format!(
+                            "Agent result retained for comparison: {}",
+                            result.error.unwrap_or_default()
+                        ));
+                    }
+                    self.redraw = true;
+                    self.notify_edit_requests();
+                }
+                Err(error) if error.code == "BUSY" => {
+                    self.request_poll =
+                        std::time::Instant::now() - std::time::Duration::from_millis(1800);
+                }
+                Err(error) => {
+                    self.notice = Some(error.message);
+                    self.redraw = true;
+                }
+            }
+        }
+    }
+
+    /// Keep buffers across reading, document switches, and external refreshes.
+    fn park_source_editor(&mut self) -> bool {
+        if self.source_editor.is_none() {
+            return true;
+        }
+        if self.retained_editors.len() >= 16 {
+            if let Some(index) = self.retained_editors.iter().position(|e| !e.dirty()) {
+                self.retained_editors.remove(index);
+            } else {
+                self.notice = Some(
+                    "16 unsaved buffers are retained; resolve a paused save before opening another"
+                        .into(),
+                );
+                return false;
+            }
+        }
+        let editor = self.source_editor.take().unwrap();
+        self.anchor = Some(SourceAnchor {
+            path: editor.base.path.clone(),
+            line: editor.position().0 as u32 + 1,
+        });
+        self.retained_editors.push(editor);
+        true
+    }
+    pub fn history_notice(&self) -> Option<&str> {
+        self.history_error.as_deref()
+    }
+    pub fn autosave_notice(&self) -> Option<String> {
+        self.source_editor
+            .iter()
+            .chain(self.retained_editors.iter())
+            .find_map(|e| {
+                e.autosave_error.as_ref().map(|error| {
+                    format!(
+                        "Autosave paused: {} · {} · reopen to compare or retry",
+                        e.base.path, error
+                    )
+                })
+            })
+    }
+    pub fn autosave_wait(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        if self.autosave_worker.is_some() {
+            return Some(std::time::Duration::from_millis(20));
+        }
+        self.source_editor
+            .iter()
+            .chain(self.retained_editors.iter())
+            .filter(|e| e.dirty() && e.autosave_error.is_none())
+            .map(|e| (e.last_edit + super::editor::AUTOSAVE_DELAY).saturating_duration_since(now))
+            .min()
+    }
+    pub fn autosave_pending(&self) -> bool {
+        self.autosave_worker.is_some()
+            || self
+                .source_editor
+                .iter()
+                .chain(self.retained_editors.iter())
+                .any(|e| e.dirty() && e.autosave_error.is_none())
+    }
+    fn absorb_autosave(&mut self, reply: super::editor::SaveReply) {
+        let Some(editor) = self
+            .source_editor
+            .iter_mut()
+            .chain(self.retained_editors.iter_mut())
+            .find(|e| e.recovery_id == reply.recovery_id && e.base == reply.base)
+        else {
+            return;
+        };
+        let path = editor.base.path.clone();
+        match reply.result {
+            Ok(base) => {
+                editor.saved(base);
+                if !editor.dirty() {
+                    let _ = self.operations.forget_edit_buffer(&editor.recovery_id);
+                }
+            }
+            Err(error) if error.code == "BUSY" => {
+                editor.last_edit =
+                    std::time::Instant::now() - std::time::Duration::from_millis(550);
+            }
+            Err(error) => {
+                editor.autosave_error = Some(error.message.clone());
+                editor.conflict = Some(error.message);
+            }
+        }
+        if self.source_editor.is_none() && self.document.as_ref().is_some_and(|d| d.path == path) {
+            self.reload_document();
+        }
+        self.redraw = true;
+    }
+    fn finish_autosave(&mut self) {
+        if let Some(worker) = self.autosave_worker.take()
+            && let Some(reply) = worker.finish()
+        {
+            self.absorb_autosave(reply);
+        }
+    }
+    /// Debounce uses an explicit clock; the file operation runs off the input thread.
+    pub fn poll_autosave_at(&mut self, now: std::time::Instant) {
+        let reply = self
+            .autosave_worker
+            .as_ref()
+            .and_then(|worker| worker.receive());
+        if let Some(reply) = reply {
+            self.autosave_worker = None;
+            self.absorb_autosave(reply);
+        }
+        if self.autosave_worker.is_some() {
+            return;
+        }
+        if let Some(editor) = self
+            .source_editor
+            .iter()
+            .chain(self.retained_editors.iter())
+            .find(|e| e.autosave_due(now))
+        {
+            self.autosave_worker = Some(super::editor::SaveWorker::start(
+                self.operations.git().clone(),
+                editor,
+            ));
+            self.redraw = true;
+        }
+    }
+    fn flush_buffers(&mut self) -> bool {
+        self.finish_autosave();
+        let mut ok = true;
+        if self.source_editor.as_ref().is_some_and(|e| e.dirty()) {
+            ok &= self.save_source_editor_with_policy(false);
+        }
+        for editor in &mut self.retained_editors {
+            if !editor.dirty() {
+                continue;
+            }
+            match self.operations.save_document(&editor.base, &editor.text) {
+                Ok(base) => {
+                    editor.saved(base);
+                    let _ = self.operations.forget_edit_buffer(&editor.recovery_id);
+                }
+                Err(error) => {
+                    editor.autosave_error = Some(error.message.clone());
+                    editor.conflict = Some(error.message);
+                    ok = false;
+                }
+            }
+        }
+        ok
+    }
+    pub fn source_editor(&self) -> Option<&super::editor::Editor> {
+        self.source_editor.as_ref()
+    }
+
+    fn open_source_editor(&mut self) {
+        if let Some(reason) = self.pending_preview() {
+            self.notice = Some(reason);
+            return;
+        }
+        let Some(path) = self.document.as_ref().map(|d| d.path.clone()) else {
+            return;
+        };
+        if let Some(index) = self
+            .retained_editors
+            .iter()
+            .position(|e| e.base.path == path)
+        {
+            let mut editor = self.retained_editors.remove(index);
+            if !editor.dirty()
+                && let Ok(base) = self.operations.edit_document(&path)
+            {
+                editor.accept_disk(base);
+            }
+            self.source_editor = Some(editor);
+            self.pending_document = None;
+            self.overlay = None;
+            self.focus = Focus::Reading;
+            self.view = View::Read;
+            self.redraw = true;
+            return;
+        }
+        match self.operations.edit_document(&path) {
+            Ok(base) => {
+                self.pending_document = None;
+                let recovery = self.operations.recover_edit_buffer(&base.path);
+                let recovery_notice = match recovery {
+                    Ok(Some(_)) => Some("A recovery buffer exists. Ctrl+R loads it explicitly; your file stays unchanged.".to_string()),
+                    Ok(None) => None,
+                    Err(error) => Some(format!("Recovery could not be inspected: {}", error.message)),
+                };
+                let mut editor = super::editor::Editor::new(base);
+                if let Some(anchor) = &self.anchor
+                    && anchor.path == path
+                    && anchor.line > 1
+                {
+                    editor.cursor = editor
+                        .text
+                        .match_indices('\n')
+                        .nth(anchor.line as usize - 2)
+                        .map_or(editor.text.len(), |(i, _)| i + 1);
+                }
+                editor.conflict = recovery_notice;
+                self.source_editor = Some(editor);
+                self.overlay = None;
+                self.focus = Focus::Reading;
+                self.view = View::Read;
+                self.notice = Some(
+                    "Edit source · Autosave on · Esc read · Shift+arrows select · F2 ask agent"
+                        .into(),
+                );
+            }
+            Err(e) => self.notice = Some(format!("{}: {}", e.code, e.message)),
+        }
+    }
+    fn save_source_editor(&mut self) -> bool {
+        self.save_source_editor_with_policy(true)
+    }
+    fn save_source_editor_with_policy(&mut self, capture: bool) -> bool {
+        self.finish_autosave();
+        let Some(editor) = self.source_editor.as_ref() else {
+            return false;
+        };
+        match self.operations.save_document(&editor.base, &editor.text) {
+            Ok(base) => {
+                let editor = self.source_editor.as_mut().unwrap();
+                editor.saved(base);
+                let _ = self.operations.forget_edit_buffer(&editor.recovery_id);
+                self.notice = Some("Saved; changes remain unreviewed".into());
+                if capture && self.capture_after_edit {
+                    let outcome = self.operations.create_checkpoint(&CheckpointRequest {
+                        scope: None,
+                        message: None,
+                        include_staged: false,
+                        expect_head: None,
+                        expect_index: None,
+                        expect_working: None,
+                        dry_run: false,
+                    });
+                    if let Some(e) = outcome.error {
+                        self.notice = Some(format!("Saved; checkpoint failed: {}", e.message));
+                    }
+                }
+                true
+            }
+            Err(e) => {
+                let editor = self.source_editor.as_mut().unwrap();
+                editor.conflict = Some(e.message.clone());
+                editor.autosave_error = Some(e.message.clone());
+                self.notice = Some(format!(
+                    "{}: {} · Ctrl+D compares disk; Esc keeps your buffer",
+                    e.code, e.message
+                ));
+                false
+            }
+        }
+    }
+    fn handle_source_key(&mut self, key: &KeyEvent) {
+        let quit_warning_stood = self.quit_warning;
+        self.quit_warning = false;
+        self.notice = None;
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        if let Some(super::editor::EditorDialog::Comparison { kind, text, offset }) =
+            self.source_editor.as_mut().unwrap().dialog.as_mut()
+        {
+            let total = wrap::dialog_rows(text, self.viewport_columns).len();
+            if scroll_key(key, offset, self.viewport_rows, total) {
+                return;
+            }
+            match (key.code, control) {
+                (KeyCode::Esc, _) | (KeyCode::Char('c'), true) => {
+                    self.source_editor.as_mut().unwrap().dialog = None;
+                    return;
+                }
+                (KeyCode::Char('b'), true) if *kind == super::editor::ComparisonKind::Disk => {}
+                (KeyCode::F(3) | KeyCode::F(4), _)
+                    if *kind == super::editor::ComparisonKind::Agent => {}
+                (KeyCode::Char('d'), true) | (KeyCode::F(1) | KeyCode::F(5), _) => {}
+                _ => return,
+            }
+        }
+        if matches!(
+            self.source_editor.as_ref().unwrap().dialog,
+            Some(super::editor::EditorDialog::SaveChoices)
+        ) {
+            match key.code {
+                KeyCode::Char('s') => {
+                    if self.save_source_editor() {
+                        let notice = self.notice.take();
+                        self.source_editor = None;
+                        self.refresh();
+                        self.notice = notice;
+                    }
+                }
+                KeyCode::Char('d') => {
+                    let id = self.source_editor.as_ref().unwrap().recovery_id.clone();
+                    let _ = self.operations.forget_edit_buffer(&id);
+                    self.source_editor = None;
+                    self.refresh();
+                    self.notice = Some("Buffer discarded".into());
+                }
+                KeyCode::Esc | KeyCode::Char('c') => {
+                    self.source_editor.as_mut().unwrap().dialog = None;
+                }
+                _ => {}
+            }
+            return;
+        }
+        use super::actions::EditorAction;
+        match EditorAction::from_key(key) {
+            Some(EditorAction::Ask) => self.open_agent_request(),
+            Some(EditorAction::UseProposal) => self.resolve_agent_conflict(true),
+            Some(EditorAction::KeepText) => self.resolve_agent_conflict(false),
+            Some(EditorAction::Details) => {
+                self.finish_autosave();
+                let editor = self.source_editor.as_mut().unwrap();
+                if let Some(text) = &editor.conflict {
+                    let kind = if editor.conflicting_request.is_some() {
+                        super::editor::ComparisonKind::Agent
+                    } else {
+                        super::editor::ComparisonKind::Information
+                    };
+                    editor.dialog = Some(super::editor::EditorDialog::Comparison {
+                        kind,
+                        text: format!("Your current text\n{}\n\nDetails\n{text}", editor.text),
+                        offset: 0,
+                    });
+                } else {
+                    self.notice = Some("No conflict details to inspect".into());
+                }
+            }
+            Some(EditorAction::SaveChoices) => {
+                self.finish_autosave();
+                self.source_editor.as_mut().unwrap().dialog =
+                    Some(super::editor::EditorDialog::SaveChoices);
+            }
+            Some(EditorAction::UndoAgent) => self.undo_agent_edit(),
+            Some(EditorAction::Help) => self.open_help(),
+            Some(EditorAction::Save) => {
+                self.save_source_editor();
+            }
+            Some(EditorAction::Recover) => {
+                let editor = self.source_editor.as_mut().unwrap();
+                if editor.dirty() {
+                    self.notice =
+                        Some("Save or discard your current buffer before loading recovery".into());
+                    return;
+                }
+                match self.operations.recover_edit_buffer(&editor.base.path) {
+                    Ok(Some(record)) => {
+                        *editor = super::editor::Editor::new(record.base);
+                        editor.text = record.edited;
+                        editor.autosave_error = Some(
+                            "Compare recovered text with disk before accepting its base".into(),
+                        );
+                        editor.conflict =
+                            Some("Recovery loaded. Compare disk with Ctrl+D before saving.".into());
+                    }
+                    Ok(None) => {
+                        self.notice = Some("No recovery buffer exists for this document".into())
+                    }
+                    Err(e) => self.notice = Some(e.message),
+                }
+            }
+            Some(EditorAction::AcceptDisk) => {
+                let editor = self.source_editor.as_mut().unwrap();
+                let Some(disk) = editor.disk_comparison.clone() else {
+                    self.notice =
+                        Some("Compare disk with Ctrl+D before accepting it as the base".into());
+                    return;
+                };
+                match self.operations.edit_document(&editor.base.path) {
+                    Ok(current) if current == disk => {
+                        editor.base = disk;
+                        editor.dialog = None;
+                        editor.disk_comparison = None;
+                        editor.autosave_error = None;
+                        editor.last_edit = std::time::Instant::now();
+                        editor.conflict = Some("Disk base accepted; your buffer is retained. Autosave resumes after this comparison.".into());
+                    }
+                    _ => self.notice = Some(
+                        "Disk changed again; compare it with Ctrl+D before accepting a new base"
+                            .into(),
+                    ),
+                }
+            }
+            Some(EditorAction::CompareDisk) => {
+                self.finish_autosave();
+                let editor = self.source_editor.as_mut().unwrap();
+                match self.operations.edit_document(&editor.base.path) {
+                    Ok(disk) => {
+                        let text = super::editor::comparison(&editor.text, &disk.text);
+                        editor.disk_comparison = Some(disk);
+                        editor.dialog = Some(super::editor::EditorDialog::Comparison {
+                            kind: super::editor::ComparisonKind::Disk,
+                            text,
+                            offset: 0,
+                        });
+                    }
+                    Err(e) => self.notice = Some(e.message),
+                }
+            }
+            Some(EditorAction::Read) => {
+                if self
+                    .source_editor
+                    .as_ref()
+                    .is_some_and(|e| e.dirty() && e.autosave_error.is_none())
+                {
+                    self.save_source_editor_with_policy(false);
+                }
+                if self.park_source_editor() {
+                    self.reload_document();
+                }
+            }
+            Some(EditorAction::Quit) => self.request_quit(quit_warning_stood),
+            _ => self.source_editor.as_mut().unwrap().key(key),
+        }
+    }
+
     /// Requests one handoff of the displayed document to the configured
-    /// editor (SPEC 11.3 `e`, 12.5). The request carries the explicit
+    /// editor (SPEC 11.3 `E`, 12.5). The request carries the explicit
     /// argv of the local settings and the literal path of the document;
     /// the event loop executes it while the terminal is suspended, so
     /// the shell itself never owns a terminal.
@@ -2292,9 +3697,17 @@ impl<'a> Shell<'a> {
     fn fingerprint(&self) -> String {
         let overlay = match &self.overlay {
             None => "none".to_string(),
-            Some(Overlay::Menu { selection }) => format!("menu:{selection}"),
-            Some(Overlay::Help) => "help".to_string(),
-            Some(Overlay::Picker { filter }) => format!("picker:{filter}"),
+            Some(Overlay::Menu { selection }) => format!(
+                "menu:{selection}:{}:{}",
+                self.menu_query, self.menu_filtering
+            ),
+            Some(Overlay::Help) => format!(
+                "help:{}:{}:{}:{}",
+                self.help_scroll, self.help_query, self.help_filtering, self.help_all
+            ),
+            Some(Overlay::Picker { filter }) => {
+                format!("picker:{filter}:{:?}", self.picker_selected)
+            }
             Some(Overlay::Search { query }) => format!("search:{query}"),
             Some(Overlay::WorkspaceSearch) => format!(
                 "workspace-search:{}:{}:{:?}",
@@ -2308,6 +3721,7 @@ impl<'a> Shell<'a> {
                 text,
             }) => format!("note:{commit}:{group}:{text}"),
         };
+        let overlay = format!("{overlay}:finish-scroll:{}", self.finish_scroll);
         let document = self
             .document
             .as_ref()
@@ -2688,6 +4102,29 @@ impl<'a> Shell<'a> {
     /// selections earn a warning: one clear notice precedes their explicit
     /// discard, and quitting never commits them (SPEC 5.2).
     fn request_quit(&mut self, quit_warning_stood: bool) {
+        if !self.flush_buffers() {
+            let mut recoverable = true;
+            for editor in self
+                .source_editor
+                .iter()
+                .chain(self.retained_editors.iter())
+                .filter(|e| e.dirty())
+            {
+                recoverable &= self
+                    .operations
+                    .retain_edit_buffer(&editor.recovery_id, &editor.base, &editor.text)
+                    .is_ok();
+            }
+            if !quit_warning_stood || !recoverable {
+                self.quit_warning = true;
+                self.notice = Some(if recoverable {
+                    "Some files could not be saved. Recovery copies are retained. Press q again to quit, or reopen the paused file."
+                } else {
+                    "Files and recovery copies could not be saved. Keep Margin open and fix storage, or copy your text before using F5 to discard a buffer."
+                }.into());
+                return;
+            }
+        }
         let proposed = self.changes.as_ref().map_or(0, ChangesView::proposed_count);
         if proposed > 0 && !quit_warning_stood {
             self.quit_warning = true;
@@ -2718,6 +4155,7 @@ impl<'a> Shell<'a> {
             return;
         }
         let summary = FinishSummary::open(self.operations, changes);
+        self.finish_scroll = 0;
         self.finish = Some(FinishPanel {
             summary,
             rows: Vec::new(),
@@ -2817,6 +4255,25 @@ impl<'a> Shell<'a> {
     /// the pinned comparison carries, then absorbs the watched document
     /// and list.
     pub fn observe_inspection(&mut self, reply: InspectionReply) {
+        if self.agent_prompt.is_some()
+            || self
+                .source_editor
+                .as_ref()
+                .is_some_and(|e| e.dialog.is_some())
+        {
+            return;
+        }
+        if reply.generation != self.generation {
+            return;
+        }
+        if let Some(editor) = &self.source_editor {
+            if !editor.dirty() {
+                let path = editor.base.path.clone();
+                self.sync_editors(&path);
+                self.redraw = true;
+            }
+            return;
+        }
         let before = self.fingerprint();
         let InspectionReply {
             notes,
@@ -3560,7 +5017,10 @@ impl<'a> Shell<'a> {
             .iter()
             .map(|blocker| blocker.to_string())
             .collect();
-        if let Some(why) = self.changes.as_ref().and_then(|changes| changes.refusal()) {
+        if let Some(why) = self.changes.as_ref().map_or_else(
+            || Some("no comparison exists to decide".into()),
+            |changes| changes.refusal(),
+        ) {
             blockers.push(why);
         }
         if let Some(note) = &self.workspace.note {
@@ -3811,4 +5271,86 @@ fn walk_documents(root: &Path, prefix: String, depth: usize, found: &mut Vec<Str
             found.push(relative);
         }
     }
+}
+
+/// Shared bounded movement for selectable lists. Text characters stay text.
+fn list_move(key: &KeyEvent, selected: usize, count: usize, page: usize) -> Option<usize> {
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return None;
+    }
+    let last = count.saturating_sub(1);
+    Some(
+        match key.code {
+            KeyCode::Up => selected.saturating_sub(1),
+            KeyCode::Down => selected.saturating_add(1).min(last),
+            KeyCode::PageUp => selected.saturating_sub(page.max(1)),
+            KeyCode::PageDown => selected.saturating_add(page.max(1)).min(last),
+            KeyCode::Home => 0,
+            KeyCode::End => last,
+            _ => return None,
+        }
+        .min(last),
+    )
+}
+
+fn scroll_key(key: &KeyEvent, offset: &mut usize, page: usize, rows: usize) -> bool {
+    let code = match key.code {
+        KeyCode::Char('j') => KeyCode::Down,
+        KeyCode::Char('k') => KeyCode::Up,
+        code => code,
+    };
+    if let Some(next) = list_move(
+        &KeyEvent::new(code, key.modifiers),
+        *offset,
+        rows,
+        page.saturating_sub(1),
+    ) {
+        *offset = next;
+        true
+    } else {
+        false
+    }
+}
+
+/// Page through wrapped choices using their rendered row counts.
+fn choice_move(
+    key: &KeyEvent,
+    selected: usize,
+    labels: &[String],
+    width: u16,
+    page: usize,
+) -> Option<usize> {
+    if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+        && key.modifiers.is_empty()
+        && !labels.is_empty()
+    {
+        let mut offset = 0usize;
+        let starts: Vec<usize> = labels
+            .iter()
+            .map(|label| {
+                let start = offset;
+                offset += wrap::wrap_text(label, width.max(1)).len().max(1);
+                start
+            })
+            .collect();
+        let selected = selected.min(starts.len() - 1);
+        let target = if key.code == KeyCode::PageDown {
+            starts[selected].saturating_add(page.max(1))
+        } else {
+            starts[selected].saturating_sub(page.max(1))
+        };
+        let index = starts
+            .iter()
+            .rposition(|start| *start <= target)
+            .unwrap_or(0);
+        return Some(if key.code == KeyCode::PageDown && index == selected {
+            (selected + 1).min(starts.len() - 1)
+        } else {
+            index
+        });
+    }
+    list_move(key, selected, labels.len(), page)
 }

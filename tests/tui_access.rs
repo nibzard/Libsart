@@ -167,11 +167,11 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     // Outside the Changes view, its actions state why they cannot run.
     shell.handle_event(&key(KeyCode::Char('1')));
     shell.handle_event(&key(KeyCode::Char(':')));
-    let page = draw(&mut shell, 110, 40);
+    let page = draw(&mut shell, 110, 60);
     let screen = joined(&page);
     assert!(screen.contains("Action menu"), "the menu opens with :");
     // Every action of the contract is listed with its binding.
-    for action in Action::ALL {
+    for action in Action::ALL.into_iter().filter(|action| action.executable()) {
         assert!(
             screen.contains(action.name()),
             "the menu lists {:?} as {}",
@@ -180,7 +180,7 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
         );
     }
     assert!(screen.contains("Tab / Shift-Tab · Cycle focus"));
-    assert!(screen.contains("PgUp / PgDn · Page"));
+    assert!(!screen.contains("PgUp / PgDn · Page"));
     assert!(screen.contains("q / Ctrl-C · Quit"));
     // A disabled action carries its reason in words (SPEC 11.3).
     assert!(
@@ -188,7 +188,7 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
         "a view-scoped action states why it cannot run: {screen}",
     );
     assert!(
-        screen.contains("e · Edit document — unavailable: no editor is configured"),
+        screen.contains("E · Open external editor — unavailable: no editor is configured"),
         "the editor action states the unconfigured editor",
     );
     assert!(screen.contains("Enter · Finish review — unavailable: the Changes view only"),);
@@ -196,7 +196,7 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     // In the Changes view over a real review, the same actions enable.
     shell.handle_event(&key(KeyCode::Char(':')));
     shell.handle_event(&key(KeyCode::Char('2')));
-    let page = draw(&mut shell, 110, 40);
+    let page = draw(&mut shell, 110, 60);
     let screen = joined(&page);
     assert!(!screen.contains("K · Keep selected group — unavailable"));
     assert!(!screen.contains("Enter · Finish review — unavailable"));
@@ -204,7 +204,7 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     // Esc closes the menu; nothing ran.
     shell.handle_event(&key(KeyCode::Char(':')));
     shell.handle_event(&key(KeyCode::Esc));
-    let page = draw(&mut shell, 110, 40);
+    let page = draw(&mut shell, 110, 60);
     let screen = joined(&page);
     assert!(!screen.contains("Action menu"));
     assert!(screen.contains("the action menu closed; nothing ran"));
@@ -811,7 +811,6 @@ fn help_lists_the_keys_and_the_current_blockers() {
     repo.write_file("notes/a.md", b"# One\n\nFirst passage, arrived.\n");
     repo.commit_all("an external edit");
     shell.handle_event(&key(KeyCode::Char('j')));
-    shell.handle_event(&key(KeyCode::Char('?')));
     let page = draw(&mut shell, 110, 40);
     let screen = joined(&page);
     assert!(
@@ -1008,7 +1007,7 @@ fn edit_without_an_editor_is_refused_with_the_reason() {
     let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
     draw(&mut shell, 110, 30);
 
-    shell.handle_event(&key(KeyCode::Char('e')));
+    shell.handle_event(&key(KeyCode::Char('E')));
     let page = draw(&mut shell, 110, 30);
     let screen = joined(&page);
     assert!(
@@ -1092,11 +1091,11 @@ fn edit_requests_the_configured_editor_and_reloads_on_return() {
     let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
     draw(&mut shell, 110, 30);
 
-    // `e` requests the handoff: the explicit argv and the literal path of
+    // `E` requests the handoff: the explicit argv and the literal path of
     // the displayed document (SPEC 11.3, 12.5). The expected path is
     // canonicalized with it: a platform can keep the working tree under
     // a symlinked folder, and the handoff resolves that link.
-    shell.handle_event(&key(KeyCode::Char('e')));
+    shell.handle_event(&key(KeyCode::Char('E')));
     let handoff = shell.take_editor_request().expect("the handoff");
     assert_eq!(handoff.argv, vec![editor.display().to_string()]);
     let expected_path = std::fs::canonicalize(repo.file_path("notes/a.md"))
@@ -1133,7 +1132,7 @@ fn edit_requests_the_configured_editor_and_reloads_on_return() {
     assert_eq!(head_before, oracle::head_oid(&repo));
 
     // A failing editor start is stated, not fatal.
-    shell.handle_event(&key(KeyCode::Char('e')));
+    shell.handle_event(&key(KeyCode::Char('E')));
     let handoff = shell.take_editor_request().expect("the second handoff");
     let _ = handoff;
     shell.editor_returned(Err("the editor could not start: no such file".to_string()));
@@ -1191,7 +1190,7 @@ fn the_editor_capture_policy_saves_one_draft_and_approves_nothing() {
     let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
     draw(&mut shell, 110, 30);
 
-    shell.handle_event(&key(KeyCode::Char('e')));
+    shell.handle_event(&key(KeyCode::Char('E')));
     let handoff = shell.take_editor_request().expect("the handoff");
     let status = std::process::Command::new(&handoff.argv[0])
         .arg(&handoff.path)
@@ -1486,6 +1485,8 @@ fn wheel_notches_move_list_selections_and_change_no_text_entry() {
     shell.handle_event(&wheel(1));
     assert!(matches!(shell.overlay(), Some(Overlay::Help)));
     shell.handle_event(&key(KeyCode::Esc));
+    assert!(matches!(shell.overlay(), Some(Overlay::Menu { .. })));
+    shell.handle_event(&key(KeyCode::Esc));
     shell.handle_event(&key(KeyCode::Char('/')));
     shell.handle_event(&wheel(1));
     assert!(
@@ -1495,8 +1496,7 @@ fn wheel_notches_move_list_selections_and_change_no_text_entry() {
     );
     shell.handle_event(&key(KeyCode::Esc));
 
-    // The finish summary is not scrollable: the wheel changes nothing
-    // while it stands.
+    // The finish summary accepts scrolling without changing the pending plan.
     shell.handle_event(&key(KeyCode::Enter));
     assert!(
         shell.finish().is_some(),
@@ -1600,9 +1600,10 @@ fn pointer_wrapped_menu_continuation_uses_its_owner_and_disabled_checks() {
     let operations = Operations::new(&git);
     let mut shell = changes_shell(&repo, &operations);
     shell.handle_event(&key(KeyCode::Char(':')));
-    let edit = margin::tui::Action::ALL
+    let edit = shell
+        .menu()
         .iter()
-        .position(|a| *a == margin::tui::Action::EditDocument)
+        .position(|entry| entry.action == margin::tui::Action::ExternalEditor)
         .unwrap();
     // Select the following entry so the disabled editor entry and its wrapped
     // explanation are visible above it in the scrolled menu.
@@ -1623,4 +1624,103 @@ fn pointer_wrapped_menu_continuation_uses_its_owner_and_disabled_checks() {
     draw(&mut shell, 30, 8);
     shell.handle_event(&click(4, 4, crossterm::event::MouseButton::Right));
     assert_eq!(shell.overlay(), Some(&Overlay::Menu { selection: edit }));
+}
+
+#[test]
+fn help_scrolls_at_supported_sizes_and_returns_to_the_menu_selection() {
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let ops = Operations::new(&git);
+    for (width, height) in [(60, 16), (80, 24), (120, 40)] {
+        let mut shell = changes_shell(&repo, &ops);
+        shell.handle_event(&key(KeyCode::Char(':')));
+        shell.handle_event(&key(KeyCode::Down));
+        let menu = shell.overlay().cloned();
+        shell.handle_event(&key(KeyCode::Char('?')));
+        let before = joined(&draw(&mut shell, width, height));
+        assert!(before.contains("Current blockers"));
+        shell.handle_event(&key(KeyCode::End));
+        let after = joined(&draw(&mut shell, width, height));
+        assert_ne!(before, after);
+        assert!(after.contains("Fold/expand outline"));
+        shell.handle_event(&key(KeyCode::Up));
+        assert_ne!(
+            joined(&draw(&mut shell, width, height)),
+            after,
+            "one Up leaves the final help row"
+        );
+        shell.handle_event(&key(KeyCode::Home));
+        shell.handle_event(&key(KeyCode::Char('/')));
+        shell.handle_event(&Event::Paste("Next undecided".into()));
+        shell.handle_event(&key(KeyCode::Enter));
+        let filtered = joined(&draw(&mut shell, width, height));
+        assert!(filtered.contains("Next undecided"));
+        assert!(!filtered.contains("Open external editor"));
+        shell.handle_event(&key(KeyCode::Esc));
+        assert_eq!(shell.overlay(), menu.as_ref());
+    }
+}
+
+#[test]
+fn menu_filter_is_literal_and_runs_only_the_selected_available_action() {
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let ops = Operations::new(&git);
+    let mut shell = changes_shell(&repo, &ops);
+    let before = oracle::snapshot(&repo);
+    shell.handle_event(&key(KeyCode::Char(':')));
+    shell.handle_event(&key(KeyCode::Char('/')));
+    shell.handle_event(&Event::Paste("q:rK".into()));
+    assert!(!shell.should_quit());
+    assert!(joined(&draw(&mut shell, 80, 24)).contains("No actions match"));
+    shell.handle_event(&key(KeyCode::Enter));
+    assert!(shell.overlay().is_some());
+    for _ in 0..4 {
+        shell.handle_event(&key(KeyCode::Backspace));
+    }
+    shell.handle_event(&Event::Paste("Read view".into()));
+    shell.handle_event(&key(KeyCode::Enter));
+    assert_eq!(shell.view(), View::Read);
+    assert!(shell.overlay().is_none());
+    assert_eq!(oracle::snapshot(&repo), before);
+}
+
+#[test]
+fn picker_selects_by_arrows_without_opening_until_confirmed() {
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let ops = Operations::new(&git);
+    let mut shell = changes_shell(&repo, &ops);
+    let original = shell.document().unwrap().path.clone();
+    shell.handle_event(&key(KeyCode::Char('f')));
+    shell.handle_event(&key(KeyCode::End));
+    assert_eq!(shell.document().unwrap().path, original);
+    assert!(joined(&draw(&mut shell, 60, 16)).contains("› notes/z.md"));
+    shell.handle_event(&key(KeyCode::Esc));
+    assert_eq!(shell.document().unwrap().path, original);
+    shell.handle_event(&key(KeyCode::Char('f')));
+    shell.handle_event(&key(KeyCode::Down));
+    shell.handle_event(&key(KeyCode::Enter));
+    shell.settle_preview();
+    assert_eq!(shell.document().unwrap().path, "notes/b.md");
+}
+
+#[test]
+fn finish_can_return_to_an_undecided_group_without_applying() {
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let ops = Operations::new(&git);
+    let mut shell = changes_shell(&repo, &ops);
+    shell.handle_event(&key(KeyCode::Char('K')));
+    let before = oracle::snapshot(&repo);
+    shell.handle_event(&key(KeyCode::Enter));
+    assert!(shell.finish().is_some());
+    draw(&mut shell, 60, 16);
+    shell.handle_event(&key(KeyCode::End));
+    assert!(joined(&draw(&mut shell, 60, 16)).contains("Cancel; nothing"));
+    shell.handle_event(&key(KeyCode::Char(']')));
+    assert!(shell.finish().is_none());
+    assert_eq!(shell.changes().unwrap().selection(), 1);
+    assert_eq!(shell.changes().unwrap().proposed_count(), 1);
+    assert_eq!(oracle::snapshot(&repo), before);
 }

@@ -2,11 +2,11 @@
 
 Save and review Markdown edits through ordinary Git history.
 
-![A tmux demonstration: draft edits on the left; clearer prose, restored facts, and reviewed status on the right.](docs/assets/margin-terminal.png)
+![Margin desk with the claude-zai agent reviewing edits on the left and Margin's Changes view on the right.](docs/assets/margin-desk-claude-zai.png)
 
-*Example review in tmux. Git shows the draft changes on the left. Margin
-shows the reviewed documents on the right: keep the shorter opening and
-restore the original facts.*
+*Margin desk with Claude Code connected to Z.ai (GLM-5.3).
+The agent recommends edits on the left. Margin shows each changed passage
+and the review controls on the right.*
 
 Margin is a command-line tool for writing projects. Capture a draft,
 inspect its changes, then keep or restore selected passages.
@@ -85,6 +85,18 @@ pending review.
 Open a document directly with `margin content/article.md`, shorthand for
 `margin tui --path content/article.md`. Paths are relative to the repository
 root. The shorthand accepts TUI options, such as `--view changes`.
+
+Press `e` or click a passage to edit Markdown source. Margin saves after a
+750-millisecond pause. Switch documents without losing your cursor or undo
+history. Press `Esc` to read, or `E` for the configured external editor.
+
+Select source and press `F2` to ask an agent. Margin saves the latest text
+and captures the selection. Keep writing while the agent works. Results preserve
+separate edits and pause on conflicts. Use `F3` to accept a conflicting proposal,
+`F4` to keep your text, or `Ctrl+U` to undo the latest applied agent edit.
+Automatic checkpoints preserve request and result boundaries without approval.
+Press `B` in reading for request details. See
+[editing and agent requests](docs/source-editing.md) for recovery and limits.
 
 The hook adapter reads one Claude Code hook event from standard input and
 answers in Claude Code's own hook protocol, never in the Margin envelope. It
@@ -181,11 +193,11 @@ cycle focus between the document list, the reading column, and the standing
 action menu, and the footer names the focused element in words; `PgUp` and
 `PgDn` move one viewport, less one held row, in the focused element; `:` opens
 every action with its binding and the reason a disabled action cannot run;
-`?` lists the contextual keys and the current blockers; `/` searches within
+`?` opens scrollable contextual help with the current blockers; `/` searches within
 the current view and `f` opens the document picker, and inside those fields
 ordinary characters are text, so `Enter` submits the field rather than
 finishing a review and one bracketed paste never fires a sequence of global
-actions. `e` hands the displayed document to the configured editor (set one
+actions. `E` hands the displayed document to the configured editor (set one
 with `margin init --editor-argv-json`), the editor meets a cooked terminal,
 and its return reloads the document. An editor exit never approves; it
 captures one draft only while `--capture-after-edit` is stored. While the
@@ -267,12 +279,40 @@ Left-click a document or heading, a view tab, a change group, or a revision
 to make the same selection as the keyboard. Click an action-menu entry to run
 it, or a workspace-search result to open its source location. Clicking empty
 pane space moves focus. Right-click opens the action menu with no overlay and
-closes it while the menu stands. Help and text entry ignore clicks; workspace
-search accepts only clicks on its results. The wheel moves
+closes it while the menu stands. Help and ordinary text entry ignore clicks; the document picker and workspace
+search accept clicks on their results. The wheel moves
 the focused list by one entry or scrolls the reading column by three rows.
 
-Finish summaries, restoration previews, and text fields keep their keyboard
-confirmation rules and ignore clicks. Dragging, releases, and pointer motion
+Finish summaries and restoration previews keep their keyboard confirmation
+rules and ignore clicks. The document picker accepts clicks on results. Other
+text fields ignore clicks. Dragging, releases, and pointer motion
 have no action. Hold Shift for your terminal's own text selection. Inside tmux,
 pointer reporting needs the user's `mouse on` setting; Margin does not change
 that setting. Every pointer action also has a keyboard binding.
+
+### Find actions and move through source
+
+Press `:` for actions grouped by task. Press `/` inside the menu to filter.
+Type action names or groups, such as `Review`. Arrows select; Enter runs the
+selected action. Esc leaves filtering, then closes the menu. Disabled actions
+explain what prevents them from running. Movement instructions appear in help.
+
+Press `?` for contextual help, or `F1` while editing. Use arrows, Page Up/Down,
+Home/End, or the wheel to scroll. Press `/` to search and `a` to show all keys.
+Closing help restores its previous context, including an open action menu.
+
+The document picker (`f`) supports arrows, Page Up/Down, Home/End, and clicks.
+Typing filters paths. Enter opens the selected document, including with an
+empty query. Esc closes the picker without changing the document.
+
+In Changes, `]` moves to the next undecided group. The finish summary scrolls
+and offers the same key to return to an undecided group. Its confirmation
+states that remaining undecided changes are kept.
+
+In the source editor, `Ctrl+Left/Right` moves by word and `Ctrl+Home/End` moves
+to the document boundaries. Add Shift to select. Click to place the cursor;
+Shift-click extends the selection when your terminal delivers that event.
+The wheel scrolls without moving the cursor. `Ctrl+D` opens a scrollable disk
+comparison. `F6` opens conflict details. Esc returns from either panel to
+editing. `Ctrl+B` accepts the exact compared disk version as the base while
+retaining your text. Autosave then resumes. Help preserves conflict details.

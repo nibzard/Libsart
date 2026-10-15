@@ -146,3 +146,19 @@ The required sequences of SPEC 16.9 and the tests that cover them:
   pseudo-terminal, which is how the keymap reads it in raw mode.
 - macOS and Windows hosts are outside this machine. The pinned
   verification tiers record the environments a release claims.
+
+## Source editing and desk requests
+
+The next-release implementation adds `tests/source_editing.rs`. Its buffer
+checks cover source selection, Unicode, conflicts, recovery, and request states.
+`tests/autosave.rs` covers saved buffers, navigation, conflicts, and agent undo.
+Its pseudo-terminal checks cover literal paste, save, resize, exit cleanup,
+request submission, and application while the editor stays open.
+
+A two-viewer case uses separate private desk sockets in one repository. A
+result waits while its originating viewer has a request prompt open. The other viewer
+does not apply that result. Existing tmux composition and external editor tests
+continue to run. The external editor binding is now `E`; `e` opens source.
+
+See [editing validation](editing-validation.md) for the current run. These
+checks do not claim a live model session or physical terminal rasterization.

@@ -326,3 +326,15 @@ replacing the digit `0` — an identity without that digit made the
 stranger equal an issued identity on Git 2.45.0. The helper now flips
 the first hex digit and asserts the result differs from every issued
 identity.
+
+## Source editing extension
+
+The existing gates also validate the source editing extension. The tests gate
+includes `autosave` and `source_editing`, which use real Git, rendered buffers, and actual
+pseudo-terminals. The lints and minimum Rust gates cover the source buffer,
+save operations, durable queue, and adapter additions.
+
+The budgets gate checks the new release executable. A separate release-build
+source test measures loading and rendering a complete 1 MiB line. This local
+diagnostic does not replace the registered P-KEY benchmark campaign.
+See [editing validation](editing-validation.md) for commands and observations.

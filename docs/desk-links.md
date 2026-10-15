@@ -1,5 +1,9 @@
 # Explicit desk links
 
+Status: Implemented. This is a user guide, not an active implementation plan.
+Physical terminal validation remains open; see the
+[remaining gaps plan](remaining-gaps-plan.md).
+
 The primary agent workflow is `margin open PATH [--line N]`: it needs no
 terminal setup. A printed filename or an agent's ordinary `file://` link
 has no Margin desk identity and does not control the viewer.

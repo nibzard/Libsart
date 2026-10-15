@@ -24,6 +24,8 @@ crossterm = { version = "=0.29.0", default-features = false, features = [
     "bracketed-paste",
 ] }
 unicode-width = "=0.2.2"
+# Already shipped through ratatui; source editing uses its grapheme boundaries.
+unicode-segmentation = "=1.13.3"
 pulldown-cmark = { version = "=0.13.4", default-features = false }
 
 [dev-dependencies]

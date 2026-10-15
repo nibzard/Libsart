@@ -141,6 +141,13 @@ Built-in editing, chat, an embedded terminal, browser or desktop interfaces, arb
 
 No LLM API is required by the application. Agents remain external programs. Model access is used only by optional development-time AX evaluations.
 
+### 2.5 Source editing extension
+
+The next release adds in-pane source editing and durable agent edit requests.
+The release 0.1 exclusions above remain historical scope statements. The new
+contract is in Section 12.8 and [the source editing guide](docs/source-editing.md).
+Chat, simultaneous writers, and automatic conflict merging remain deferred.
+
 ## 3. Scope and supported operating conditions
 
 ### 3.1 Initial support envelope
@@ -153,7 +160,7 @@ No LLM API is required by the application. Agents remain external programs. Mode
 | Filesystem | Local filesystem; network mounts and synchronizing remote filesystems are outside the supported mutation envelope |
 | Writing scope | One canonical set of included path roots, exclusions, and Markdown suffixes |
 | Writers | One cooperating active writer during a mutation |
-| Git index | Clean against HEAD before normal mutations; exact-plan resume and staged-state recovery checkpoint are the two explicit exceptions in Section 9.7 |
+| Git index | Clean against HEAD before normal mutations; exact-plan resume and staged-state recovery checkpoint are exceptions in Section 9.7; source-only saves preserve the index and permit staging under Section 12.8 |
 | Git operations | No active merge, rebase, cherry-pick, revert, bisect-driven checkout, or unresolved conflict |
 | Repository extensions | Linked worktrees, sparse checkout, shallow/partial clones with unavailable objects, and nested repositories are inspection-only until explicitly supported |
 | Content transformations | Only the identity storage profile in Section 8.8 is supported for mutations |
@@ -847,13 +854,22 @@ Resizing must not reset a plan or mutate content. Preserve position using source
 | Document picker | `f` | Open/find documents |
 | Search within current view | `/` | Search without changing content |
 | Search all documents | `Ctrl+F` | Search listed working source; arrows select, Enter searches/opens, Esc cancels |
-| Edit document | `e` | Suspend/handoff to configured editor |
+| Edit current file | `e` | Open the current working source in the pane |
+| External editor | `E` | Suspend/handoff to the configured editor |
+| Ask agent | `A` in reading; `F2` in editing | Save the latest text and queue an instruction for the whole file or selection |
+| Agent requests | `B` | Show durable request states and explanations |
+| Undo agent edit | `U` in reading; `Ctrl+U` in editing | Reverse the latest result only if the file still matches it |
+| Resolve agent conflict | `F3` / `F4` in editing | Use the shown agent proposal / keep writer text |
+| Checkpoint scope and review | `C` | Capture scoped working changes as an unreviewed draft and open Changes |
 | Finish review | `Enter` on the finish action | Show complete scope/result summary and explicit keep-rest intent |
 | Cancel overlay/back | `Esc` | Leave local UI context; never silently apply |
-| Help | `?` | Contextual key list and current blockers |
+| Help | `?`; `F1` in editing | Scrollable contextual keys and current blockers; `/` searches, `a` shows all keys |
+| Refresh | `R` | Refresh the displayed repository state explicitly |
+| Draft checkpoints | `a` in History | Expand or collapse draft checkpoints |
+| Next undecided group | `]` in Changes or finish summary | Navigate without applying decisions |
 | Quit | `q` / `Ctrl-C` | Restore terminal; warn only about unapplied selections, not already saved drafts |
 
-All actions must also be discoverable through a compact action menu. Navigation keys never change review decisions. Keymap changes are user-interface contract changes and require updating usability and snapshot tests.
+Executable reading actions must also be discoverable through a compact action menu. Movement instructions belong in help. Editor commands appear in editor help. Navigation keys never change review decisions. Keymap changes are user-interface contract changes and require updating usability and snapshot tests.
 
 Text entry has precedence: in search or a settings field, ordinary characters such as `q`, `r`, `s`, and `:` are text, and Enter submits that field rather than finishing a review. Esc leaves text entry; Ctrl-C retains the explicit clean-quit behavior. Bracketed paste is literal text in a text field and cannot trigger a sequence of global actions; outside text entry it is ignored with a concise notice.
 
@@ -879,7 +895,7 @@ existing action; workspace-search hits use the same revalidation as Enter.
 Empty visible-pane clicks move focus. Right-click opens the menu with no overlay
 and closes it while the menu stands; Help and WorkspaceSearch ignore it. Menu
 and workspace-search overlays block clicks on all underlying content. Finish
-summaries, restoration previews, and text-entry fields ignore clicks. The wheel
+summaries and restoration previews ignore clicks. Document-picker results accept clicks; other text-entry fields ignore clicks. The wheel
 moves the focused list by one entry or scrolls a free-reading column three rows.
 The last drawn frame records typed hit targets; startup and resize invalidate
 them. Releases, drags, and motion are filtered before shell fingerprinting,
@@ -888,6 +904,25 @@ inspection, and keyboard input remain independent of ignored pointer traffic.
 Mouse capture enters and leaves with the other terminal modes, including editor
 handoffs. Terminal text selection remains available through Shift-drag; tmux
 mouse configuration remains the user's choice.
+
+The action menu uses stable task groups. `/` starts filtering; ordinary
+characters then become query text. Arrows and page keys select results.
+Disabled actions remain visible and are rechecked on activation. Command keys
+and menu activation share action dispatch and availability checks.
+
+Help and the finish summary scroll at every supported size. Help puts blockers
+before its action list and returns to its opening context. The document picker
+retains selection by path while filtering. Enter opens the selected result;
+Esc cancels without navigation. Menu and help queries are bounded text fields.
+
+Source editing supports Unicode word movement, document-boundary movement,
+Shift selection, click cursor placement, and viewport scrolling independent of
+the cursor. The renderer maps terminal cells to grapheme boundaries. Source
+lines scroll horizontally; these mappings include tabs and wide characters.
+Disk comparison, conflict details, and Save/Discard/Stay use typed editor
+dialogs. Their input cannot fall through into source editing. Disk comparison
+shows the differing line span and counts omitted common opening/closing lines.
+Accepting its base revalidates that exact disk version before autosave resumes.
 
 ### 11.4 Accessible semantics
 
@@ -1016,6 +1051,63 @@ Every reader — the CLI, the TUI, and the hook — parses each envelope against
 The writer answers from inside the review: one text field on the selected group stores a `writer` entry on the same ref. Delivery to the agent rides the existing hook boundary. Before capture at `UserPromptSubmit`, snapshot the adopted branch's HEAD and notes ref. Select writer entries from the snapshotted HEAD's first-parent ancestry through the current scope's starting marker, inclusive, using adoption's starting-marker discovery. The latest review marker does not cut off feedback. Checkpoints and reviews keep earlier feedback eligible; a new start resets the range, and unreachable or pre-start commits are excluded. Invalid adoption makes feedback unavailable with a diagnostic. This selection requires no TUI pin or persistent delivery state.
 
 Read from the notes-ref snapshot, newest commit first and envelope order within each commit. Context includes commit, entry ID, optional group digest, and text, bounded to 50 entries and 16 KiB of UTF-8 including labels and truncation notice. Disclose omissions and truncate only at character boundaries. Diagnose and skip invalid envelopes without suppressing valid peers. Then apply the existing capture policy: an allowed prompt receives the selected context even when capture advances HEAD or capture is manual; a blocked prompt retains its blocking response and consumes nothing. Notes arriving after the snapshot are eligible next turn. No acknowledgment bookkeeping exists in this contract, so eligible feedback repeats on subsequent allowed prompts. [The notes design](docs/notes-channel.md) records stage acceptance tests for validation, concurrent appends, and feedback delivery.
+
+### 12.8 Built-in source editing and agent requests
+
+The editor loads complete UTF-8 source from an eligible writable document in
+the adopted scope. The limit is 1 MiB. Existing mutation guards apply. A
+historical view opens the current file only through the named edit action.
+Reading previews, including truncated previews, are never save buffers.
+
+Each buffer owns text, grapheme boundaries, selection, bounded undo/redo, and
+its base version. Input stays literal. Autosave starts after 750 milliseconds
+without input and runs on one background worker. `Ctrl+S` flushes explicitly.
+`Esc` saves and returns to reading. `F5` offers Save, Discard, or Stay.
+Navigation retains up to 16 inactive buffers plus the active buffer. Only clean
+buffers can be evicted. Remote opens retain buffers. `Ctrl+Q` flushes all buffers.
+Saves preserve source bytes, line endings, the final newline, and permissions.
+Source saves leave the index untouched and permit pre-existing staged content.
+All other repository guards remain in force. Checkpoints still refuse staging.
+
+Save operations use the shared mutation lock. Compare source, working tree,
+scope, branch, and start marker before writing. Journal recovery data first.
+Use a synced temporary file and atomic replacement. Retain failed or uncertain
+saves. An external writer that ignores the lock can still race these checks.
+Dirty buffers are retained every two seconds. Recovery requires an explicit
+load and never applies itself. Saving and checkpointing confer no approval.
+Autosave does not create a commit at every pause. Request and result boundaries
+trigger checkpoints without approval. Failed history capture retries later and
+does not obscure a successful file save. Manual saves retain optional capture.
+
+Requests capture the base source, a byte span, instruction, worktree and desk
+identity, owner, result, and explanation. Store them in private untracked
+Git-resolved metadata. Bound each field, record count, and total queue bytes.
+Claims and state transitions serialize through the shared mutation lock.
+Identical submissions can be retried; different owners or payloads refuse.
+
+Agents submit replacements through Margin. Request creation flushes the latest
+source automatically. Open clean editors can receive results without losing
+focus. Dirty target buffers save first. Dialogs, pending navigation, and proposed
+review decisions defer application. Revalidate context and the captured passage.
+A conservative span comparison permits one disjoint writer edit. Overlapping or
+ambiguous changes retain both versions for explicit `F3` use or `F4` keep.
+Whole-document requests conflict with intervening source edits. Explicit use
+checks the exact version shown before writing. Persist before/after versions and
+application intent before saving. Interrupted application or undo requires
+inspection and must not repeat automatically. `U` in reading or `Ctrl+U` in
+editing reverses the latest applied request only while its result still matches.
+Record undo as writer feedback. Cancellation does not undo an applied edit.
+A new desk explicitly resumes a pending request from an old desk. Attach
+explanations only to checkpoints containing the exact applied result.
+
+The socket keeps legacy navigation and adds versioned status, notification,
+and open operations. A notification is not an application acknowledgement.
+The first adapter delivers request context through Claude Code's supported
+UserPromptSubmit boundary. Setup explicitly owns its instruction changes.
+
+See [the implementation decision](docs/adr-source-editor.md) for the editor
+choice and [the implementation plan](docs/editing-and-desk-communication-plan.md)
+for acceptance coverage.
 
 ## 13. Rust architecture and dependency policy
 
@@ -1560,6 +1652,14 @@ A slice is done when its tests demonstrate the intended and refused behaviors, i
 This table describes future repository CI; it does not schedule any user automation now.
 
 The PR deterministic tier targets ≤10 minutes on its registered runner. Move expanded stress counts to nightly when necessary, but retain a meaningful PR test for every critical invariant. Do not remove the only safety test to meet the duration target.
+
+For a source editing release candidate, include the `source_editing` suite,
+conflict and recovery demonstrations, the supported terminal matrix, and a
+supported agent adapter exchange. Record editor input latency during background
+refresh and queued results. Check that saves and agent application preserve the
+index, out-of-scope files, and approval state. The local implementation record
+in [editing validation](docs/editing-validation.md) does not replace the full
+performance campaign or writer and agent evaluations above.
 
 ### 18.4 Failure and flakiness policy
 

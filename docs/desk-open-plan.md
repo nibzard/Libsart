@@ -1,7 +1,9 @@
 # Open documents from the agent pane
 
-Status: implemented. Agent-invoked opening uses a private per-desk socket;
-the opt-in terminal link adapter is documented in [desk-links.md](desk-links.md).
+Status: Implemented. This is a completed design record, not an active plan.
+Agent opening and explicit desk links are implemented. See the
+[plan index](README.md) and [remaining gaps](remaining-gaps-plan.md).
+The opt-in terminal adapter is documented in [desk-links.md](desk-links.md).
 
 ## Goal
 

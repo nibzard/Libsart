@@ -344,7 +344,7 @@ fn the_editor_handoff_suspends_the_terminal_and_takes_it_back() {
     drew_first_frame(&mut pty);
 
     // `e` hands the document to the configured editor (SPEC 11.3, 12.5).
-    pty.send_key(b"e");
+    pty.send_key(b"E");
     assert!(
         pty.wait_for("Edited in the editor.", LIMIT),
         "the editor ran and the reloaded document shows its line: {}",
@@ -581,7 +581,7 @@ fn a_failing_editor_child_is_stated_and_the_surface_survives() {
     drew_first_frame(&mut pty);
 
     // `e` hands the document to the editor; the child fails at once.
-    pty.send_key(b"e");
+    pty.send_key(b"E");
     assert!(
         pty.wait_for("editor exited with", LIMIT),
         "the failed pass is stated: {}",

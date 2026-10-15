@@ -776,7 +776,9 @@ fn refresh_unit(executable: &Path, fixture: &Fixture) -> Result<MeasuredUnit, St
     // the flattened stream even though the frame shows the notice. The
     // status text ends near the row's start, while the notice's tail sits
     // past column 90 of a 120-column row, so its cells are always new.
-    let notice = pty::collapse("this review never saw");
+    // The prior review status can already contain "review" in those cells.
+    // Match only the final words beyond that status, which the diff emits.
+    let notice = pty::collapse("never saw");
     let (elapsed_ms, appeared) =
         session.wait_useful(started, FRAME_LIMIT, |text| text.contains(&notice));
     let exit_code = session.quit(QUIT_LIMIT);

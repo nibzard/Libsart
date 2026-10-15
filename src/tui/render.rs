@@ -15,8 +15,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, widgets};
+use unicode_segmentation::UnicodeSegmentation;
 
-use crate::tui::actions::Action;
 use crate::tui::history::PreviewState;
 use crate::tui::layout::{self, WidthClass};
 use crate::tui::pointer::Target;
@@ -127,20 +127,40 @@ pub fn draw(shell: &mut Shell<'_>, frame: &mut Frame<'_>) {
     if let Some(navigator) = geometry.navigator {
         draw_navigator(frame, navigator, shell, palette);
     }
-    match shell.overlay() {
-        Some(Overlay::Menu { .. }) => draw_menu(frame, geometry.reading, shell, palette),
-        Some(Overlay::Help) => draw_help(frame, geometry.reading, shell, palette),
-        Some(Overlay::Picker { .. }) => draw_picker(frame, geometry.reading, shell, palette),
-        Some(Overlay::WorkspaceSearch) => {
-            draw_workspace_search(frame, geometry.reading, shell, palette)
+    if shell.overlay() == Some(&Overlay::Help) {
+        draw_help(frame, geometry.reading, shell, palette);
+    } else if let Some(panel) = shell.request_panel() {
+        draw_scrolled_text(frame, geometry.reading, panel, shell.request_scroll);
+    } else if let Some((path, prompt)) = shell.agent_prompt() {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "Ask agent: {path}\nEnter queues · Esc cancels\n\n{}",
+                crate::cli::display_escape(prompt)
+            )),
+            geometry.reading,
+        );
+    } else if let Some(editor) = shell.source_editor() {
+        if let Some(super::editor::EditorDialog::Comparison { text, offset, .. }) = &editor.dialog {
+            draw_scrolled_text(frame, geometry.reading, text, *offset);
+        } else {
+            draw_source_editor(frame, geometry.reading, editor, shell, palette);
         }
-        // The search field keeps the current view visible behind it; the
-        // context row carries the query (SPEC 11.3).
-        _ => match shell.view() {
-            View::Read => draw_reading(frame, geometry.reading, shell, palette),
-            View::Changes => draw_changes(frame, geometry.reading, shell, palette),
-            View::History => draw_history(frame, geometry.reading, shell, palette),
-        },
+    } else {
+        match shell.overlay() {
+            Some(Overlay::Menu { .. }) => draw_menu(frame, geometry.reading, shell, palette),
+            Some(Overlay::Help) => draw_help(frame, geometry.reading, shell, palette),
+            Some(Overlay::Picker { .. }) => draw_picker(frame, geometry.reading, shell, palette),
+            Some(Overlay::WorkspaceSearch) => {
+                draw_workspace_search(frame, geometry.reading, shell, palette)
+            }
+            // The search field keeps the current view visible behind it; the
+            // context row carries the query (SPEC 11.3).
+            _ => match shell.view() {
+                View::Read => draw_reading(frame, geometry.reading, shell, palette),
+                View::Changes => draw_changes(frame, geometry.reading, shell, palette),
+                View::History => draw_history(frame, geometry.reading, shell, palette),
+            },
+        }
     }
     draw_context(frame, geometry.context, shell, palette);
     draw_footer(frame, geometry.footer, shell, palette);
@@ -433,7 +453,13 @@ fn render_reading_body(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, pal
     let offset = shell.reading_offset();
     let shown = &rows[offset.min(rows.len())..];
     let mut lines = Vec::with_capacity(area.height as usize);
-    for row in shown.iter().take(area.height as usize) {
+    for (index, row) in shown.iter().take(area.height as usize).enumerate() {
+        pointer_row(
+            shell,
+            Rect::new(area.x, area.y + index as u16, area.width, 1),
+            &row.text,
+            Target::SourceLine(row.source_line),
+        );
         lines.push(display_line(row, palette));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
@@ -484,7 +510,16 @@ fn draw_changes(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
         // entire scope, the intended result, and the explicit keep-remaining
         // intent (SPEC 5.2). The footer keeps naming the two keys that
         // answer it, so no action is lost to a short frame.
-        for row in shell.finish_rows().iter().take(body.height as usize) {
+        for row in shell
+            .finish_rows()
+            .iter()
+            .skip(
+                shell
+                    .finish_scroll
+                    .min(shell.finish_rows().len().saturating_sub(1)),
+            )
+            .take(body.height as usize)
+        {
             lines.push(display_line(row, palette));
         }
         frame.render_widget(Paragraph::new(Text::from(lines)), body);
@@ -579,111 +614,175 @@ fn draw_menu(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pale
     let Some(Overlay::Menu { selection }) = shell.overlay() else {
         return;
     };
-    let entries = shell.menu();
-    let mut text =
-        String::from("Action menu\nEnter runs the selected action; j/k choose; Esc closes\n\n");
-    let mut starts = Vec::with_capacity(entries.len());
+    let entries = shell.visible_menu();
+    let title = format!(
+        "Action menu · {} · {} actions\n/ filter: {}{} · Enter runs · Esc closes",
+        entries
+            .get(*selection)
+            .map_or("Navigate", |e| e.action.group().1),
+        entries.len(),
+        crate::cli::display_escape(&shell.menu_query),
+        if shell.menu_filtering { "▏" } else { "" }
+    );
+    frame.render_widget(
+        Paragraph::new(title).style(palette.heading),
+        Rect::new(area.x, area.y, area.width, area.height.min(2)),
+    );
+    let body = Rect::new(
+        area.x,
+        area.y + area.height.min(3),
+        area.width,
+        area.height.saturating_sub(3),
+    );
+    if entries.is_empty() {
+        frame.render_widget(Paragraph::new("No actions match"), body);
+        return;
+    }
+    let mut rows = Vec::new();
+    let mut selected_row = 0;
     for (index, entry) in entries.iter().enumerate() {
-        starts.push(text.lines().count() as u32 + 1);
-        text.push_str(&entry.line(index == *selection));
-        text.push('\n');
+        if index == *selection {
+            selected_row = rows.len();
+        }
+        for row in wrap::wrap_text(&entry.line(index == *selection), body.width.max(1)) {
+            rows.push((index, row.text));
+        }
     }
-    let rows = wrap::wrap_text(&text, area.width.max(1));
-    let starts: Vec<usize> = starts
+    let selected_end = rows
         .iter()
-        .map(|line| wrap::row_for_anchor(&rows, *line))
-        .collect();
-    let selected = starts.get(*selection).copied().unwrap_or(0);
-    let height = area.height as usize;
-    let top = selected.saturating_sub(height.saturating_sub(1));
-    let shown = &rows[top.min(rows.len())..];
-    let mut lines = Vec::with_capacity(height);
-    for (index, row) in shown.iter().take(height).enumerate() {
-        if let Some(entry) = starts.iter().rposition(|start| top + index >= *start) {
-            pointer_row(
-                shell,
-                Rect::new(area.x, area.y + index as u16, area.width, 1),
-                &row.text,
-                Target::MenuEntry(entry),
-            );
-        }
-        // The first source line of the page is the overlay's title.
-        let style = if row.source_line == 1 {
-            palette.heading
-        } else {
-            Style::new()
-        };
-        lines.push(Line::styled(row.text.clone(), style));
+        .rposition(|(index, _)| *index == *selection)
+        .map_or(selected_row + 1, |i| i + 1);
+    let top = selected_end
+        .saturating_sub(body.height as usize)
+        .min(selected_row);
+    let mut lines = Vec::new();
+    for (y, (index, text)) in rows.iter().skip(top).take(body.height as usize).enumerate() {
+        pointer_row(
+            shell,
+            Rect::new(body.x, body.y + y as u16, body.width, 1),
+            text,
+            Target::MenuEntry(*index),
+        );
+        lines.push(Line::raw(text.clone()));
     }
-    if shown.len() > height {
-        lines.push(Line::styled(
-            format!("and {} more rows; j/k scrolls", shown.len() - height),
-            palette.dim,
-        ));
-    }
-    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+    frame.render_widget(Paragraph::new(lines), body);
 }
 
-/// Draws the help overlay (SPEC 11.3 `?`): the contextual key list and
-/// the current blockers, each in words.
-fn draw_help(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
-    let mut text = String::from("Margin keys\n\n");
-    for action in Action::ALL {
-        text.push_str(&format!("  {} · {}\n", action.binding(), action.name()));
-    }
-    text.push_str("\nCurrent blockers\n");
-    let blockers = shell.blockers();
-    if blockers.is_empty() {
-        text.push_str("  none\n");
-    } else {
-        for blocker in blockers {
-            text.push_str(&format!("  {blocker}\n"));
-        }
-    }
-    text.push_str("\nEsc closes help\n");
-    let rows = wrap::wrap_text(&text, area.width.max(1));
-    let mut lines = Vec::with_capacity(area.height as usize);
-    for row in rows.iter().take(area.height as usize) {
-        // The first source line of the page is the overlay's title.
-        let style = if row.source_line == 1 {
-            palette.heading
-        } else {
-            Style::new()
-        };
-        lines.push(Line::styled(row.text.clone(), style));
-    }
-    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+fn draw_scrolled_text(frame: &mut Frame<'_>, area: Rect, text: &str, offset: usize) {
+    let rows = wrap::dialog_rows(text, area.width);
+    let top = offset.min(rows.len().saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new(
+            rows.iter()
+                .skip(top)
+                .take(area.height as usize)
+                .map(|r| Line::raw(r.text.clone()))
+                .collect::<Vec<_>>(),
+        ),
+        area,
+    );
 }
 
-/// Draws the document picker (SPEC 11.3 `f`): the filter and every
-/// document it matches. The first match is the document `Enter` opens.
+/// Help uses independent dialog state, including when opened from editing.
+fn draw_help(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, _palette: Palette) {
+    let text = shell.help_text();
+    let title = format!(
+        "Help · {} · / {}{}",
+        if shell.help_all {
+            "all shortcuts"
+        } else {
+            "current context"
+        },
+        crate::cli::display_escape(&shell.help_query),
+        if shell.help_filtering { "▏" } else { "" }
+    );
+    frame.render_widget(
+        Paragraph::new(title),
+        Rect::new(area.x, area.y, area.width, area.height.min(1)),
+    );
+    draw_scrolled_text(
+        frame,
+        Rect::new(
+            area.x,
+            area.y + 1,
+            area.width,
+            area.height.saturating_sub(1),
+        ),
+        &text,
+        shell.help_scroll,
+    );
+}
+
 fn draw_picker(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
     let Some(Overlay::Picker { filter }) = shell.overlay() else {
         return;
     };
-    let matches = shell.picker_matches(filter);
-    let mut text = format!(
-        "Document picker\n{} of {} documents match; Enter opens the first\n\n",
-        matches.len(),
+    let paths: Vec<String> = shell
+        .picker_matches(filter)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let selected = shell.picker_index(&paths);
+    let title = format!(
+        "Document picker · {} of {} documents match\n{}▏ · arrows select · Enter opens selected",
+        paths.len(),
         shell.documents().len(),
+        crate::cli::display_escape(filter)
     );
-    for (index, path) in matches.iter().enumerate() {
-        let marker = if index == 0 { "› " } else { "  " };
-        text.push_str(&format!("{marker}{path}\n"));
+    frame.render_widget(
+        Paragraph::new(title).style(palette.heading),
+        Rect::new(area.x, area.y, area.width, area.height.min(2)),
+    );
+    let body = Rect::new(
+        area.x,
+        area.y + area.height.min(3),
+        area.width,
+        area.height.saturating_sub(3),
+    );
+    if paths.is_empty() {
+        frame.render_widget(Paragraph::new("No documents match"), body);
+        return;
     }
-    text.push_str("\nType to filter · Esc closes\n");
-    let rows = wrap::wrap_text(&text, area.width.max(1));
-    let mut lines = Vec::with_capacity(area.height as usize);
-    for row in rows.iter().take(area.height as usize) {
-        // The first source line of the page is the overlay's title.
-        let style = if row.source_line == 1 {
-            palette.heading
-        } else {
-            Style::new()
-        };
-        lines.push(Line::styled(row.text.clone(), style));
+    let mut rows = Vec::new();
+    let mut selected_row = 0;
+    for (index, path) in paths.iter().enumerate() {
+        if index == selected {
+            selected_row = rows.len();
+        }
+        for row in wrap::wrap_text(
+            &format!(
+                "{} {}",
+                if index == selected { "›" } else { " " },
+                crate::cli::display_escape(path)
+            ),
+            body.width.max(1),
+        ) {
+            rows.push((index, row.text));
+        }
     }
-    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+    let selected_end = rows
+        .iter()
+        .rposition(|(index, _)| *index == selected)
+        .map_or(selected_row + 1, |i| i + 1);
+    let top = selected_end
+        .saturating_sub(body.height as usize)
+        .min(selected_row);
+    let lines = rows
+        .iter()
+        .skip(top)
+        .take(body.height as usize)
+        .enumerate()
+        .map(|(y, (index, text))| {
+            pointer_row(
+                shell,
+                Rect::new(body.x, body.y + y as u16, body.width, 1),
+                text,
+                Target::PickerEntry(*index),
+            );
+            Line::raw(text.clone())
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines), body);
 }
 
 fn draw_workspace_search(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
@@ -758,8 +857,20 @@ fn draw_workspace_search(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, p
 /// instruction the writer must read is never clipped by the counts beside
 /// it.
 fn draw_context(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
+    if let Some(error) = shell.autosave_notice() {
+        frame.render_widget(Paragraph::new(error).style(palette.warning), area);
+        return;
+    }
     if let Some(notice) = shell.notice() {
         frame.render_widget(Paragraph::new(notice.to_string()), area);
+        return;
+    }
+    if let Some(error) = shell.history_notice() {
+        frame.render_widget(Paragraph::new(error).style(palette.warning), area);
+        return;
+    }
+    if let Some(activity) = shell.source_editor().and_then(|e| e.activity.as_ref()) {
+        frame.render_widget(Paragraph::new(activity.as_str()), area);
         return;
     }
     if let Some(pending) = shell.pending_preview() {
@@ -808,6 +919,7 @@ fn draw_context(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
             .unwrap_or(left),
     };
     let right = match (shell.view(), shell.changes()) {
+        (View::Read, _) if !shell.agent_status.is_empty() => shell.agent_status.clone(),
         // In the Changes view, the plan the keys change states itself:
         // every decision and the scope it still has to cover, unvisited
         // groups and documents included (SPEC 5.2).
@@ -865,7 +977,7 @@ fn context_field(shell: &Shell<'_>) -> Option<String> {
         Some(Overlay::Picker { filter }) => {
             let matches = shell.picker_matches(filter).len();
             Some(format!(
-                "find: {filter}▏ · {matches} document{} match · Enter opens the first · Esc closes",
+                "find: {filter}▏ · {matches} document{} match · Enter opens selected · Esc closes",
                 if matches == 1 { "" } else { "s" },
             ))
         }
@@ -877,6 +989,72 @@ fn context_field(shell: &Shell<'_>) -> Option<String> {
 /// context answers (SPEC 11.3). Focus is stated in words, so it is
 /// visible, never inferred from decoration alone.
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
+    if shell.overlay() == Some(&Overlay::Help) {
+        frame.render_widget(
+            Paragraph::new(if shell.help_filtering {
+                "Type to filter · Enter search · Esc stop filtering"
+            } else {
+                "↑/↓ scroll · / search · a all keys · Esc close"
+            }),
+            area,
+        );
+        return;
+    }
+    if matches!(shell.overlay(), Some(Overlay::Menu { .. })) && shell.menu_filtering {
+        frame.render_widget(
+            Paragraph::new("Filter actions · ↑/↓ select · Enter run · Esc stop filtering"),
+            area,
+        );
+        return;
+    }
+    if shell.agent_prompt().is_some() {
+        frame.render_widget(
+            Paragraph::new("Enter Queue request · Esc / Ctrl+C Cancel · ordinary keys enter text"),
+            area,
+        );
+        return;
+    }
+    if shell.request_panel().is_some() {
+        frame.render_widget(
+            Paragraph::new("↑/↓ PgUp/PgDn scroll · Esc Close requests · q Quit"),
+            area,
+        );
+        return;
+    }
+    if let Some(editor) = shell.source_editor() {
+        if let Some(dialog) = &editor.dialog {
+            let hint = match dialog {
+                super::editor::EditorDialog::SaveChoices => "s Save · d Discard buffer · Esc Stay",
+                super::editor::EditorDialog::Comparison {
+                    kind: super::editor::ComparisonKind::Disk,
+                    ..
+                } => "↑/↓ Scroll · Ctrl+B Keep my text · Esc Edit",
+                super::editor::EditorDialog::Comparison {
+                    kind: super::editor::ComparisonKind::Agent,
+                    ..
+                } => "↑/↓ Scroll · F3 Use proposal · F4 Keep mine · Esc Edit",
+                super::editor::EditorDialog::Comparison { .. } => {
+                    "↑/↓ Scroll · Ctrl+D Compare disk · Esc Edit"
+                }
+            };
+            frame.render_widget(Paragraph::new(hint), area);
+            return;
+        }
+        frame.render_widget(
+            Paragraph::new("EDITING · Esc Read · F2 Ask · F1 Help"),
+            area,
+        );
+        return;
+    }
+    if shell.finish().is_some() {
+        let text = if area.width >= 80 {
+            "Enter keep remaining and finish · Esc cancel · ] undecided · ↑/↓ scroll"
+        } else {
+            "Enter keep remaining · Esc cancel · ] undecided · ↑/↓ scroll"
+        };
+        frame.render_widget(Paragraph::new(text), area);
+        return;
+    }
     let reduced = area.width < 100;
     let views = if reduced {
         "1·2·3 views"
@@ -889,7 +1067,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
             if reduced {
                 "j/k · Enter run · Esc close"
             } else {
-                "j/k choose · Enter runs · Esc closes"
+                "j/k choose · / filter · Enter runs · Esc closes"
             },
         ),
         Some(Overlay::Help) => (
@@ -905,7 +1083,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
             if reduced {
                 "type · Enter open · Esc close"
             } else {
-                "type filters · Enter opens the first · Esc closes"
+                "type filters · ↑/↓ select · Enter opens · Esc closes"
             },
         ),
         Some(Overlay::WorkspaceSearch) => (
@@ -925,10 +1103,14 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
             // While the finish summary stands, the footer names the two keys
             // that answer it, so the action stays reachable at every size
             // (SPEC 5.2, 11.2).
-            (View::Changes, false, true) => {
-                ("2 Changes", "Enter keep remaining and finish · Esc cancel")
-            }
-            (View::Changes, true, true) => ("2 Changes", "Enter finish · Esc cancel"),
+            (View::Changes, false, true) => (
+                "2 Changes",
+                "Enter keep remaining and finish · ] undecided · Esc cancel",
+            ),
+            (View::Changes, true, true) => (
+                "2 Changes",
+                "Enter keep remaining · ] undecided · Esc cancel",
+            ),
             // While a restoration preview stands, its labeled action owns the
             // footer (SPEC 5.5, 11.2).
             (View::History, false, _) => {
@@ -969,7 +1151,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
             }
             (_, false, _) => (
                 "1 Read 2 Changes 3 History",
-                "j/k scroll · Tab outline · [ sidebar · s source · / local · Ctrl+F all files · ? help · q quit",
+                "e edit · j/k scroll · Tab outline · s source · / local · Ctrl+F all files · ? help · q quit",
             ),
             (_, true, _) => ("1·2·3 views", "j/k · s source · f find · / · ? · q quit"),
         },
@@ -991,7 +1173,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
         && !shell.navigator_visible()
         && area.width >= 100
     {
-        "j/k scroll · [ sidebar · s source · f find · / local · Ctrl+F all files · ? help · q quit"
+        "e edit · j/k scroll · f find · s source · / local · Ctrl+F all files · ? help · q quit"
     } else {
         right
     };
@@ -1005,6 +1187,8 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
             ..area
         },
     );
+    let available = area.width.saturating_sub(left_width) as usize;
+    let right = fit_action_hints(right, available, shell.overlay().is_none());
     frame.render_widget(
         Paragraph::new(right),
         Rect {
@@ -1013,6 +1197,36 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
             ..area
         },
     );
+}
+
+/// Drop complete optional hints, retaining discovery and exit controls.
+fn fit_action_hints(hints: &str, width: usize, discovery: bool) -> String {
+    use unicode_width::UnicodeWidthStr;
+    if hints.width() <= width {
+        return hints.into();
+    }
+    let mut selected = Vec::new();
+    let reserved = if discovery {
+        "? help · q quit"
+    } else {
+        "Esc close"
+    };
+    let budget = width.saturating_sub(reserved.width() + 3);
+    for hint in hints.split(" · ") {
+        if hint.contains("? help") || hint.contains("q quit") || hint.contains("Esc") {
+            continue;
+        }
+        let candidate = if selected.is_empty() {
+            hint.to_string()
+        } else {
+            format!("{} · {hint}", selected.join(" · "))
+        };
+        if candidate.width() <= budget {
+            selected.push(hint);
+        }
+    }
+    selected.push(reserved);
+    selected.join(" · ")
 }
 
 /// Draws the minimum-size message (SPEC 11.2): the useful minimum, the
@@ -1060,4 +1274,227 @@ fn fit_to(text: &str, columns: usize) -> String {
         owned.push('…');
     }
     owned
+}
+
+fn draw_source_editor(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    editor: &super::editor::Editor,
+    shell: &Shell<'_>,
+    palette: Palette,
+) {
+    let line = editor.text[..editor.cursor]
+        .bytes()
+        .filter(|b| *b == b'\n')
+        .count();
+    let title = if editor.dialog.is_some() {
+        "Buffer choices · s Save · d Discard · Esc Stay".to_string()
+    } else {
+        format!(
+            "EDITING · {} · {}",
+            if editor.autosave_error.is_some() {
+                "Autosave paused"
+            } else if editor.dirty() {
+                "Saving…"
+            } else {
+                "Saved"
+            },
+            crate::cli::display_escape(&editor.base.path)
+        )
+    };
+    let title = if let Some(activity) = &editor.activity {
+        format!("{title} · {activity}")
+    } else {
+        title
+    };
+    let body = widgets::Block::default()
+        .borders(widgets::Borders::ALL)
+        .title(title);
+    let inner = body.inner(area);
+    frame.render_widget(body, area);
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+    let height = if editor.conflict.is_some() {
+        (inner.height / 2).max(1)
+    } else {
+        inner.height
+    };
+    let previous = editor.viewport_top.get();
+    let top = if editor.manual_scroll {
+        previous
+    } else if line < previous {
+        line
+    } else if line >= previous + height as usize {
+        line.saturating_sub(height as usize - 1)
+    } else {
+        previous
+    };
+    editor.viewport_top.set(top);
+    let selection = editor.selection();
+    let mut offset = 0;
+    let mut rows = Vec::new();
+    let line_start = editor.text[..editor.cursor]
+        .rfind('\n')
+        .map_or(0, |i| i + 1);
+    let prefix = &editor.text[line_start..editor.cursor];
+    let plain_ascii = |text: &str| text.bytes().all(|b| (b' '..=b'~').contains(&b));
+    let cursor_x: usize = if plain_ascii(prefix) {
+        prefix.len()
+    } else {
+        prefix.graphemes(true).map(source_width).sum()
+    };
+    let left = cursor_x.saturating_sub(inner.width as usize - 1);
+    for (number, source) in editor
+        .text
+        .split_inclusive('\n')
+        .chain(if editor.text.ends_with('\n') || editor.text.is_empty() {
+            Some("")
+        } else {
+            None
+        })
+        .enumerate()
+    {
+        if number >= top + height as usize {
+            break;
+        }
+        if number >= top {
+            let mut spans = Vec::new();
+            let source_text = source.trim_end_matches(['\r', '\n']);
+            let screen_y = inner.y + (number - top) as u16;
+            let mut cell = 0usize;
+            if plain_ascii(source_text) {
+                cell = source_text.len();
+                for byte in left.min(cell)..(left + inner.width as usize).min(cell) {
+                    shell.record_pointer_target(
+                        Rect::new(inner.x + (byte - left) as u16, screen_y, 1, 1),
+                        Target::SourceOffset(offset + byte),
+                    );
+                }
+            } else {
+                for (byte, grapheme) in source_text.grapheme_indices(true) {
+                    let width = source_width(grapheme);
+                    let start = cell.max(left);
+                    let end = (cell + width).min(left + inner.width as usize);
+                    if end > start {
+                        shell.record_pointer_target(
+                            Rect::new(
+                                inner.x + (start - left) as u16,
+                                screen_y,
+                                (end - start) as u16,
+                                1,
+                            ),
+                            Target::SourceOffset(offset + byte),
+                        );
+                    }
+                    cell += width;
+                    if cell >= left + inner.width as usize {
+                        break;
+                    }
+                }
+            }
+            let padding = cell.saturating_sub(left).min(inner.width as usize);
+            shell.record_pointer_target(
+                Rect::new(
+                    inner.x + padding as u16,
+                    screen_y,
+                    inner.width - padding as u16,
+                    1,
+                ),
+                Target::SourceOffset(offset + source_text.len()),
+            );
+            if plain_ascii(source_text) {
+                let start = left.min(source_text.len());
+                let end = (left + inner.width as usize).min(source_text.len());
+                let selected_start = selection.start.saturating_sub(offset).clamp(start, end);
+                let selected_end = selection.end.saturating_sub(offset).clamp(start, end);
+                rows.push(Line::from(vec![
+                    Span::raw(source_text[start..selected_start].to_string()),
+                    Span::styled(
+                        source_text[selected_start..selected_end].to_string(),
+                        Style::new().reversed(),
+                    ),
+                    Span::raw(source_text[selected_end..end].to_string()),
+                ]));
+                offset += source.len();
+                continue;
+            }
+            let mut visual = 0;
+            for (index, grapheme) in source.trim_end_matches(['\r', '\n']).grapheme_indices(true) {
+                let width = source_width(grapheme);
+                let end = visual + width;
+                if visual >= left + inner.width as usize {
+                    break;
+                }
+                if end > left {
+                    let selected = selection.contains(&(offset + index));
+                    let text = if visual < left {
+                        " ".repeat(end - left)
+                    } else {
+                        source_grapheme(grapheme)
+                    };
+                    spans.push(Span::styled(
+                        text,
+                        if selected {
+                            Style::new().reversed()
+                        } else {
+                            Style::new()
+                        },
+                    ));
+                }
+                visual = end;
+            }
+            rows.push(Line::from(spans));
+        }
+        offset += source.len();
+    }
+    frame.render_widget(
+        Paragraph::new(rows),
+        Rect::new(inner.x, inner.y, inner.width, height),
+    );
+    if let Some(conflict) = &editor.conflict {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{}\nF6 Inspect details · Ctrl+D Compare disk · F5 Save/discard/stay",
+                conflict
+                    .lines()
+                    .map(crate::cli::display_escape)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ))
+            .style(palette.warning),
+            Rect::new(
+                inner.x,
+                inner.y + height,
+                inner.width,
+                inner.height - height,
+            ),
+        );
+    }
+    if !editor.dialog.is_some() && line >= top && line < top + height as usize {
+        frame.set_cursor_position((
+            inner.x + (cursor_x - left).min(inner.width as usize - 1) as u16,
+            inner.y + (line - top) as u16,
+        ));
+    }
+}
+
+fn source_grapheme(grapheme: &str) -> String {
+    if grapheme == "\t" {
+        "    ".into()
+    } else if grapheme.chars().any(char::is_control) {
+        grapheme.chars().flat_map(char::escape_default).collect()
+    } else {
+        grapheme.into()
+    }
+}
+
+fn source_width(grapheme: &str) -> usize {
+    if grapheme == "\t" {
+        4
+    } else if grapheme.chars().any(char::is_control) {
+        grapheme.chars().flat_map(char::escape_default).count()
+    } else {
+        unicode_width::UnicodeWidthStr::width(grapheme)
+    }
 }

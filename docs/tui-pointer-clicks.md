@@ -1,6 +1,10 @@
 # TUI pointer clicks plan
 
-Status: implemented. Pointer hover remains deferred until the hover core lands.
+Status: Implemented for pointer clicks and ignored-event filtering.
+The current source editor also supports cursor placement and wheel scrolling;
+the document picker accepts result clicks. See `source-editing.md` and SPEC 11.3. This is a
+completed design record. Pointer hover remains unimplemented; the keyboard
+hover core is implemented. See the [remaining gaps plan](remaining-gaps-plan.md).
 
 This document records the click interaction design. It extends the
 mouse-wheel work (task T101) and shares its foundation with the hover plan
@@ -71,7 +75,8 @@ outside an overlay's rectangle:
 
 1. **No valid drawn map:** all clicks, including right clicks, do nothing.
 2. **Finish summary or restore preview:** all clicks do nothing.
-3. **Search, Picker, or Note text entry:** all clicks do nothing.
+3. **Search or Note text entry:** all clicks do nothing. The document picker
+   accepts its visible result targets; all underlying targets remain blocked.
 4. **Help:** all clicks do nothing; its keyboard close action remains.
 5. **Action menu:** left clicks may activate only `MenuEntry` targets or
    focus its `Pane(Actions)`. Right click closes the menu through its
@@ -93,8 +98,8 @@ action checks. No click reaches content underneath a standing context.
 
 The hit map is exactly what pointer hover needs. The hover plan defines
 hover as keyboard-driven state (`tui-hover-navigation.md` items 1–4);
-pointer motion then becomes one more source for the same state once that
-core lands:
+pointer motion can become one more source for the same state. The keyboard
+core is implemented; these pointer behaviors remain proposed:
 
 - `MouseEventKind::Moved` over a navigator row, group row, or revision
   row sets the hover the arrow keys set. Nothing else changes.
@@ -105,7 +110,8 @@ core lands:
   same way it bounds rapid `j`/`k`; clicks inherit that protection for
   free once they route through the same actions.
 
-Pointer hover is not scheduled by this plan. It waits for the hover core.
+Pointer hover is outside the completed click work. Its implementation and
+acceptance checks are in the [remaining gaps plan](remaining-gaps-plan.md).
 
 ## 5. Tests
 
@@ -119,7 +125,7 @@ map exists; they assert through the same accessors the wheel tests use.
 - Clicks over the finish summary, the preview, and text entry change
   nothing, including right clicks and clicks on visible tabs or navigator
   rows. A click with an empty map changes nothing, including right click.
-- Test each overlay's routing: Help ignores all clicks; Menu accepts its
+- Test each overlay's routing: Help ignores all clicks; Picker accepts only its visible results; Menu accepts its
   entries and closes on right click but blocks navigator and tab clicks;
   WorkspaceSearch opens only its own hits through revalidation and ignores
   right clicks without changing its query. Disabled menu actions retain
@@ -141,7 +147,7 @@ map exists; they assert through the same accessors the wheel tests use.
   asserts the clicked document opened; release bytes (`… m`) assert as
   no-ops.
 
-## 6. Fix unused pointer-motion rendering (P2)
+## 6. Ignored pointer events (implemented)
 
 Complete this alongside the click foundation. `EnableMouseCapture` enables
 any-motion tracking (`1003`), so moving the pointer currently wakes the
@@ -171,8 +177,9 @@ for every ignored event.
   (Shift-drag bypasses capture). In-surface dragging earns nothing over
   the wheel.
 - **Double-click.** No action needs it; the menu runs on one click.
-- **Reading-column row clicks.** The reading column has no per-row action
-  today; position-following belongs to hover.
+- **Reading-column row clicks (historical decision, superseded).** Clicking a
+  source passage now opens editing at its source line. See the
+  [editing guide](source-editing.md).
 - **Scrollbar interaction.** The surface draws no scrollbar; one is a
   design change, not a pointer change.
 - **Positional menus or tooltips.** Menus stay centered lists; positional
