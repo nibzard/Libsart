@@ -802,7 +802,12 @@ The active view is shown in a persistent tab row above the content. The
 navigator is a compact document outline: only the selected document expands
 its parsed Markdown headings, and reading scroll tracks the current heading.
 HTML comments are hidden in the Read presentation by default and remain
-available in source view with their original source-line coordinates.
+available in source view with their original source-line coordinates. An
+outermost Markdown table renders as an aligned grid inside the reading
+measure: cells pad to their column widths, the delimiter row becomes one
+horizontal rule, over-wide cells wrap instead of drifting past the
+measure, and every rendered row keeps its source-line anchor; source view
+keeps the exact pipe rows.
 Changes emphasizes changed words within before/after excerpts; grouping
 rationale and review identity are available on demand instead of repeated
 for every passage. Decision counts state that choices are not applied until

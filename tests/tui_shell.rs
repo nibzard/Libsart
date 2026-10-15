@@ -205,6 +205,40 @@ fn before_adoption_opens_read_only_with_discovery_and_a_setup_action() {
 }
 
 #[test]
+fn the_read_view_renders_a_table_as_an_aligned_grid() {
+    // A plain folder is enough: the Read presentation only reads text
+    // (SPEC 11.1). The grid keeps source anchors; source mode (`s`)
+    // keeps the exact pipe rows.
+    let base = tempfile::TempDir::new().expect("a temporary folder");
+    let folder = base.path().join("writing");
+    std::fs::create_dir_all(&folder).expect("a folder");
+    std::fs::write(
+        folder.join("numbers.md"),
+        b"# Numbers\n\n| Feature | State |\n| --- | --- |\n| tables | aligned |\n| lists | prose |\n\nAfter the table.\n",
+    )
+    .expect("a document");
+
+    let git = Git::from_env(std::env::vars_os()).at(&folder);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(&folder, &operations, &TuiOptions::default());
+    let screen = joined(&draw(&mut shell, 100, 24));
+    assert!(screen.contains("Feature │ State"), "cells align: {screen}");
+    assert!(screen.contains("tables  │ aligned"), "{screen}");
+    assert!(screen.contains("────────┼────────"), "the rule: {screen}");
+    assert!(screen.contains("After the table."), "{screen}");
+
+    shell.handle_event(&key(KeyCode::Char('s')));
+    let source = joined(&draw(&mut shell, 100, 24));
+    assert!(source.contains("| --- | --- |"), "exact pipes: {source}");
+    assert!(!source.contains("─┼─"), "no grid in source mode: {source}");
+    assert!(
+        std::fs::read(folder.join("numbers.md")).expect("the document")
+            == b"# Numbers\n\n| Feature | State |\n| --- | --- |\n| tables | aligned |\n| lists | prose |\n\nAfter the table.\n",
+        "reading never rewrites the source"
+    );
+}
+
+#[test]
 fn a_plain_folder_without_a_repository_still_opens_read_only() {
     // First use often starts outside any repository (SPEC 5.1): the
     // surface opens on the discovered documents instead of failing.
