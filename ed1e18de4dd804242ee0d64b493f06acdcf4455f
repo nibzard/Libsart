@@ -1,1 +1,3 @@
 Merge the reconciled extended desk workflow. Validate the actual main commit with desk navigation, real tmux, and terminal lifecycle suites before the pointer merge.
+
+Post-merge checks pass: desk-open, real tmux, terminal lifecycle, and shell suites. Pre-merge lints and 274 selected tests also pass on the same tree.
