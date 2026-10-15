@@ -1,20 +1,38 @@
 # Margin
 
-Save and review Markdown edits through ordinary Git history.
+A terminal workspace for Markdown writing, agent edits, and passage-by-passage review, backed by Git.
 
-![Margin desk with the claude-zai agent reviewing edits on the left and Margin's Changes view on the right.](docs/assets/margin-desk-claude-zai.png)
+Edit a document yourself or work beside an agent. Save drafts in ordinary Git
+history, inspect what changed, and keep or restore individual passages.
+
+![Margin desk with Claude Code using Z.ai on the left and Margin's Changes view on the right.](docs/assets/margin-desk-claude-zai.png)
 
 *Margin desk with Claude Code connected to Z.ai (GLM-5.3).
-The agent recommends edits on the left. Margin shows each changed passage
-and the review controls on the right.*
+The agent recommends edits on the left. Margin shows changed passages and
+review controls on the right. You can also use Margin without an agent.*
 
-Margin is a command-line tool for writing projects. Capture a draft,
-inspect its changes, then keep or restore selected passages.
+## What you can do
 
-## Quick start
+- **Write:** edit Markdown source with autosave, selection, undo, and recovery.
+- **Review:** compare before and after, keep clearer prose, and restore unwanted changes.
+- **Work with an agent:** request edits to selected text while you continue writing.
+- **Browse history:** read earlier versions and restore a document through a new commit.
+- **Control the scope:** choose which Markdown files Margin captures and reviews.
+
+Saving, checkpointing, and reviewing are separate actions:
+
+| Action | Result |
+| --- | --- |
+| Save | Write the current text to the working file |
+| Checkpoint | Preserve the writing scope in a Git commit |
+| Review | Apply keep or restore decisions and record the review |
+
+Saving and checkpointing never approve changes. Agent results still need review.
+
+## Install
 
 You need Git and Rust with Cargo. The repository pins its Rust toolchain
-in `rust-toolchain.toml`.
+in `rust-toolchain.toml`. The optional desk also needs tmux 3.1 or newer.
 
 ```bash
 git clone https://github.com/nibzard/margin.git
@@ -23,215 +41,186 @@ cargo install --path . --locked
 margin --help
 ```
 
-Cargo installs `margin` in its binary directory. Add that directory to
-your `PATH` if your shell cannot find the command.
+Cargo installs `margin` in its binary directory, usually `~/.cargo/bin`.
+Add that directory to your `PATH` if your shell cannot find the command.
+See the [support matrix](docs/verification-tiers.md) for tested platforms and versions.
 
-Try the included documents in a separate repository:
+## Try it with example documents
+
+Run these commands from the cloned Margin repository in one Bash session.
+They create a separate temporary Git repository.
 
 ```bash
+MARGIN_EXAMPLES="$PWD/examples"
 MARGIN_DEMO=$(mktemp -d "${TMPDIR:-/tmp}/margin-demo.XXXXXX")
 mkdir -p "$MARGIN_DEMO/content"
-cp examples/before/*.md "$MARGIN_DEMO/content/"
+cp "$MARGIN_EXAMPLES"/before/*.md "$MARGIN_DEMO/content/"
 cd "$MARGIN_DEMO"
 git init -b writing
 git config --local user.name "Demo Writer"
 git config --local user.email "demo@example.test"
 margin init --scope content/
-margin status
 ```
 
-Edit a file in `content/`, then save and inspect the draft:
+Apply the supplied edits, checkpoint them, and open the review:
 
 ```bash
+cp "$MARGIN_EXAMPLES"/after/*.md content/
 margin checkpoint --message "Revise the garden documents"
-margin diff
+margin tui --view changes
 ```
 
-Follow the [example walkthrough](examples/README.md) to try selective review,
-request retries, and historical restoration. It includes original and edited
-documents plus commands that build review plans from your current history.
+In **Changes**, use `n` and `p` to move between passage groups.
+Press `K` to keep a change or `r` to restore its earlier text.
+Press `Enter` to inspect the finish summary, then `Enter` again to apply it.
+**Undecided changes are kept when you confirm.**
 
-## How it works
+The examples include a shorter opening and unconfirmed changes to times and
+measurements. Try keeping the opening and restoring the facts.
+See the [full walkthrough](examples/README.md) for scripted review and historical restoration.
 
-Margin tracks preservation and review separately. A checkpoint saves your
-draft. A review records your decisions about that draft.
+## Use your own writing project
+
+From an existing Git repository, choose a directory of Markdown documents:
+
+```bash
+margin init --scope content/
+margin tui
+```
+
+Replace `content/` with your writing directory. Initialization records its
+starting point. Files outside the writing scope stay outside capture and review.
+Use `margin status` to check what is saved and what still needs review.
+
+Open a document directly with `margin content/article.md`. Paths are relative
+to the repository root.
+
+### Edit and navigate
+
+Press `e` in **Read** to edit Markdown source. Margin saves after a
+750-millisecond pause. Press `Esc` to save and return to reading.
+Switching documents retains your cursor and undo history.
+Press `C` in reading to checkpoint the writing scope and open **Changes**.
+
+| Key in the reading or review interface | Action |
+| --- | --- |
+| `1` / `2` / `3` | Open Read / Changes / History |
+| `Tab` / `Shift+Tab` | Move focus between interface areas |
+| `f` | Find and open a document |
+| `/` | Search the current view |
+| `Ctrl+F` | Search source across the workspace |
+| `:` | Open the action menu; press `/` inside it to filter |
+| `?` | Open contextual help |
+| `]` in Changes | Jump to the next undecided group |
+| `E` in Read | Open the configured external editor |
+
+While editing, use `F1` for help. Ordinary keys insert text instead of running
+reading or review actions. `Ctrl+Z` and `Ctrl+Y` undo and redo source edits.
+Use Shift with movement to select text.
+
+You can click documents, headings, tabs, and change groups. Click a reading
+passage to edit it. The wheel scrolls; in the editor, it leaves the cursor in place.
+Inside tmux, pointer input needs your `mouse on` setting. Margin does not change it.
+Hold Shift for your terminal's text selection.
+
+To configure an external editor, for example Neovim:
+
+```bash
+margin init --editor-argv-json '["nvim", "--"]'
+margin edit --path content/article.md
+```
+
+See the [editing guide](docs/source-editing.md) for all editor shortcuts,
+save conflicts, recovery, and source-size limits.
+
+### Work beside an agent
+
+Run an installed agent beside Margin in a tmux desk:
+
+```bash
+margin desk -- claude
+```
+
+Replace `claude` with your agent's executable and arguments. Margin does not
+install or authenticate the agent. The screenshot uses Claude Code configured
+for Z.ai; that provider is optional.
+
+Inside tmux, the desk adds a window. Outside tmux, it creates and attaches to
+a dedicated session. Narrow terminals use separate windows instead of split
+panes. Quitting Margin leaves the agent running. Without tmux, run `margin tui`
+and your agent in separate terminal tabs.
+
+To request an edit, select source and press `F2`. Type an instruction and press
+`Enter`. An empty selection requests the whole document. Margin saves the latest
+text before creating the request. You can continue writing while the agent works.
+
+**The agent must use Margin's request commands to return a result.**
+Other edits to files are treated as external changes. For Claude Code, install
+the optional integration from your writing repository:
+
+```bash
+margin hook install claude --dry-run
+margin hook install claude
+```
+
+The installer adds local hook settings and managed guidance in `CLAUDE.md` and
+`AGENTS.md`. It preserves unrelated settings and refuses to replace edited
+guidance blocks. Starting a desk alone does not install this integration.
+Queued requests reach Claude Code on your next prompt; they do not interrupt
+an active turn. Other agents can use the [request commands](docs/source-editing.md#generic-agent-commands).
+
+Results preserve supported separate edits and pause on conflicts. In the editor,
+`F6` shows conflict details, `F3` uses the proposal, and `F4` keeps your text.
+`Ctrl+U` undoes the latest applied agent edit when later changes would not be overwritten.
+Press `B` in reading to inspect requests.
+
+An agent can also show you a document without taking keyboard focus:
+
+```bash
+margin open content/article.md --line 42
+```
+
+Run this command from the desk's agent pane. See the [desk link guide](docs/desk-links.md)
+for clickable links and terminal setup.
+
+## Command-line workflows
+
+Use `--help` on any command for its options and `--json` for structured results.
 
 | Command | Purpose |
 | --- | --- |
-| `margin init --scope content/` | Adopt a writing scope and record its starting point |
-| `margin status` | See whether scoped content is captured and reviewed |
-| `margin checkpoint` | Save scoped edits as a draft commit |
-| `margin diff` | Inspect changes since the last valid review baseline |
-| `margin review --input review.json --dry-run` | Preview the decisions in a review plan |
-| `margin review --input review.json` | Keep or restore changes and record the review |
-| `margin log` | Browse the writing history |
-| `margin tui` | Open the interactive reading and review surface |
-| `margin content/article.md` | Open one document in the interactive surface |
-| `margin edit --path content/article.md` | Hand one document to the configured editor |
+| `margin status` | Inspect capture and review state |
+| `margin checkpoint --message "Revise the opening"` | Save a draft commit |
+| `margin diff` | Compare the draft with the last valid review baseline |
+| `margin diff --working` | Inspect working changes before checkpointing |
+| `margin review --input review.json --dry-run` | Preview a review plan |
+| `margin review --input review.json` | Apply the review plan |
+| `margin log` | Browse writing history |
 | `margin show --path content/article.md --revision HEAD` | Read a saved document |
-| `margin restore --input restore.json` | Restore one historical document in a new commit |
+| `margin restore --input restore.json` | Restore a historical document through a new commit |
+| `margin note --text "Keep the concrete example"` | Attach feedback to the current checkpoint |
+| `margin requests list --json` | Inspect agent requests |
 | `margin doctor` | Inspect recovery state |
-| `margin hook claude` | Translate one Claude Code hook event into a capture |
-| `margin hook install claude` | Add Margin's hook entries to the local Claude Code settings |
-| `margin hook remove claude` | Delete Margin's hook entries from the local Claude Code settings |
-| `margin open content/article.md --line 42` | Show a document in the existing desk viewer |
-| `margin desk -- claude` | Compose an optional tmux desk with the agent beside Margin |
 
-Review plans use identifiers from `margin diff --json`. A completed request
-has a receipt in Git history. Repeating the same request returns that receipt.
-Historical restoration creates a new commit and leaves the restored content
-pending review.
+Review plans use identifiers from `margin diff --json`. Repeating a completed
+review or restoration request returns its receipt. Historical restoration leaves
+the restored content pending review. The [example walkthrough](examples/README.md)
+builds valid plans from your repository's current history.
 
-Open a document directly with `margin content/article.md`, shorthand for
-`margin tui --path content/article.md`. Paths are relative to the repository
-root. The shorthand accepts TUI options, such as `--view changes`.
+## Status and limitations
 
-Press `e` or click a passage to edit Markdown source. Margin saves after a
-750-millisecond pause. Switch documents without losing your cursor or undo
-history. Press `Esc` to read, or `E` for the configured external editor.
+Margin is under active development. Try it in the disposable example repository
+before adopting it for your writing.
 
-Select source and press `F2` to ask an agent. Margin saves the latest text
-and captures the selection. Keep writing while the agent works. Results preserve
-separate edits and pause on conflicts. Use `F3` to accept a conflicting proposal,
-`F4` to keep your text, or `Ctrl+U` to undo the latest applied agent edit.
-Automatic checkpoints preserve request and result boundaries without approval.
-Press `B` in reading for request details. See
-[editing and agent requests](docs/source-editing.md) for recovery and limits.
+- Source editing, review, history, and agent requests are implemented.
+- Linked Git worktrees remain inspection-only.
+- Source editing supports files up to 1 MiB. Use an external editor for larger files.
+- Conflict checks cannot prevent every race with unrelated editors or Git commands.
+- Physical terminal link checks and pointer hover remain open work.
 
-The hook adapter reads one Claude Code hook event from standard input and
-answers in Claude Code's own hook protocol, never in the Margin envelope. It
-captures one ordinary draft only while `--auto-checkpoint` is stored, uses a
-generic commit reason, and never blocks a Stop, so it cannot keep an agent
-running. A missing or malformed event captures and approves nothing.
-
-Install the entries with `margin hook install claude`; remove them with
-`margin hook remove claude`. Both commands edit only
-`.claude/settings.local.json`, leave every unrelated key and user hook in
-place, reread the file before writing and refuse when it changed under
-them, and report a repeated run as a no-op. Add `--dry-run` to see the
-exact planned configuration and the adapter capabilities first.
-
-`margin desk -- claude` composes an optional tmux writing desk around an
-explicit agent command line. Outside tmux it creates a dedicated detached
-session, attaches it, and detaches back to the same shell when you press
-the session's prefix and `d`. Inside an existing session it adds one
-clearly named window and leaves every other pane alone. The agent argv
-runs through tmux direct execution, so each argument stays one argument
-and no shell reads it. Terminals narrower than 140 columns get one
-command per window instead of two unreadable columns. The desk edits no
-global tmux option, sends no keystrokes into any pane, and reports the
-processes it created, the session's own prefix key (queried, never
-assumed), and how to reattach. You own the agent process: quitting Margin
-or closing its pane leaves the agent running. Without tmux, `desk`
-refuses with the two-tab arrangement instead — run `margin tui` in one
-tab and the agent in another.
-
-Inside a desk's agent pane, `margin open content/article.md` switches the
-existing viewer to reading view while keyboard focus stays with the agent.
-Use `--line 42` for source view at that passage, or `--json` for an
-acknowledgment after the viewer draws. Paths are repository-relative and
-must be eligible for the viewer's writing scope. Opening saves no content,
-creates no checkpoint, and changes no review decisions. Finish any viewer
-input, confirmation, or external editor before retrying a busy response.
-Each desk has its own private socket, including desks in the same repository;
-detaching and reattaching preserves the connection. A closed viewer reports
-an error with instructions to start a new desk.
-
-Add this instruction to agent guidance yourself; it works with any agent
-that can run shell commands:
-
-> When asked to show a document in Margin, find its repository-relative path and
-> run `margin open PATH`. Use `--line N` for a particular passage.
-
-For opt-in clickable links, see [the terminal adapter setup](docs/desk-links.md).
-Agent hooks and automatic changes to agent configuration are unnecessary.
-
-Use `--json` for structured command results. Use `--help` on any command
-for its options. Files outside the writing scope stay outside Margin's
-capture and review operations.
-
-## Development status
-
-The implementation is in progress. Core command-line workflows are available
-for testing. The interactive terminal interface opens with its Read view,
-its Changes view, and its History view. Persistent tabs show the active view.
-The compact sidebar nests the selected document's Markdown headings. `Tab`
-focuses the outline, `j`/`k` or arrows jump between entries, and `Enter` returns
-to reading. Left/right fold or expand the document; `[` hides or shows the
-sidebar. Scrolling highlights the current section. HTML comments stay hidden
-in Read until `s` toggles source view; source-line anchors survive both
-navigation and resizing.
-
-Changes shows before/after passages with word-level emphasis. `K` and `r`
-record an in-memory keep or restore decision; `u` clears the selected decision.
-`d` shows grouping rationale and review identity; `s` shows exact source.
-The decision count is separate from document saving: decisions are **not
-applied** until confirmed. `Enter` opens a finish summary of the entire writing
-scope, and a second `Enter` keeps the remaining changes and records the review
-through the same operation as `margin review`.
-
-Notes explain changes without changing document content. After a checkpoint,
-agents use `margin note --text "Why this changed"`, optionally with
-`--group` and a `change_id` from `margin diff --json`. `margin notes --json`
-lists notes on HEAD; `--revision` selects an earlier commit, and
-`margin notes --schema` exports the envelope schema. Changes and History
-display notes with authorship in words. In Changes, `N` opens a writer note;
-`Enter` saves it and `Esc` cancels. Installing the Claude integration adds
-the marked discovery block to `CLAUDE.md` and `AGENTS.md`; edited blocks
-are preserved with a conflict. Prompt hooks deliver bounded writer feedback
-from the current adoption's history, including feedback on older candidates.
-
-History lists versions affecting the selected document, in ancestry order,
-with separate local date, short commit, and description columns. `d` reveals
-revision kind, full commit, and exact timestamp; `a` expands draft checkpoints.
-`Enter` previews restoration against the current candidate before a second
-`Enter` applies it through `margin restore`. The review baseline stays
-unchanged, and missing files stay distinct from empty ones.
-
-The keyboard contract of the interface is complete: `Tab` and `Shift-Tab`
-cycle focus between the document list, the reading column, and the standing
-action menu, and the footer names the focused element in words; `PgUp` and
-`PgDn` move one viewport, less one held row, in the focused element; `:` opens
-every action with its binding and the reason a disabled action cannot run;
-`?` opens scrollable contextual help with the current blockers; `/` searches within
-the current view and `f` opens the document picker, and inside those fields
-ordinary characters are text, so `Enter` submits the field rather than
-finishing a review and one bracketed paste never fires a sequence of global
-actions. `E` hands the displayed document to the configured editor (set one
-with `margin init --editor-argv-json`), the editor meets a cooked terminal,
-and its return reloads the document. An editor exit never approves; it
-captures one draft only while `--capture-after-edit` is stored. While the
-surface is open, its two-second polling keeps the displayed document and
-the document list current with the working tree: changed bytes reload in
-place with the reading position kept, and arrived or deleted documents
-join and leave the list; a pinned review comparison never re-pins itself.
-Every state is labeled in words and symbols, never hue alone, and
-`--color never` draws a plain monochrome surface. `--reduced-updates`
-redraws only when the frame changed, for terminals and assistive setups
-sensitive to redraws. The surface restores raw mode, the alternate screen,
-bracketed paste, and cursor visibility on quit, `Ctrl-C`, terminal errors,
-resize, and editor return; an uncatchable kill can run no cleanup, so a
-terminal left raw after one recovers with `reset` (or `stty sane`). The
-`edit` command hands one document to the same configured editor from the
-command line. The Claude Code hook adapter translates supported events, and
-`hook install` and `hook remove` edit only Margin's own entries in the local
-Claude Code settings; `margin desk` composes the optional tmux writing desk.
-
-`Ctrl+F` searches the working source of every document listed in the TUI.
-Type a literal, case-insensitive query and press `Enter`; results show file
-paths, source lines, and excerpts. Use arrows to select a result and `Enter`
-to open it at that line in source view. `Ctrl+F` returns to the results;
-inside the panel it reruns the search. Editing the query clears old results,
-and `Esc` cancels and closes. Search runs in the background, changes no
-content, and reports skipped files and limits: 256 KiB per file, 16 MiB total,
-2,000 files, and 500 matching lines. Binary, unreadable, and symlinked files
-are skipped. `/` continues to search only the current view.
-Recovery supports inspection, exact-plan review resume, and guarded capture
-of inspected staged content.
-
-Known defects and remaining work are recorded in [to-do.json](to-do.json).
-That file is a backlog snapshot; regenerate it at integration milestones.
-Use the disposable example repository when evaluating the current behavior.
+See the [documentation and plan index](docs/README.md) for delivery status and
+[remaining work](docs/remaining-gaps-plan.md). [to-do.json](to-do.json) is a backlog
+snapshot and can lag current implementation.
 
 ## Build and test
 
@@ -242,77 +231,24 @@ cargo build --locked
 cargo test --all-targets --locked
 ```
 
-The tests use temporary Git repositories to check file content, history,
-scope boundaries, receipts, and failure behavior.
+Tests use temporary Git repositories to check content, history, scope, and recovery.
+The desk suite needs tmux 3.1 or newer. It skips with a notice when tmux is unavailable.
+Set `MARGIN_REQUIRE_TMUX=1` to make missing tmux a failure.
 
-The tmux desk suite needs tmux 3.1 or newer: direct execution after `--`
-and percentage pane sizes both arrived in that release. The suite skips
-with a notice where no usable tmux exists. The CI tiers install the
-pinned release with `ci/install-tmux.sh` and set `MARGIN_REQUIRE_TMUX=1`,
-which turns a missing tmux into a failure. See [CI tier support](ci/README.md).
+The continuous integration (CI) workflow runs pull-request and nightly verification tiers.
+See [CI setup](ci/README.md), the [support matrix](docs/verification-tiers.md),
+and the [terminal smoke matrix](docs/terminal-smoke-matrix.md) for requirements and evidence.
 
-The repository runs two verification tiers, a pull-request tier and a
-nightly tier, through `ci/run-tier.sh`; the claimed Rust, Git, Linux,
-and macOS versions and the evidence behind them are recorded in
-[Verification tiers and support matrix](docs/verification-tiers.md).
+## Documentation
 
-For more detail, see:
-
-- [Examples and demonstration](examples/README.md)
+- [Example walkthrough](examples/README.md)
+- [Source editing, agent requests, and recovery](docs/source-editing.md)
 - [Behavior and design specification](SPEC.md)
-- [Supported terminal smoke matrix](docs/terminal-smoke-matrix.md)
-- [Verification tiers and support matrix](docs/verification-tiers.md)
-- [The notes channel design](docs/notes-channel.md)
+- [Notes and feedback](docs/notes-channel.md)
 - [Review plan schema](schemas/review-plan-v1.json)
 - [Notes schema](schemas/notes-v1.json)
-- [Formal model](formal/MarginReview.tla)
-- [Formal mutation checks](formal/mutations/README.md)
-- [Implementation backlog](to-do.json)
+- [Formal review model](formal/MarginReview.tla) and [mutation checks](formal/mutations/README.md)
 
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
-
-### Pointer navigation
-
-Left-click a document or heading, a view tab, a change group, or a revision
-to make the same selection as the keyboard. Click an action-menu entry to run
-it, or a workspace-search result to open its source location. Clicking empty
-pane space moves focus. Right-click opens the action menu with no overlay and
-closes it while the menu stands. Help and ordinary text entry ignore clicks; the document picker and workspace
-search accept clicks on their results. The wheel moves
-the focused list by one entry or scrolls the reading column by three rows.
-
-Finish summaries and restoration previews keep their keyboard confirmation
-rules and ignore clicks. The document picker accepts clicks on results. Other
-text fields ignore clicks. Dragging, releases, and pointer motion
-have no action. Hold Shift for your terminal's own text selection. Inside tmux,
-pointer reporting needs the user's `mouse on` setting; Margin does not change
-that setting. Every pointer action also has a keyboard binding.
-
-### Find actions and move through source
-
-Press `:` for actions grouped by task. Press `/` inside the menu to filter.
-Type action names or groups, such as `Review`. Arrows select; Enter runs the
-selected action. Esc leaves filtering, then closes the menu. Disabled actions
-explain what prevents them from running. Movement instructions appear in help.
-
-Press `?` for contextual help, or `F1` while editing. Use arrows, Page Up/Down,
-Home/End, or the wheel to scroll. Press `/` to search and `a` to show all keys.
-Closing help restores its previous context, including an open action menu.
-
-The document picker (`f`) supports arrows, Page Up/Down, Home/End, and clicks.
-Typing filters paths. Enter opens the selected document, including with an
-empty query. Esc closes the picker without changing the document.
-
-In Changes, `]` moves to the next undecided group. The finish summary scrolls
-and offers the same key to return to an undecided group. Its confirmation
-states that remaining undecided changes are kept.
-
-In the source editor, `Ctrl+Left/Right` moves by word and `Ctrl+Home/End` moves
-to the document boundaries. Add Shift to select. Click to place the cursor;
-Shift-click extends the selection when your terminal delivers that event.
-The wheel scrolls without moving the cursor. `Ctrl+D` opens a scrollable disk
-comparison. `F6` opens conflict details. Esc returns from either panel to
-editing. `Ctrl+B` accepts the exact compared disk version as the base while
-retaining your text. Autosave then resumes. Help preserves conflict details.
