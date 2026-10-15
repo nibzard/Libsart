@@ -1,1 +1,3 @@
 Integrate the first desk-open milestone after validating PR #1. Validate transport, CLI, shell, terminal lifecycle, and real tmux navigation before continuing.
+
+Post-merge validation passes: strict lints plus library, CLI contract, desk transport, real tmux, access, shell, lifecycle, and terminal smoke suites with NO_COLOR removed and tmux required.
