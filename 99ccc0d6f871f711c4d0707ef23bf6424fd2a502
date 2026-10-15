@@ -1,1 +1,3 @@
 Merge PR #5 after sequential validation of PRs #1 through #4. The integration includes a regression fix for remote opens replacing pending previews. Run the full PR gate on main with NO_COLOR removed.
+
+Final post-merge validation: full PR test gate passes with 934 tests across 54 targets and no failures. Strict lints, Rust 1.89 compatibility, release size/startup budgets, and all four PR formal profiles pass locally. NO_COLOR is removed for terminal checks; tmux is required.
