@@ -941,6 +941,35 @@ Pass the explicit agent executable and argv through a supported direct-exec mech
 
 The writer owns the agent process. Quitting Margin must not kill the agent or unrelated tmux sessions. `desk` reports the processes/session it created and its attach/exit behavior. Existing user bindings are queried or described accurately; do not assume the default prefix has not changed.
 
+`margin open PATH [--line N] [--json]` controls the existing desk viewer.
+The launcher gives both panes a unique `MARGIN_DESK_SOCKET` address using
+a literal `env` assignment in tmux's direct-exec argv. The viewer owns a Unix listener in
+a directory with mode 0700 and current-user ownership. The launcher never
+removes a live socket on detach; the viewer removes its socket and directory
+on normal exit. An uncatchable kill can leave a private stale directory;
+new desks allocate fresh identities and never reuse its listener address.
+
+The local protocol bounds each JSON message to 8 KiB, rejects unknown fields,
+and uses an end-of-write boundary. A listener thread handles malformed input
+and busy replies even while the TUI waits for an external editor. Input reads
+have a 500 ms deadline; queued navigation expires after two seconds. Client
+startup retries and acknowledgments are bounded by the smaller of the CLI
+budget and five seconds. Expired queued requests are discarded. Success is
+acknowledged only after validation, application, and drawing. A failed draw
+cannot report successful opening. Paths use the existing document parser,
+scope resolver, file-type, containment, and symlink checks. Rejected navigation
+leaves the current document intact. The request changes no checkpoint,
+content, approval, or existing review decision, and calls no tmux selection
+or input command. This also applies to Margin's separate narrow-layout window.
+
+`margin open PATH --link` emits an explicit OSC 8 desk link; `--json` emits
+its URL without escape sequences. `margin open --url URL` dispatches it through
+the same transport, independently of the handler's inherited desk environment.
+A link encodes the unique socket identity, literal path, and optional line;
+a closed linked desk fails rather than falling back to another viewer.
+Terminal setup is opt-in and described in `docs/desk-links.md`. Ordinary agent
+file links do not imply routing to Margin.
+
 ### 12.7 The notes channel
 
 Notes carry what a diff cannot: the reason behind a change, and the writer's answer to it. One Git notes namespace — `refs/notes/margin` — holds them, one note blob per commit, in the shape of [the notes schema](schemas/notes-v1.json). Each entry names its author (`agent` or `writer`), anchors to the commit as a whole or to one change-group digest of the comparison it pins, and carries bounded text.
@@ -1586,7 +1615,7 @@ And the writer returns to the same document context
 | ADR-007 | Cooperative single writer and explicit recovery | Claimed CAS over arbitrary writers, transaction journal | Clear concurrency/failure boundary; stronger isolation is a separate future workflow |
 | ADR-008 | Identity storage profile initially | Silent Git normalization/filter bypass | Narrower repository compatibility; add profiles with explicit fidelity tests |
 | ADR-009 | One Cargo package and six runtime dependencies | Multi-crate framework, zero-dependency terminal/parser implementations | Small architecture; splits/additions need actual evidence |
-| ADR-010 | Hooks capture boundaries; tmux arranges views | Terminal scraping, send-keys orchestration | Minimal integration; no generalized agent platform |
+| ADR-010 | Hooks capture boundaries; tmux arranges views; a private per-desk Unix socket carries bounded viewer navigation with acknowledgment after drawing | Terminal scraping, send-keys orchestration, repository-global socket, agent-specific hooks | Agent and viewer remain independent; focus stays with the agent, even in narrow layouts. Revisit for cross-host desks or verified terminal adapters needing a different channel |
 | ADR-011 | TLA+ plus real tests plus benchmarks | Treating one assurance method as complete | Each method has an explicit boundary and evidence gate |
 | ADR-012 | No durable review-selection journal | Automatic crash replay/resume state | Lost selections are reviewed again; committed history is sufficient to recover content |
 | ADR-013 | Measurements use fixed corpora and actual registered hardware | Anecdotes, cherry-picked microbenchmarks | Results reproducible; targets remain unmeasured until baseline exists |

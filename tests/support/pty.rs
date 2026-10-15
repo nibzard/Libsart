@@ -54,7 +54,7 @@ mod ffi {
 mod ffi {
     pub const O_NOCTTY: i32 = 0x20000;
     pub const O_RDWR: i32 = 0o2;
-    pub const O_NONBLOCK: i32 = 0x0004_0000;
+    pub const O_NONBLOCK: i32 = 0x0000_0004;
     pub const O_CLOEXEC: i32 = 0x1000000;
     pub const F_GETFL: i32 = 3;
     pub const F_SETFL: i32 = 4;
@@ -70,7 +70,6 @@ mod ffi {
         pub c_oflag: u64,
         pub c_cflag: u64,
         pub c_lflag: u64,
-        pub c_line: u8,
         pub c_cc: [u8; 20],
         pub c_ispeed: u64,
         pub c_ospeed: u64,
@@ -86,7 +85,7 @@ unsafe extern "C" {
     fn unlockpt(fd: RawFd) -> i32;
     fn ptsname(fd: RawFd) -> *const c_char;
     fn ioctl(fd: RawFd, request: u64, ...) -> i32;
-    fn fcntl(fd: RawFd, command: i32, arg: i32) -> i32;
+    fn fcntl(fd: RawFd, command: i32, ...) -> i32;
     fn tcgetattr(fd: RawFd, termios: *mut ffi::Termios) -> i32;
     fn setsid() -> i32;
     fn open(path: *const c_char, flags: i32, ...) -> RawFd;
@@ -433,7 +432,12 @@ impl Pty {
         // platform defines.
         unsafe {
             let mut termios = std::mem::zeroed::<ffi::Termios>();
-            if tcgetattr(self.slave.as_raw_fd(), &mut termios) != 0 {
+            // On macOS the slave can stop accepting ioctls after its
+            // controlling session exits; the retained master still
+            // reports the restored terminal attributes.
+            if tcgetattr(self.slave.as_raw_fd(), &mut termios) != 0
+                && tcgetattr(self.master.as_raw_fd(), &mut termios) != 0
+            {
                 return false;
             }
             (termios.c_lflag & ffi::ICANON) != 0 && (termios.c_lflag & ffi::ECHO) != 0

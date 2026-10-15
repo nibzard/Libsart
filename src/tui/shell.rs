@@ -543,6 +543,10 @@ impl<'a> Shell<'a> {
         options: &TuiOptions,
         load_background_now: bool,
     ) -> Shell<'a> {
+        // Document operands are repository-relative even when desk is
+        // launched from an agent's current subdirectory.
+        let repository_root = operations.git().toplevel().ok();
+        let root = repository_root.as_deref().unwrap_or(root);
         let folder = folder_name(root);
         let mut shell = Shell {
             root: root.to_path_buf(),
@@ -998,6 +1002,108 @@ impl<'a> Shell<'a> {
         if self.fingerprint() != before {
             self.redraw = true;
         }
+    }
+
+    /// Remote navigation refuses unfinished local interactions and never
+    /// changes the pinned comparison or the writer's review decisions.
+    pub fn remote_busy(&self) -> bool {
+        self.overlay.is_some()
+            || self.finish.is_some()
+            || self.history_preview_stands()
+            || self.pending_editor.is_some()
+            || self.quit_warning
+    }
+
+    pub fn open_remote(&mut self, request: &crate::desk::Request) -> Result<(), String> {
+        self.open_remote_until(request, None)
+    }
+
+    /// Validate completely before applying a still-live transport request.
+    pub fn open_remote_until(
+        &mut self,
+        request: &crate::desk::Request,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), String> {
+        if self.remote_busy() {
+            return Err("viewer busy; finish the input or confirmation and retry".into());
+        }
+        let request = crate::desk::Request {
+            path: crate::domain::parse_document_path(&request.path).map_err(|e| e.to_string())?,
+            line: request.line,
+        };
+        if request.line == Some(0) {
+            return Err("line must be greater than zero".into());
+        }
+        let eligible = if let Some(descriptor) = &self.descriptor {
+            let git = self.operations.git().clone().at(&self.root);
+            let resolved = app::resolve_scope(&git, &descriptor.to_scope_input())
+                .map_err(|e| e.to_string())?;
+            document_paths(&resolved).contains(&request.path)
+        } else {
+            discover_documents(&self.root).contains(&request.path)
+        };
+        if !eligible {
+            return Err("document is missing, unsupported, or outside the viewer scope".into());
+        }
+        // Refuse symbolic links at every component, including before adoption.
+        let mut checked = self.root.clone();
+        for part in Path::new(&request.path).components() {
+            checked.push(part);
+            let meta = fs::symlink_metadata(&checked).map_err(|e| e.to_string())?;
+            if meta.file_type().is_symlink() {
+                return Err("symbolic links cannot be opened".into());
+            }
+        }
+        if !fs::metadata(&checked).map_err(|e| e.to_string())?.is_file() {
+            return Err("document is not a regular file".into());
+        }
+        let canonical_root = fs::canonicalize(&self.root).map_err(|e| e.to_string())?;
+        if !fs::canonicalize(&checked)
+            .map_err(|e| e.to_string())?
+            .starts_with(canonical_root)
+        {
+            return Err("document escapes the viewer root".into());
+        }
+        // Read before touching any visible state: failures preserve the current document.
+        let working =
+            read_working(&self.root, &request.path, READ_VIEW_BYTES).map_err(|e| e.to_string())?;
+        let shown = self.show_candidate(&request.path);
+        let (document, notice) = document_view(&request.path, &Ok(working), shown.as_ref());
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            return Err("opening request expired before navigation; retry".into());
+        }
+        self.absorb_document(document);
+        if self.history.is_some() {
+            self.reload_history();
+        }
+        if let Some(index) = self.documents.iter().position(|p| p == &request.path) {
+            self.selection = index;
+        } else {
+            self.documents.push(request.path.clone());
+            self.documents.sort();
+            self.selection = self
+                .documents
+                .iter()
+                .position(|p| p == &request.path)
+                .unwrap();
+        }
+        self.view = View::Read;
+        self.focus = Focus::Reading;
+        self.reading_source = request.line.is_some();
+        self.anchor = Some(SourceAnchor {
+            path: request.path.clone(),
+            line: request
+                .line
+                .unwrap_or(1)
+                .min(self.source_lines.len().max(1) as u32),
+        });
+        self.offset = 0;
+        self.drift = 0;
+        self.display_width = 0;
+        self.notice = notice;
+        self.regenerate();
+        self.redraw = true;
+        Ok(())
     }
 
     /// Absorbs one bracketed paste (SPEC 11.3).

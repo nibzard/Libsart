@@ -430,7 +430,7 @@ fn a_selection_and_finish_sequence_applies_through_the_keys() {
     );
     pty.send_key(b"\r");
     assert!(
-        pty.wait_for("Finish review", LIMIT),
+        pty.wait_for("Finishing keeps every passage", LIMIT),
         "the first Enter opened the summary: {}",
         String::from_utf8_lossy(&pty_snapshot(&pty)),
     );

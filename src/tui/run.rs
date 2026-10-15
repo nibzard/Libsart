@@ -217,7 +217,15 @@ pub fn launch(
     // the shell and the renderer then hold one decided mode (SPEC 11.4).
     let mut options = options.clone();
     options.color = resolved_color(options.color);
-    let mut shell = Shell::open_for_launch(root, operations, &options);
+    // Agent and document paths are repository-relative even when the
+    // desk was composed from a subdirectory.
+    let root = operations
+        .git()
+        .toplevel()
+        .unwrap_or_else(|_| root.to_path_buf());
+    let git = operations.git().clone().at(&root);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open_for_launch(&root, &operations, &options);
     let mut guard = TerminalGuard::enter().map_err(|error| {
         LaunchError::new(format!(
             "the terminal cannot enter its interactive modes: {error}"
@@ -283,9 +291,28 @@ fn drive(
     guard: &mut TerminalGuard,
     reduced_updates: bool,
 ) -> io::Result<()> {
+    let server = crate::desk::Server::start()?;
     let mut next_inspection = Instant::now();
     let mut drawn_once = false;
     loop {
+        let mut acknowledgement = None;
+        if let Some(server) = &server {
+            server.set_busy(shell.remote_busy());
+            if let Ok(pending) = server.requests.try_recv()
+                && Instant::now() < pending.deadline
+            {
+                let error = shell
+                    .open_remote_until(&pending.request, Some(pending.deadline))
+                    .err();
+                acknowledgement = Some((
+                    pending.reply,
+                    crate::desk::Reply {
+                        displayed: error.is_none(),
+                        error,
+                    },
+                ));
+            }
+        }
         shell.poll_workspace_search();
         if let Some(worker) = worker.as_mut() {
             // Every answered inspection reaches the shell before the
@@ -306,6 +333,9 @@ fn drive(
             })?;
             drawn_once = true;
         }
+        if let Some((sender, reply)) = acknowledgement {
+            let _ = sender.send(reply);
+        }
         if shell.should_quit() {
             return Ok(());
         }
@@ -320,6 +350,9 @@ fn drive(
             // The terminal hands itself to the child editor and takes
             // itself back; the shell reloads the document afterwards
             // (SPEC 11.5, 12.5).
+            if let Some(server) = &server {
+                server.set_busy(true);
+            }
             guard.suspend()?;
             let returned = run_editor(&handoff.argv, &handoff.path);
             guard.resume()?;
@@ -349,6 +382,10 @@ fn drive(
         if worker.as_ref().is_some_and(RefreshWorker::is_busy)
             || shell.workspace_search().searching()
         {
+            wait = wait.min(BUSY_WAIT);
+        }
+        if let Some(server) = &server {
+            server.set_busy(shell.remote_busy());
             wait = wait.min(BUSY_WAIT);
         }
         if event::poll(wait)? {

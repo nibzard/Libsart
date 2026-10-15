@@ -177,6 +177,7 @@ fn help_json_lists_the_specified_command_inventory() {
             "log",
             "note",
             "notes",
+            "open",
             "restore",
             "review",
             "show",
