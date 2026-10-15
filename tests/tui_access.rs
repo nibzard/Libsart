@@ -511,6 +511,10 @@ fn search_moves_within_every_view_without_changing_content() {
     shell.handle_event(&key(KeyCode::Char('f')));
     shell.handle_event(&Event::Paste("notes/a.md".into()));
     shell.handle_event(&key(KeyCode::Enter));
+    // The event loop settles one navigation target on the quiet pass
+    // after its key: no input waits here, so the picker's target loads
+    // before the view switches.
+    shell.settle_preview();
     // History view: the same key searches the timeline's subjects.
     shell.handle_event(&key(KeyCode::Char('3')));
     draw(&mut shell, 90, 30);
@@ -679,19 +683,25 @@ fn the_document_picker_finds_and_opens_documents() {
     shell.handle_event(&key(KeyCode::Backspace));
     shell.handle_event(&key(KeyCode::Backspace));
 
-    // A filter that matches opens the first match on Enter.
+    // A filter that matches opens the first match on Enter: the target
+    // stands while no quiet pass ran, then loads on it.
     for raw in ['b', '.', 'm', 'd'] {
         shell.handle_event(&key(KeyCode::Char(raw)));
     }
     shell.handle_event(&key(KeyCode::Enter));
+    assert!(
+        shell.has_pending_preview(),
+        "Enter names its target before the quiet pass loads it",
+    );
+    shell.settle_preview();
     assert_eq!(
         shell.document().map(|document| document.path.as_str()),
         Some("notes/b.md"),
-        "Enter opened the first match",
+        "the quiet pass opened the first match",
     );
     let page = draw(&mut shell, 110, 30);
     assert!(
-        joined(&page).contains("opened notes/b.md"),
+        joined(&page).contains("opening notes/b.md"),
         "the opening is stated",
     );
 

@@ -247,6 +247,21 @@ fn draw_navigator(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette:
             },
         ));
     }
+    if shell.discovery_truncated() {
+        // The bound is a first-class row, never a quietly short list
+        // (SPEC 11.3): the reader knows the discovery stopped at its
+        // document limit.
+        lines.push(Line::styled(
+            fit_to(
+                &format!(
+                    "First {} documents; adopt a scope for the full list",
+                    crate::tui::shell::MAX_DISCOVERED_DOCUMENTS
+                ),
+                area.width as usize,
+            ),
+            palette.warning,
+        ));
+    }
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -663,6 +678,13 @@ fn draw_workspace_search(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, p
 fn draw_context(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
     if let Some(notice) = shell.notice() {
         frame.render_widget(Paragraph::new(notice.to_string()), area);
+        return;
+    }
+    if let Some(pending) = shell.pending_preview() {
+        // The pending target labels itself in the context row (SPEC
+        // 11.4): the reason stands while the content-dependent actions
+        // give it, with or without one key press to raise it.
+        frame.render_widget(Paragraph::new(pending).style(palette.warning), area);
         return;
     }
     if let Some(field) = context_field(shell) {

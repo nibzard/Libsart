@@ -206,7 +206,7 @@ impl RefreshWorker {
                                 .ok()
                                 .map(|resolved| shell::document_paths(&resolved))
                         }
-                        WatchList::Unadopted => Some(shell::discover_documents(&job.watch.root)),
+                        WatchList::Unadopted => Some(shell::discover_documents(&job.watch.root).0),
                     };
                     let notes = match crate::notes::Snapshot::ref_head(operations.git()) {
                         Ok(head)

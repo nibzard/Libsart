@@ -723,6 +723,11 @@ fn a_reply_of_a_document_no_longer_displayed_is_ignored() {
     shell.handle_event(&key(KeyCode::Tab));
     shell.handle_event(&key(KeyCode::Left));
     shell.handle_event(&key(KeyCode::Char('j')));
+    // The switch defers to the quiet pass, exactly as the event loop
+    // settles it: the hover moved, the target stands, and the displayed
+    // content is still the first document — so the slow answer below
+    // describes the content the column shows.
+    shell.settle_preview();
     assert_eq!(
         shell.document().expect("a document stands").path,
         "notes/b.md",

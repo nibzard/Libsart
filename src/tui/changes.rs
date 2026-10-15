@@ -571,6 +571,20 @@ impl ChangesView {
         true
     }
 
+    /// Selects the group one change ID names, when this review still holds
+    /// it, and scrolls to it: one reload of the same pinned review keeps
+    /// the hovered group readable by identity (SPEC 5.4). The reloaded
+    /// hover counts as visited, exactly as one explicit navigation does.
+    pub fn select_change(&mut self, change_id: &str) {
+        if let Some(index) = self
+            .groups
+            .iter()
+            .position(|group| group.change_id == change_id)
+        {
+            self.select(index);
+        }
+    }
+
     /// Selects one group and scrolls to its first row.
     fn select(&mut self, index: usize) {
         self.set_selection(index);

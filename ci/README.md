@@ -9,14 +9,21 @@ The tiers themselves:
 
 - `.github/workflows/pr-tier.yml` — the pull-request tier: lints, the
   declared Rust minimum, the deterministic test gate at 256 generated
-  property cases, and the four small TLC profiles.
+  property cases, the four small TLC profiles, and the release size and
+  startup smoke gate.
 - `.github/workflows/nightly-tier.yml` — the nightly tier: the Git/OS
   support matrix, the 10,000-case property gate, all five TLC profiles
   plus the mutation checks, and the full-scale stress corpora.
 - `ci/run-tier.sh <gate> [pr|nightly]` — every gate's commands. The
   workflows call this script; the same command runs a gate locally. Each
   run writes its log, tool versions, and timing line under
-  `ci/artifacts/<gate>-<tier>/`.
+  `ci/artifacts/<gate>-<tier>/`. The `budgets` gate enforces the two
+  SPEC 17 initial rules a shared runner can hold — the stripped release
+  executable at most 16 MiB and a fresh `--help` within ten times the
+  P-HELP budget — and records the measured values in
+  `ci/artifacts/budgets-<tier>/budgets.tsv`; registered-runner
+  measurement against the budgets themselves stays with the SPEC 17
+  benchmark harness.
 - `ci/install-git.sh <version>` and `ci/git.sha256` — the pinned Git
   releases of the nightly matrix, built from the official kernel.org
   tarball into a private prefix.

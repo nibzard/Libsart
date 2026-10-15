@@ -296,6 +296,13 @@ fn drive(
                 shell.observe_inspection(reply);
             }
         }
+        // Deferred work settles only when no input waits behind it: one
+        // rapid run of navigation steps loads exactly the document it ends
+        // on and computes exactly the excerpt of the revision it rests on,
+        // so the last settled content stays readable while keys repeat.
+        if shell.has_deferred_work() && !event::poll(Duration::ZERO).unwrap_or(false) {
+            shell.settle_preview();
+        }
         if !reduced_updates || !drawn_once || shell.take_redraw() {
             // `try_draw`, never the panicking wrapper: a terminal that
             // stopped taking writes is an error this loop reports through

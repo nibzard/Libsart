@@ -87,6 +87,23 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+  budgets:
+    name: Release size and startup smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Budget gate
+        run: ci/run-tier.sh budgets pr
+      - name: Retain the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-budgets-failure
+          path: ci/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore
+
   formal:
     name: SANY and the four small TLC profiles
     runs-on: ubuntu-24.04
