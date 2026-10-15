@@ -82,12 +82,29 @@ pub fn compose_desk(cwd: &Path, agent: &[String]) -> Result<String, OperationErr
     validate_agent(agent)?;
     probe()?;
     let cwd: PathBuf = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    let margin = margin_argv();
-    if inside_tmux() {
+    let directory =
+        crate::desk::directory().map_err(|e| OperationError::new("IO_FAILED", e.to_string()))?;
+    let socket = directory.join("viewer.sock");
+    let wrap = |argv: &[String]| {
+        let mut result = vec![
+            "env".to_string(),
+            format!("MARGIN_DESK_SOCKET={}", socket.display()),
+        ];
+        result.extend_from_slice(argv);
+        result
+    };
+    let margin = wrap(&margin_argv());
+    let agent = wrap(agent);
+    let agent = agent.as_slice();
+    let result = if inside_tmux() {
         compose_inside(&cwd, agent, &margin)
     } else {
         compose_outside(&cwd, agent, &margin)
+    };
+    if result.is_err() {
+        let _ = fs::remove_dir(&directory);
     }
+    result
 }
 
 /// Validates the explicit agent argv (SPEC 12.6): one executable first,
@@ -364,7 +381,7 @@ fn compose_outside(
     // An agent that exited before the desk finished leaves no session to
     // attach; the writer gets the honest reason, not an attach failure.
     if !session_exists(&name) {
-        return Err(agent_did_not_run(&agent[0]));
+        return Err(agent_did_not_run(&unwrapped(agent)[0]));
     }
     let attached = attach(&name);
     let running = session_exists(&name);
@@ -438,7 +455,7 @@ fn compose_inside(
     }
     if !window_exists(&window) {
         kill_window(&window);
-        return Err(agent_did_not_run(&agent[0]));
+        return Err(agent_did_not_run(&unwrapped(agent)[0]));
     }
     // The window stays selected, so the writer lands on the desk; in the
     // focused arrangement the agent window is the desk's center.
@@ -516,7 +533,7 @@ fn desk_or_agent_failure(
     error: OperationError,
 ) -> Result<(), OperationError> {
     if !session_exists(session) {
-        return Err(agent_did_not_run(&agent[0]));
+        return Err(agent_did_not_run(&unwrapped(agent)[0]));
     }
     Err(error)
 }
@@ -634,8 +651,20 @@ impl Summary {
 
 /// One argv as one line of text: control characters become U+FFFD, so an
 /// argument can never carry a carriage return into the report.
+fn unwrapped(argv: &[String]) -> &[String] {
+    if argv.first().is_some_and(|s| s == "env")
+        && argv
+            .get(1)
+            .is_some_and(|s| s.starts_with("MARGIN_DESK_SOCKET="))
+    {
+        &argv[2..]
+    } else {
+        argv
+    }
+}
 fn show_argv(argv: &[String]) -> String {
-    argv.iter()
+    unwrapped(argv)
+        .iter()
         .map(|argument| {
             argument
                 .chars()
