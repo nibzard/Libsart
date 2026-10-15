@@ -1,0 +1,1 @@
+Merge PR #5 after sequential validation of PRs #1 through #4. The integration includes a regression fix for remote opens replacing pending previews. Run the full PR gate on main with NO_COLOR removed.
