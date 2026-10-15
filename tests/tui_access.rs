@@ -19,10 +19,10 @@ mod support;
 use std::path::Path;
 use std::process::Output;
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use margin::app::Operations;
 use margin::git::Git;
-use margin::tui::{Action, ColorMode, Focus, Shell, TuiOptions, View, render};
+use margin::tui::{Action, ColorMode, Focus, Overlay, Shell, TuiOptions, View, render};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier};
@@ -1227,4 +1227,400 @@ fn the_editor_capture_policy_saves_one_draft_and_approves_nothing() {
         String::from_utf8_lossy(&repo.git_ok(["log", "--format=%H", "--grep=Margin-Kind: review"]))
             .to_string();
     assert_eq!(reviews_before, reviews_after, "the exit approved nothing");
+}
+
+fn click(column: usize, row: usize, button: crossterm::event::MouseButton) -> Event {
+    Event::Mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(button),
+        column: column as u16,
+        row: row as u16,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+fn click_text(shell: &mut Shell<'_>, text: &str) {
+    let page = draw(shell, 110, 32);
+    let (row, column) = page
+        .iter()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find(text)
+                .map(|column| (row, unicode_width::UnicodeWidthStr::width(&line[..column])))
+        })
+        .unwrap_or_else(|| panic!("missing click text {text}: {}", page.join("\n")));
+    shell.handle_event(&click(column, row, crossterm::event::MouseButton::Left));
+}
+
+#[test]
+fn pointer_navigator_tabs_menu_and_search_reuse_keyboard_actions() {
+    use crossterm::event::MouseButton::{Left, Right};
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    let before = oracle::snapshot(&repo);
+    let initial = shell.selection();
+    shell.handle_event(&click(3, 4, Left)); // no first frame
+    assert_eq!(shell.selection(), initial);
+    click_text(&mut shell, "notes/b.md");
+    assert!(shell.has_pending_preview());
+    shell.settle_preview();
+    assert_eq!(shell.document().unwrap().path, "notes/b.md");
+    assert_eq!(shell.focus(), Focus::Documents);
+    click_text(&mut shell, "2 Changes");
+    assert_eq!(shell.view(), View::Changes);
+    click_text(&mut shell, "3 History");
+    assert_eq!(shell.view(), View::History);
+    click_text(&mut shell, "1 Read");
+    draw(&mut shell, 110, 32);
+    shell.handle_event(&click(50, 25, Left));
+    assert_eq!(shell.focus(), Focus::Reading);
+    draw(&mut shell, 110, 32);
+    shell.handle_event(&click(5, 31, Left));
+    assert_eq!(shell.focus(), Focus::Reading);
+    draw(&mut shell, 110, 32);
+    shell.handle_event(&click(50, 15, Right));
+    assert!(matches!(
+        shell.overlay(),
+        Some(margin::tui::Overlay::Menu { .. })
+    ));
+    draw(&mut shell, 110, 32);
+    shell.handle_event(&click(50, 15, Right));
+    assert!(shell.overlay().is_none());
+    shell.handle_event(&modified(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    shell.handle_event(&Event::Paste("forests".into()));
+    shell.handle_event(&key(KeyCode::Enter));
+    wait_for_workspace_search(&mut shell);
+    click_text(&mut shell, "notes/z.md:3");
+    assert_eq!(shell.document().unwrap().path, "notes/z.md");
+    assert!(shell.overlay().is_none());
+    before.assert_unchanged(&oracle::snapshot(&repo), "pointer navigation");
+}
+
+#[test]
+fn pointer_text_entry_and_resize_block_stale_targets() {
+    use crossterm::event::MouseButton::{Left, Right};
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = changes_shell(&repo, &operations);
+    draw(&mut shell, 110, 32);
+    shell.handle_event(&Event::Resize(80, 24));
+    let selection = shell.selection();
+    shell.handle_event(&click(3, 4, Left));
+    assert_eq!(shell.selection(), selection);
+    shell.handle_event(&key(KeyCode::Char('/')));
+    draw(&mut shell, 110, 32);
+    let overlay = shell.overlay().cloned();
+    shell.handle_event(&click(2, 1, Left));
+    shell.handle_event(&click(50, 10, Right));
+    assert_eq!(shell.overlay(), overlay.as_ref());
+    assert_eq!(shell.view(), View::Changes);
+}
+
+#[test]
+fn pointer_selects_groups_revisions_and_menu_entries() {
+    use crossterm::event::MouseButton::Right;
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = changes_shell(&repo, &operations);
+    let before = oracle::snapshot(&repo);
+    // Show enough rows to include the next group, then click its actual header.
+    let page = draw(&mut shell, 110, 70);
+    let row = page
+        .iter()
+        .position(|line| line.contains("Group 2 of"))
+        .unwrap();
+    let geometry = margin::tui::layout::frame_layout(ratatui::layout::Rect::new(0, 0, 110, 70));
+    shell.handle_event(&click(
+        geometry.reading.x as usize + 2,
+        row,
+        crossterm::event::MouseButton::Left,
+    ));
+    assert_eq!(shell.changes().unwrap().selection(), 1);
+    assert_eq!(shell.focus(), Focus::Reading);
+    shell.handle_event(&key(KeyCode::Char('3')));
+    draw(&mut shell, 110, 70);
+    let history = shell.history().unwrap();
+    assert!(history.rows().len() > 1);
+    let subject = history.rows()[1].subject.clone();
+    let page = draw(&mut shell, 110, 70);
+    let row = page
+        .iter()
+        .position(|line| line.contains(&subject))
+        .unwrap();
+    shell.handle_event(&click(
+        geometry.reading.x as usize + 2,
+        row,
+        crossterm::event::MouseButton::Left,
+    ));
+    assert_eq!(shell.history().unwrap().selection(), 1);
+    draw(&mut shell, 110, 32);
+    shell.handle_event(&click(50, 15, Right));
+    click_text(&mut shell, "Read view");
+    assert_eq!(shell.view(), View::Read);
+    assert!(shell.overlay().is_none());
+    before.assert_unchanged(&oracle::snapshot(&repo), "pointer selection and menu");
+}
+
+#[test]
+fn pointer_cannot_answer_finish_or_restoration_confirmation() {
+    use crossterm::event::MouseButton::{Left, Right};
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = changes_shell(&repo, &operations);
+    let before = oracle::snapshot(&repo);
+    shell.handle_event(&key(KeyCode::Enter));
+    assert!(shell.finish().is_some());
+    draw(&mut shell, 110, 32);
+    for button in [Left, Right] {
+        shell.handle_event(&click(50, 15, button));
+    }
+    assert!(shell.finish().is_some());
+    assert!(shell.overlay().is_none());
+    shell.handle_event(&key(KeyCode::Esc));
+    shell.handle_event(&key(KeyCode::Char('3')));
+    shell.handle_event(&key(KeyCode::Enter));
+    assert!(shell.history().unwrap().preview().is_some());
+    draw(&mut shell, 110, 32);
+    for button in [Left, Right] {
+        shell.handle_event(&click(50, 15, button));
+    }
+    assert!(shell.history().unwrap().preview().is_some());
+    assert!(shell.overlay().is_none());
+    before.assert_unchanged(&oracle::snapshot(&repo), "blocked confirmation clicks");
+}
+
+fn wheel(direction: i32) -> Event {
+    let kind = if direction < 0 {
+        MouseEventKind::ScrollUp
+    } else {
+        MouseEventKind::ScrollDown
+    };
+    Event::Mouse(MouseEvent {
+        kind,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+#[test]
+fn wheel_notches_follow_focus_and_scroll_the_focused_element() {
+    // One wheel notch makes the movement `j` and `k` make in the focused
+    // element (SPEC 11.3): the document list moves one entry, and the
+    // reading column moves three rows. The wheel is one redundant path;
+    // it adds no action the keyboard cannot reach (SPEC 11.4).
+    let repo = TestRepo::init();
+    let mut first = String::from("# First\n\nA long document.\n");
+    for line in 1..=150 {
+        first.push_str(&format!("Line {line} of the long document.\n"));
+    }
+    repo.write_file("notes/a01.md", first.as_bytes());
+    for number in 2..=30 {
+        let path = format!("notes/a{number:02}.md");
+        let body = format!("# Document {number}\n\nA short passage.\n");
+        repo.write_file(&path, body.as_bytes());
+    }
+    repo.commit_all("import");
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    // One draw prepares the frame, so the rows and the list exist.
+    draw(&mut shell, 110, 30);
+
+    // Focus the document list: one notch moves one entry and stays at
+    // the first entry when it rolls up at the top.
+    shell.handle_event(&key(KeyCode::Tab));
+    assert_eq!(shell.focus(), Focus::Documents);
+    shell.handle_event(&wheel(-1));
+    assert_eq!(shell.navigator_cursor(), 0, "a notch up at the top stays");
+    shell.handle_event(&wheel(1));
+    assert_eq!(shell.navigator_cursor(), 1, "one notch moves one entry");
+
+    // Focus the reading column: one notch moves three rows. One draw
+    // first wraps the document the list opened.
+    shell.handle_event(&key(KeyCode::Tab));
+    assert_eq!(shell.focus(), Focus::Reading);
+    draw(&mut shell, 110, 30);
+    shell.handle_event(&wheel(-1));
+    assert_eq!(shell.reading_offset(), 0, "a notch up at the top stays");
+    shell.handle_event(&wheel(1));
+    assert_eq!(shell.reading_offset(), 3, "one notch scrolls three rows");
+    shell.handle_event(&wheel(1));
+    assert_eq!(shell.reading_offset(), 6, "a second notch adds three rows");
+    shell.handle_event(&wheel(-1));
+    assert_eq!(
+        shell.reading_offset(),
+        3,
+        "a notch up scrolls three rows back"
+    );
+}
+
+#[test]
+fn wheel_notches_move_list_selections_and_change_no_text_entry() {
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = changes_shell(&repo, &operations);
+
+    // The action menu moves its selection one entry per notch and stays
+    // at the first entry when it rolls up at the top (SPEC 11.3).
+    shell.handle_event(&key(KeyCode::Char(':')));
+    shell.handle_event(&wheel(-1));
+    assert!(matches!(
+        shell.overlay(),
+        Some(Overlay::Menu { selection: 0 })
+    ));
+    shell.handle_event(&wheel(1));
+    assert!(matches!(
+        shell.overlay(),
+        Some(Overlay::Menu { selection: 1 })
+    ));
+
+    // The wheel never closes the help page and never types into a text
+    // field: the search field stands with its query empty.
+    shell.handle_event(&key(KeyCode::Char('?')));
+    shell.handle_event(&wheel(1));
+    assert!(matches!(shell.overlay(), Some(Overlay::Help)));
+    shell.handle_event(&key(KeyCode::Esc));
+    shell.handle_event(&key(KeyCode::Char('/')));
+    shell.handle_event(&wheel(1));
+    assert!(
+        matches!(shell.overlay(), Some(Overlay::Search { .. })),
+        "the wheel left the search field standing: {:?}",
+        shell.overlay(),
+    );
+    shell.handle_event(&key(KeyCode::Esc));
+
+    // The finish summary is not scrollable: the wheel changes nothing
+    // while it stands.
+    shell.handle_event(&key(KeyCode::Enter));
+    assert!(
+        shell.finish().is_some(),
+        "Enter opened the finish summary over the pending review",
+    );
+    shell.handle_event(&wheel(1));
+    assert!(
+        shell.finish().is_some(),
+        "the wheel cannot move the summary"
+    );
+    assert!(shell.finish_result().is_none(), "the wheel runs nothing");
+}
+
+#[test]
+fn reduced_updates_redraw_on_a_wheel_scroll_but_not_on_pointer_motion() {
+    // Any-motion tracking reports every pointer move; none of them may
+    // draw a frame, while one wheel notch scrolls and draws (SPEC 11.4).
+    let repo = TestRepo::init();
+    let mut first = String::from("# First\n\nA long document.\n");
+    for line in 1..=150 {
+        first.push_str(&format!("Line {line} of the long document.\n"));
+    }
+    repo.write_file("notes/a01.md", first.as_bytes());
+    repo.commit_all("import");
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let options = TuiOptions {
+        reduced_updates: true,
+        ..TuiOptions::default()
+    };
+    let mut shell = Shell::open(repo.path(), &operations, &options);
+    assert!(
+        shell.take_redraw(),
+        "the opening frame must draw in reduced-update mode",
+    );
+    draw(&mut shell, 110, 30);
+
+    shell.handle_event(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 5,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(
+        !shell.take_redraw(),
+        "pointer motion alone drew a frame in reduced-update mode",
+    );
+
+    shell.handle_event(&wheel(1));
+    assert!(shell.take_redraw(), "a wheel scroll draws the frame");
+    assert_eq!(shell.reading_offset(), 3, "the notch moved three rows");
+}
+
+#[test]
+fn pointer_overlay_precedence_blocks_underlying_items_and_right_clicks() {
+    use crossterm::event::MouseButton::{Left, Right};
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = changes_shell(&repo, &operations);
+    for overlay_key in ['?', '/', 'f', 'N'] {
+        let mut shell = changes_shell(&repo, &operations);
+        shell.handle_event(&key(KeyCode::Char(overlay_key)));
+        draw(&mut shell, 110, 32);
+        let overlay = shell.overlay().cloned();
+        assert!(overlay.is_some());
+        let focus = shell.focus();
+        for button in [Left, Right] {
+            shell.handle_event(&click(4, 1, button));
+            shell.handle_event(&click(4, 5, button));
+        }
+        assert_eq!(shell.overlay(), overlay.as_ref());
+        assert_eq!(shell.focus(), focus);
+        assert_eq!(shell.view(), View::Changes);
+        shell.handle_event(&key(KeyCode::Esc));
+    }
+    shell.handle_event(&modified(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    shell.handle_event(&Event::Paste("forests".into()));
+    draw(&mut shell, 110, 32);
+    shell.handle_event(&click(4, 1, Right));
+    shell.handle_event(&click(4, 5, Left));
+    assert!(matches!(shell.overlay(), Some(Overlay::WorkspaceSearch)));
+    assert_eq!(shell.workspace_search().query, "forests");
+    shell.handle_event(&key(KeyCode::Esc));
+    shell.handle_event(&key(KeyCode::Char(':')));
+    draw(&mut shell, 110, 32);
+    let selected = shell.selection();
+    shell.handle_event(&click(4, 5, Left));
+    shell.handle_event(&click(4, 1, Left));
+    assert_eq!(shell.selection(), selected);
+    assert_eq!(shell.view(), View::Changes);
+    assert!(matches!(shell.overlay(), Some(Overlay::Menu { .. })));
+    shell.handle_event(&click(4, 1, Right));
+    assert!(shell.overlay().is_none());
+}
+
+#[test]
+fn pointer_wrapped_menu_continuation_uses_its_owner_and_disabled_checks() {
+    let repo = three_group_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = changes_shell(&repo, &operations);
+    shell.handle_event(&key(KeyCode::Char(':')));
+    let edit = margin::tui::Action::ALL
+        .iter()
+        .position(|a| *a == margin::tui::Action::EditDocument)
+        .unwrap();
+    // Select the following entry so the disabled editor entry and its wrapped
+    // explanation are visible above it in the scrolled menu.
+    for _ in 0..=edit {
+        shell.handle_event(&key(KeyCode::Char('j')));
+    }
+    let page = draw(&mut shell, 60, 16);
+    let row = page
+        .iter()
+        .position(|line| line.contains("no editor") || line.contains("configured;"))
+        .unwrap_or_else(|| panic!("missing wrapped editor explanation: {}", page.join("\n")));
+    let before = oracle::snapshot(&repo);
+    shell.handle_event(&click(4, row, crossterm::event::MouseButton::Left));
+    assert_eq!(shell.overlay(), Some(&Overlay::Menu { selection: edit }));
+    assert!(shell.take_editor_request().is_none());
+    before.assert_unchanged(&oracle::snapshot(&repo), "disabled wrapped menu click");
+    // Resizing to a too-small frame removes even right-click targets.
+    draw(&mut shell, 30, 8);
+    shell.handle_event(&click(4, 4, crossterm::event::MouseButton::Right));
+    assert_eq!(shell.overlay(), Some(&Overlay::Menu { selection: edit }));
 }

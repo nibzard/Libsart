@@ -150,6 +150,10 @@ fn drew_first_frame(pty: &mut Pty) {
     );
     assert!(pty.shows_raw("\x1b[?2004h"), "bracketed paste was enabled",);
     assert!(
+        pty.shows_raw("\x1b[?1006h"),
+        "SGR mouse capture was enabled"
+    );
+    assert!(
         !pty.terminal_is_cooked(),
         "raw mode is on while the surface runs",
     );
@@ -172,6 +176,10 @@ fn assert_restored(pty: &mut Pty, exit: i32) {
         "the alternate screen was left",
     );
     assert!(pty.shows_raw("\x1b[?2004l"), "bracketed paste was disabled",);
+    assert!(
+        pty.shows_raw("\x1b[?1006l"),
+        "SGR mouse capture was disabled"
+    );
     assert!(pty.shows_raw("\x1b[?25h"), "the cursor is visible again");
     assert!(
         pty.terminal_is_cooked(),
@@ -430,7 +438,7 @@ fn a_selection_and_finish_sequence_applies_through_the_keys() {
     );
     pty.send_key(b"\r");
     assert!(
-        pty.wait_for("Finish review", LIMIT),
+        pty.wait_for("Finishing keeps every passage", LIMIT),
         "the first Enter opened the summary: {}",
         String::from_utf8_lossy(&pty_snapshot(&pty)),
     );
@@ -603,4 +611,42 @@ fn a_failing_editor_child_is_stated_and_the_surface_survives() {
     );
     pty.send_key(b"q");
     assert_restored(&mut pty, 0);
+}
+
+#[test]
+fn sgr_pointer_press_opens_a_document_and_release_is_ignored() {
+    let repo = adopted_repo();
+    repo.write_file(
+        "notes/b.md",
+        b"# Click target\n\nZYXWVUTSRQPONMLKJIHGFEDCBA.\n",
+    );
+    let before = support::oracle::snapshot(&repo);
+    let git = Git::from_env(repo.env().vars().clone()).at(repo.path());
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    let backend = ratatui::backend::TestBackend::new(110, 32);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| margin::tui::render::draw(&mut shell, frame))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = (0..32)
+        .find(|y| {
+            (0..28)
+                .map(|x| buffer[(x, *y)].symbol())
+                .collect::<String>()
+                .contains("notes/b.md")
+        })
+        .unwrap();
+    let mut pty = spawn_tui(&repo, &[], 110, 32);
+    drew_first_frame(&mut pty);
+    // SGR coordinates are one-based, unlike crossterm's terminal cells.
+    pty.send_key(format!("\x1b[<0;4;{}M", row + 1).as_bytes());
+    assert!(pty.wait_for("ZYXWVUTSRQPONMLKJIHGFEDCBA", LIMIT));
+    pty.send_key(b"\x1b[<0;4;4m");
+    pty.send_key(b"q");
+    assert_eq!(pty.wait_exit(LIMIT).unwrap().code(), Some(0));
+    assert!(pty.shows_raw("\x1b[?1006l"), "mouse capture was disabled");
+
+    before.assert_unchanged(&support::oracle::snapshot(&repo), "SGR pointer navigation");
 }

@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod desk;
 pub mod domain;
 pub mod git;
 pub mod integrations;

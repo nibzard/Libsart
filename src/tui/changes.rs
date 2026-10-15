@@ -553,6 +553,10 @@ impl ChangesView {
         )
     }
 
+    pub fn group_at_row(&self, row: usize) -> Option<usize> {
+        self.starts.iter().rposition(|start| row >= *start)
+    }
+
     /// Moves the selection one group and scrolls to it; returns whether
     /// the selection moved (SPEC 11.3 `n` and `p`).
     pub fn step_selection(&mut self, direction: i32) -> bool {
@@ -586,7 +590,7 @@ impl ChangesView {
     }
 
     /// Selects one group and scrolls to its first row.
-    fn select(&mut self, index: usize) {
+    pub fn select(&mut self, index: usize) {
         self.set_selection(index);
         self.scroll_to_selected = true;
         if let Some(&start) = self.starts.get(self.selection) {

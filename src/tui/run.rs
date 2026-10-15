@@ -114,7 +114,8 @@ impl TerminalGuard {
         if let Err(error) = execute!(
             io::stdout(),
             EnterAlternateScreen,
-            crossterm::event::EnableBracketedPaste
+            crossterm::event::EnableBracketedPaste,
+            crossterm::event::EnableMouseCapture
         ) {
             let _ = terminal::disable_raw_mode();
             return Err(error);
@@ -137,6 +138,7 @@ impl TerminalGuard {
         }
         let _ = execute!(
             io::stdout(),
+            crossterm::event::DisableMouseCapture,
             crossterm::event::DisableBracketedPaste,
             LeaveAlternateScreen,
             crossterm::cursor::Show,
@@ -160,7 +162,8 @@ impl TerminalGuard {
         execute!(
             io::stdout(),
             EnterAlternateScreen,
-            crossterm::event::EnableBracketedPaste
+            crossterm::event::EnableBracketedPaste,
+            crossterm::event::EnableMouseCapture
         )?;
         self.screen = Screen::Interactive;
         Ok(())
@@ -180,6 +183,7 @@ impl TerminalGuard {
             let _ = terminal::disable_raw_mode();
             let _ = execute!(
                 io::stdout(),
+                crossterm::event::DisableMouseCapture,
                 crossterm::event::DisableBracketedPaste,
                 LeaveAlternateScreen,
             );
@@ -217,7 +221,15 @@ pub fn launch(
     // the shell and the renderer then hold one decided mode (SPEC 11.4).
     let mut options = options.clone();
     options.color = resolved_color(options.color);
-    let mut shell = Shell::open_for_launch(root, operations, &options);
+    // Agent and document paths are repository-relative even when the
+    // desk was composed from a subdirectory.
+    let root = operations
+        .git()
+        .toplevel()
+        .unwrap_or_else(|_| root.to_path_buf());
+    let git = operations.git().clone().at(&root);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open_for_launch(&root, &operations, &options);
     let mut guard = TerminalGuard::enter().map_err(|error| {
         LaunchError::new(format!(
             "the terminal cannot enter its interactive modes: {error}"
@@ -275,6 +287,27 @@ fn event_loop(
     result
 }
 
+/// Dispatch only implemented input; the bool schedules a repository inspection.
+fn dispatch_input(event: &Event, handle: impl FnOnce()) -> Option<bool> {
+    if crate::tui::pointer::ignored(event) {
+        return None;
+    }
+    handle();
+    Some(!matches!(
+        event,
+        Event::Resize(_, _)
+            | Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::ScrollUp
+                    | crossterm::event::MouseEventKind::ScrollDown,
+                ..
+            })
+    ))
+}
+
+fn draw_due(drawn: bool, changed: bool, input: bool, reduced: bool) -> bool {
+    !drawn || changed || (input && !reduced)
+}
+
 /// The event loop proper, over one prepared terminal.
 fn drive(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -283,9 +316,29 @@ fn drive(
     guard: &mut TerminalGuard,
     reduced_updates: bool,
 ) -> io::Result<()> {
+    let server = crate::desk::Server::start()?;
     let mut next_inspection = Instant::now();
     let mut drawn_once = false;
+    let mut redraw_for_input = false;
     loop {
+        let mut acknowledgement = None;
+        if let Some(server) = &server {
+            server.set_busy(shell.remote_busy());
+            if let Ok(pending) = server.requests.try_recv()
+                && Instant::now() < pending.deadline
+            {
+                let error = shell
+                    .open_remote_until(&pending.request, Some(pending.deadline))
+                    .err();
+                acknowledgement = Some((
+                    pending.reply,
+                    crate::desk::Reply {
+                        displayed: error.is_none(),
+                        error,
+                    },
+                ));
+            }
+        }
         shell.poll_workspace_search();
         if let Some(worker) = worker.as_mut() {
             // Every answered inspection reaches the shell before the
@@ -303,7 +356,12 @@ fn drive(
         if shell.has_deferred_work() && !event::poll(Duration::ZERO).unwrap_or(false) {
             shell.settle_preview();
         }
-        if !reduced_updates || !drawn_once || shell.take_redraw() {
+        if draw_due(
+            drawn_once,
+            shell.take_redraw(),
+            redraw_for_input,
+            reduced_updates,
+        ) {
             // `try_draw`, never the panicking wrapper: a terminal that
             // stopped taking writes is an error this loop reports through
             // the typed contract, not a crash (SPEC 11.5).
@@ -312,6 +370,10 @@ fn drive(
                 Ok::<(), io::Error>(())
             })?;
             drawn_once = true;
+            redraw_for_input = false;
+        }
+        if let Some((sender, reply)) = acknowledgement {
+            let _ = sender.send(reply);
         }
         if shell.should_quit() {
             return Ok(());
@@ -327,6 +389,9 @@ fn drive(
             // The terminal hands itself to the child editor and takes
             // itself back; the shell reloads the document afterwards
             // (SPEC 11.5, 12.5).
+            if let Some(server) = &server {
+                server.set_busy(true);
+            }
             guard.suspend()?;
             let returned = run_editor(&handoff.argv, &handoff.path);
             guard.resume()?;
@@ -358,20 +423,20 @@ fn drive(
         {
             wait = wait.min(BUSY_WAIT);
         }
+        if let Some(server) = &server {
+            server.set_busy(shell.remote_busy());
+            wait = wait.min(BUSY_WAIT);
+        }
         if event::poll(wait)? {
             let event = event::read()?;
-            // A resize redraws on the next pass at the new size; it resets
-            // no plan and mutates no content (SPEC 11.2). Every other
-            // event refreshes the read-only state immediately, not at the
-            // next tick (SPEC 13.3); the worker coalesces the request with
-            // one already running.
-            let resize = matches!(event, Event::Resize(_, _));
-            shell.handle_event(&event);
-            if !resize && let Some(worker) = worker.as_mut() {
-                worker.request(WatchJob {
-                    generation: shell.generation(),
-                    watch: shell.watch(),
-                });
+            if let Some(inspect) = dispatch_input(&event, || shell.handle_event(&event)) {
+                redraw_for_input = true;
+                if inspect && let Some(worker) = worker.as_mut() {
+                    worker.request(WatchJob {
+                        generation: shell.generation(),
+                        watch: shell.watch(),
+                    });
+                }
             }
         }
     }
@@ -395,5 +460,62 @@ mod tests {
         ));
         assert!(!auto_color_allowed(None, Some("dumb")));
         assert!(auto_color_allowed(None, Some("xterm-256color")));
+    }
+    #[test]
+    fn ignored_pointer_bursts_schedule_no_shell_work_frames_or_inspections() {
+        use crossterm::event::{
+            KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        for reduced in [false, true] {
+            let mut handled = 0;
+            let mut frames = 0;
+            let mut inspections = 0;
+            for kind in [
+                MouseEventKind::Moved,
+                MouseEventKind::Up(MouseButton::Left),
+                MouseEventKind::Drag(MouseButton::Left),
+            ]
+            .into_iter()
+            .cycle()
+            .take(1000)
+            {
+                let event = Event::Mouse(MouseEvent {
+                    kind,
+                    column: 4,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                });
+                let work = dispatch_input(&event, || handled += 1);
+                if work == Some(true) {
+                    inspections += 1;
+                }
+                if draw_due(true, false, work.is_some(), reduced) {
+                    frames += 1;
+                }
+            }
+            assert_eq!((handled, frames, inspections), (0, 0, 0));
+            // Background completions and periodic inspections run outside input dispatch.
+            assert!(draw_due(true, true, false, reduced));
+            for kind in [
+                MouseEventKind::ScrollDown,
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::Down(MouseButton::Right),
+            ] {
+                let event = Event::Mouse(MouseEvent {
+                    kind,
+                    column: 4,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                });
+                assert_eq!(
+                    dispatch_input(&event, || handled += 1),
+                    Some(kind != MouseEventKind::ScrollDown)
+                );
+                assert!(draw_due(true, true, true, reduced));
+            }
+            let key = Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+            assert_eq!(dispatch_input(&key, || handled += 1), Some(true));
+            assert_eq!(handled, 4);
+        }
     }
 }

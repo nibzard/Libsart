@@ -708,6 +708,34 @@ fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("open")
+                .about("Open a document in this desk's viewer (interactive control)")
+                .arg(
+                    Arg::new("path")
+                        .required_unless_present("url")
+                        .conflicts_with("url"),
+                )
+                .arg(
+                    Arg::new("link")
+                        .long("link")
+                        .action(ArgAction::SetTrue)
+                        .conflicts_with("url")
+                        .help("Print an OSC 8 link for an explicitly configured terminal adapter"),
+                )
+                .arg(
+                    Arg::new("url")
+                        .long("url")
+                        .value_name("URL")
+                        .conflicts_with("line")
+                        .help("Open an explicit desk link (terminal adapter)"),
+                )
+                .arg(
+                    Arg::new("line")
+                        .long("line")
+                        .value_parser(value_parser!(u32).range(1..)),
+                ),
+        )
+        .subcommand(
             Command::new("desk")
                 .about("Compose an optional tmux writing desk (interactive)")
                 .arg(
@@ -1081,7 +1109,7 @@ fn command_effect(path: &str) -> &'static str {
         "init" | "checkpoint" | "review" | "restore" | "hook install" | "hook remove"
         | "hook claude" | "note" => "mutation",
         "status" | "diff" | "show" | "log" | "doctor" | "notes" => "query",
-        "tui" | "edit" | "desk" => "interactive",
+        "tui" | "edit" | "desk" | "open" => "interactive",
         // A test fails when a new command reaches a caller unnamed here.
         _ => "unknown",
     }
@@ -1641,6 +1669,53 @@ fn dispatch(matches: &ArgMatches) -> Finished {
                 .expect("--path is required")
                 .clone();
             edit_finished(&operations, &path)
+        }
+        "open" => {
+            let target = if let Some(url) = sub.get_one::<String>("url") {
+                crate::desk::parse_link(url)
+            } else {
+                std::env::var_os("MARGIN_DESK_SOCKET")
+                    .map(|socket| (std::path::PathBuf::from(socket), crate::desk::Request {
+                        path: sub.get_one::<String>("path").unwrap().clone(),
+                        line: sub.get_one::<u32>("line").copied(),
+                    }))
+                    .ok_or_else(|| OperationError::new("OPERATION_UNAVAILABLE", "no desk viewer; run margin desk -- AGENT and invoke margin open PATH from its agent pane"))
+            };
+            let (socket, request) = match target {
+                Ok(target) => target,
+                Err(error) => return error_finished(Some("open"), &error, invocation.json),
+            };
+            if sub.get_flag("link") {
+                return match crate::desk::link(&socket, &request) {
+                    Ok(url) if invocation.json => finish_envelope(
+                        &Envelope::success(Some("open"), json!({"url": url, "displayed": false})),
+                        0,
+                        true,
+                    ),
+                    Ok(url) => Finished {
+                        exit: 0,
+                        stdout: Some(format!(
+                            "\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\\n",
+                            display_escape(&request.path)
+                        )),
+                        stdout_bytes: None,
+                        stderr: None,
+                    },
+                    Err(error) => error_finished(Some("open"), &error, invocation.json),
+                };
+            }
+            match crate::desk::open_at(
+                &socket,
+                request,
+                Duration::from_millis(invocation.timeout_ms),
+            ) {
+                Ok(()) => finish_envelope(
+                    &Envelope::success(Some("open"), json!({"displayed": true})),
+                    0,
+                    invocation.json,
+                ),
+                Err(error) => error_finished(Some("open"), &error, invocation.json),
+            }
         }
         "desk" => {
             if let Some(finished) = reject_json("desk", invocation.json) {
@@ -3236,6 +3311,7 @@ mod tests {
                 "log",
                 "note",
                 "notes",
+                "open",
                 "restore",
                 "review",
                 "show",

@@ -33,12 +33,15 @@
 //! offset, never from a rendered row number (SPEC 11.2) — and so does one
 //! refresh, because the anchor is the position, not a row count.
 
+use std::cell::RefCell;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 
 use crate::app::{
     self, BaselineStatus, CheckpointRequest, DocumentContent, InspectRequest, Operations,
@@ -66,6 +69,10 @@ const NOTICE_CHARS: usize = 200;
 /// How many characters one text-entry field carries (SPEC 11.3): the
 /// bound keeps a search query or a picker filter inside one context row.
 const FIELD_CHARS: usize = 120;
+
+/// How many rows one wheel notch moves a free-scrolling column. Lists
+/// move one entry per notch instead, the distance of `j` and `k`.
+const WHEEL_ROWS: usize = 3;
 
 /// How many documents the pre-adoption discovery lists (SPEC 5.1).
 pub(crate) const MAX_DISCOVERED_DOCUMENTS: usize = 500;
@@ -510,6 +517,7 @@ pub struct Shell<'a> {
     pinned: Option<PinnedObservation>,
     /// The standing overlay, when one stands (SPEC 11.3).
     overlay: Option<Overlay>,
+    pointer: RefCell<super::pointer::PointerTargets>,
     workspace_search: WorkspaceSearch,
     search_worker: Option<SearchWorker>,
     /// One requested editor handoff the event loop has not run yet (SPEC
@@ -572,6 +580,10 @@ impl<'a> Shell<'a> {
         options: &TuiOptions,
         load_background_now: bool,
     ) -> Shell<'a> {
+        // Document operands are repository-relative even when desk is
+        // launched from an agent's current subdirectory.
+        let repository_root = operations.git().toplevel().ok();
+        let root = repository_root.as_deref().unwrap_or(root);
         let folder = folder_name(root);
         let mut shell = Shell {
             root: root.to_path_buf(),
@@ -607,6 +619,7 @@ impl<'a> Shell<'a> {
             generation: 0,
             pinned: None,
             overlay: None,
+            pointer: RefCell::default(),
             workspace_search: WorkspaceSearch::default(),
             search_worker: None,
             pending_editor: None,
@@ -1042,21 +1055,252 @@ impl<'a> Shell<'a> {
     /// unconditionally, because the rows rewrap when the next frame
     /// prepares them.
     pub fn handle_event(&mut self, event: &Event) {
+        if super::pointer::ignored(event) {
+            return;
+        }
         let before = self.fingerprint();
         match event {
             // A resize redraws on the next pass at the new size; it resets
             // no plan and mutates no content (SPEC 11.2).
-            Event::Resize(_, _) => self.redraw = true,
+            Event::Resize(_, _) => {
+                self.clear_pointer_targets();
+                self.redraw = true;
+            }
             // Bracketed paste is literal text in a text field and cannot
             // trigger a sequence of global actions; outside text entry it
             // is ignored with one concise notice (SPEC 11.3).
             Event::Paste(text) => self.handle_paste(text),
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
+            // Pointer actions reuse keyboard navigation and confirmation rules.
+            // Unsupported pointer events were filtered before fingerprinting.
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::Down(button) => self.handle_click(button, mouse.column, mouse.row),
+                MouseEventKind::ScrollUp => self.handle_wheel(-1),
+                MouseEventKind::ScrollDown => self.handle_wheel(1),
+                _ => {}
+            },
             _ => {}
         }
         if self.fingerprint() != before {
+            self.clear_pointer_targets();
             self.redraw = true;
         }
+    }
+
+    pub fn clear_pointer_targets(&self) {
+        self.pointer.borrow_mut().clear();
+    }
+    pub fn begin_pointer_targets(&self, area: ratatui::layout::Rect) {
+        self.pointer.borrow_mut().begin(area);
+    }
+    pub fn record_pointer_target(
+        &self,
+        area: ratatui::layout::Rect,
+        target: super::pointer::Target,
+    ) {
+        self.pointer.borrow_mut().record(area, target);
+    }
+    fn handle_click(&mut self, button: MouseButton, column: u16, row: u16) {
+        use super::pointer::Target;
+        if self.finish.is_some()
+            || self.history_preview_stands()
+            || self
+                .overlay
+                .as_ref()
+                .is_some_and(|o| o.is_text_entry() && *o != Overlay::WorkspaceSearch)
+        {
+            return;
+        }
+        if !self.pointer.borrow().contains(column, row) {
+            return;
+        }
+        if button == MouseButton::Right {
+            match self.overlay {
+                Some(Overlay::Menu { .. }) => {
+                    self.close_overlay("the action menu closed; nothing ran")
+                }
+                None => {
+                    self.notice = None;
+                    self.quit_warning = false;
+                    self.open_menu();
+                }
+                _ => {}
+            }
+            return;
+        }
+        if button != MouseButton::Left {
+            return;
+        }
+        let target = self.pointer.borrow().at(column, row);
+        let Some(target) = target else {
+            return;
+        };
+        let allowed = matches!(
+            (&self.overlay, target),
+            (None, _)
+                | (
+                    Some(Overlay::Menu { .. }),
+                    Target::MenuEntry(_) | Target::Pane(Focus::Actions)
+                )
+                | (Some(Overlay::WorkspaceSearch), Target::SearchHit(_))
+        );
+        if !allowed {
+            return;
+        }
+        self.notice = None;
+        self.quit_warning = false;
+        match (&self.overlay, target) {
+            (Some(Overlay::Menu { .. }), Target::MenuEntry(index)) => {
+                self.overlay = Some(Overlay::Menu { selection: index });
+                self.activate_menu(index);
+            }
+            (Some(Overlay::WorkspaceSearch), Target::SearchHit(index)) => {
+                self.workspace_search.selection = index;
+                self.submit_workspace_search();
+            }
+            (Some(Overlay::Menu { .. }), Target::Pane(Focus::Actions)) => {
+                self.focus = Focus::Actions;
+            }
+            (Some(_), _) => {}
+            (None, Target::NavigatorEntry(index)) => {
+                self.focus = Focus::Documents;
+                self.navigator_cursor = index;
+                self.open_navigator_entry();
+            }
+            (None, Target::ViewTab(view)) => {
+                self.handle_key(&KeyEvent::new(
+                    KeyCode::Char(match view {
+                        View::Read => '1',
+                        View::Changes => '2',
+                        View::History => '3',
+                    }),
+                    KeyModifiers::NONE,
+                ));
+            }
+            (None, Target::ChangeGroup(index)) => {
+                self.focus = Focus::Reading;
+                if let Some(changes) = &mut self.changes {
+                    changes.select(index);
+                }
+                self.observe_changes_head();
+            }
+            (None, Target::Revision(index)) => {
+                self.focus = Focus::Reading;
+                if let Some(history) = &mut self.history {
+                    history.select(index);
+                }
+            }
+            (None, Target::Pane(focus)) => {
+                self.focus = focus;
+            }
+            _ => {}
+        }
+    }
+
+    /// Remote navigation refuses unfinished local interactions and never
+    /// changes the pinned comparison or the writer's review decisions.
+    pub fn remote_busy(&self) -> bool {
+        self.overlay.is_some()
+            || self.finish.is_some()
+            || self.history_preview_stands()
+            || self.pending_editor.is_some()
+            || self.quit_warning
+    }
+
+    pub fn open_remote(&mut self, request: &crate::desk::Request) -> Result<(), String> {
+        self.open_remote_until(request, None)
+    }
+
+    /// Validate completely before applying a still-live transport request.
+    pub fn open_remote_until(
+        &mut self,
+        request: &crate::desk::Request,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), String> {
+        if self.remote_busy() {
+            return Err("viewer busy; finish the input or confirmation and retry".into());
+        }
+        let request = crate::desk::Request {
+            path: crate::domain::parse_document_path(&request.path).map_err(|e| e.to_string())?,
+            line: request.line,
+        };
+        if request.line == Some(0) {
+            return Err("line must be greater than zero".into());
+        }
+        let eligible = if let Some(descriptor) = &self.descriptor {
+            let git = self.operations.git().clone().at(&self.root);
+            let resolved = app::resolve_scope(&git, &descriptor.to_scope_input())
+                .map_err(|e| e.to_string())?;
+            document_paths(&resolved).contains(&request.path)
+        } else {
+            discover_documents(&self.root).0.contains(&request.path)
+        };
+        if !eligible {
+            return Err("document is missing, unsupported, or outside the viewer scope".into());
+        }
+        // Refuse symbolic links at every component, including before adoption.
+        let mut checked = self.root.clone();
+        for part in Path::new(&request.path).components() {
+            checked.push(part);
+            let meta = fs::symlink_metadata(&checked).map_err(|e| e.to_string())?;
+            if meta.file_type().is_symlink() {
+                return Err("symbolic links cannot be opened".into());
+            }
+        }
+        if !fs::metadata(&checked).map_err(|e| e.to_string())?.is_file() {
+            return Err("document is not a regular file".into());
+        }
+        let canonical_root = fs::canonicalize(&self.root).map_err(|e| e.to_string())?;
+        if !fs::canonicalize(&checked)
+            .map_err(|e| e.to_string())?
+            .starts_with(canonical_root)
+        {
+            return Err("document escapes the viewer root".into());
+        }
+        // Read before touching any visible state: failures preserve the current document.
+        let working =
+            read_working(&self.root, &request.path, READ_VIEW_BYTES).map_err(|e| e.to_string())?;
+        let shown = self.show_candidate(&request.path);
+        let (document, notice) = document_view(&request.path, &Ok(working), shown.as_ref());
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            return Err("opening request expired before navigation; retry".into());
+        }
+        self.save_position();
+        self.pending_document = None;
+        self.clear_pointer_targets();
+        self.absorb_document(document);
+        if self.history.is_some() {
+            self.reload_history();
+        }
+        if let Some(index) = self.documents.iter().position(|p| p == &request.path) {
+            self.selection = index;
+        } else {
+            self.documents.push(request.path.clone());
+            self.documents.sort();
+            self.selection = self
+                .documents
+                .iter()
+                .position(|p| p == &request.path)
+                .unwrap();
+        }
+        self.view = View::Read;
+        self.focus = Focus::Reading;
+        self.reading_source = request.line.is_some();
+        self.reposition_navigator_cursor();
+        self.anchor = Some(SourceAnchor {
+            path: request.path.clone(),
+            line: request
+                .line
+                .unwrap_or(1)
+                .min(self.source_lines.len().max(1) as u32),
+        });
+        self.offset = 0;
+        self.drift = 0;
+        self.display_width = 0;
+        self.notice = notice;
+        self.regenerate();
+        self.redraw = true;
+        Ok(())
     }
 
     /// Absorbs one bracketed paste (SPEC 11.3).
@@ -1119,6 +1363,80 @@ impl<'a> Shell<'a> {
             self.handle_overlay_key(key, control, quit_warning_stood);
         } else {
             self.handle_column_key(key, control, quit_warning_stood);
+        }
+        if self.view == View::Changes {
+            self.observe_changes_head();
+        }
+    }
+
+    /// Answers one wheel notch with the same movement the focused element
+    /// makes for `j` and `k` (SPEC 11.4): the wheel is a redundant path
+    /// and adds no action the keyboard cannot reach. One notch moves a
+    /// free-scrolling column `WHEEL_ROWS` rows and one list entry.
+    fn handle_wheel(&mut self, direction: i32) {
+        self.notice = None;
+        self.quit_warning = false;
+        if self.finish.is_some() {
+            // The finish summary is not scrollable; it answers only its
+            // labeled actions and quit (SPEC 11.3).
+            return;
+        }
+        if self.view == View::History && self.history_preview_stands() {
+            self.scroll_history(direction * WHEEL_ROWS as i32);
+        } else if let Some(overlay) = self.overlay.clone() {
+            match overlay {
+                Overlay::Menu { selection } => {
+                    let count = self.menu().len().max(1);
+                    let selection = if direction > 0 {
+                        (selection + 1).min(count - 1)
+                    } else {
+                        selection.saturating_sub(1)
+                    };
+                    self.overlay = Some(Overlay::Menu { selection });
+                }
+                Overlay::WorkspaceSearch => {
+                    let last = self
+                        .workspace_search
+                        .results
+                        .as_ref()
+                        .map_or(0, |results| results.hits.len().saturating_sub(1));
+                    self.workspace_search.selection = if direction > 0 {
+                        (self.workspace_search.selection + 1).min(last)
+                    } else {
+                        self.workspace_search.selection.saturating_sub(1)
+                    };
+                }
+                // Help shows fixed rows and the other overlays are text
+                // entry; none of them scrolls.
+                _ => {}
+            }
+        } else {
+            match self.focus {
+                Focus::Documents => self.step_navigator(direction),
+                Focus::Reading | Focus::Actions => match self.view {
+                    View::Changes => {
+                        if let Some(changes) = &mut self.changes {
+                            changes.scroll_by(direction * WHEEL_ROWS as i32);
+                        }
+                    }
+                    View::History => {
+                        // The timeline is one list: the wheel moves the
+                        // selected revision, as `j` and `k` do (SPEC 11.3).
+                        if let Some(history) = &mut self.history {
+                            history.step_selection(direction);
+                        }
+                    }
+                    View::Read => {
+                        if direction > 0 {
+                            self.offset = self.offset.saturating_add(WHEEL_ROWS);
+                        } else {
+                            self.offset = self.offset.saturating_sub(WHEEL_ROWS);
+                        }
+                        self.clamp_offset();
+                        self.sync_anchor();
+                    }
+                },
+            }
         }
         if self.view == View::Changes {
             self.observe_changes_head();
@@ -2020,7 +2338,12 @@ impl<'a> Shell<'a> {
             )
         });
         let history = self.history.as_ref().map_or("none".to_string(), |history| {
-            format!("{:?}|{:?}", history.selection(), history.preview_state())
+            format!(
+                "{:?}|{:?}|{}",
+                history.selection(),
+                history.preview_state(),
+                history.offset()
+            )
         });
         let workspace = &self.workspace;
         [

@@ -157,6 +157,47 @@ fn poll_once(worker: &mut RefreshWorker, shell: &mut Shell<'_>) {
 }
 
 #[test]
+fn remote_open_replaces_pending_navigation_and_clears_pointer_targets() {
+    let repo = adopted_repo(&["a", "b", "c"]);
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    draw(&mut shell, 110, 30);
+    shell.handle_event(&key(KeyCode::Tab));
+    for _ in 0..5 {
+        shell.handle_event(&key(KeyCode::Char('j')));
+    }
+    assert!(shell.has_pending_preview());
+    let page = draw(&mut shell, 110, 30);
+    let row = page
+        .iter()
+        .position(|line| line.contains("notes/c.md"))
+        .unwrap();
+    shell
+        .open_remote(&margin::desk::Request {
+            path: "notes/b.md".into(),
+            line: Some(3),
+        })
+        .unwrap();
+    assert!(!shell.has_pending_preview());
+    // A click from the previous frame cannot replace the remote target.
+    shell.handle_event(&Event::Mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: 5,
+        row: row as u16,
+        modifiers: KeyModifiers::NONE,
+    }));
+    shell.settle_preview();
+    assert_eq!(shell.document().unwrap().path, "notes/b.md");
+    assert_eq!(shell.documents()[shell.selection()], "notes/b.md");
+    assert_eq!(shell.current_anchor().unwrap().line, 3);
+    assert_eq!(
+        shell.navigator_entries()[shell.navigator_cursor()],
+        (shell.selection(), None)
+    );
+}
+
+#[test]
 fn rapid_navigation_loads_only_its_last_target_and_gates_content_actions() {
     let repo = adopted_repo(&["a", "b", "c"]);
     let git = adapter_for(&repo);
