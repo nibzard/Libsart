@@ -1,0 +1,1 @@
+Resolve the independently implemented desk-open branches by retaining PR #3 transport and tests. The resulting tree is PR #3 plus PR #1 and shared CI fixes. Lints and 274 selected integration/unit tests pass.
