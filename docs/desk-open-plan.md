@@ -1,6 +1,7 @@
 # Open documents from the agent pane
 
-Status: first milestone implemented; clickable links remain follow-up work.
+Status: implemented. Agent-invoked opening uses a private per-desk socket;
+the opt-in terminal link adapter is documented in [desk-links.md](desk-links.md).
 
 ## Goal
 

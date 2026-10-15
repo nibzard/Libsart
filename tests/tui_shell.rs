@@ -205,6 +205,40 @@ fn before_adoption_opens_read_only_with_discovery_and_a_setup_action() {
 }
 
 #[test]
+fn the_read_view_renders_a_table_as_an_aligned_grid() {
+    // A plain folder is enough: the Read presentation only reads text
+    // (SPEC 11.1). The grid keeps source anchors; source mode (`s`)
+    // keeps the exact pipe rows.
+    let base = tempfile::TempDir::new().expect("a temporary folder");
+    let folder = base.path().join("writing");
+    std::fs::create_dir_all(&folder).expect("a folder");
+    std::fs::write(
+        folder.join("numbers.md"),
+        b"# Numbers\n\n| Feature | State |\n| --- | --- |\n| tables | aligned |\n| lists | prose |\n\nAfter the table.\n",
+    )
+    .expect("a document");
+
+    let git = Git::from_env(std::env::vars_os()).at(&folder);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(&folder, &operations, &TuiOptions::default());
+    let screen = joined(&draw(&mut shell, 100, 24));
+    assert!(screen.contains("Feature │ State"), "cells align: {screen}");
+    assert!(screen.contains("tables  │ aligned"), "{screen}");
+    assert!(screen.contains("────────┼────────"), "the rule: {screen}");
+    assert!(screen.contains("After the table."), "{screen}");
+
+    shell.handle_event(&key(KeyCode::Char('s')));
+    let source = joined(&draw(&mut shell, 100, 24));
+    assert!(source.contains("| --- | --- |"), "exact pipes: {source}");
+    assert!(!source.contains("─┼─"), "no grid in source mode: {source}");
+    assert!(
+        std::fs::read(folder.join("numbers.md")).expect("the document")
+            == b"# Numbers\n\n| Feature | State |\n| --- | --- |\n| tables | aligned |\n| lists | prose |\n\nAfter the table.\n",
+        "reading never rewrites the source"
+    );
+}
+
+#[test]
 fn a_plain_folder_without_a_repository_still_opens_read_only() {
     // First use often starts outside any repository (SPEC 5.1): the
     // surface opens on the discovered documents instead of failing.
@@ -630,4 +664,84 @@ fn outline_jumps_to_source_lines_survives_resize_and_never_writes() {
     assert_eq!(shell.current_anchor().unwrap().line, 6);
     let after = oracle::snapshot(&repo);
     assert_eq!(before, after, "outline and source navigation are read-only");
+}
+
+#[test]
+fn remote_navigation_preserves_review_selections_and_failure_preserves_document() {
+    let repo = adopted_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    shell.handle_event(&key(KeyCode::Char('2')));
+    shell.handle_event(&key(KeyCode::Char('K')));
+    let proposed = shell.changes().unwrap().proposed_count();
+    assert!(proposed > 0);
+    shell
+        .open_remote(&margin::desk::Request {
+            path: "notes/b.md".into(),
+            line: Some(3),
+        })
+        .unwrap();
+    let page = joined(&draw(&mut shell, 110, 32));
+    assert!(page.contains("Second passage"));
+    assert!(shell.reading_source());
+    assert_eq!(shell.current_anchor().unwrap().line, 3);
+    assert_eq!(shell.changes().unwrap().proposed_count(), proposed);
+    let before = shell.document().unwrap().path.clone();
+    assert!(
+        shell
+            .open_remote_until(
+                &margin::desk::Request {
+                    path: "notes/a.md".into(),
+                    line: None
+                },
+                Some(std::time::Instant::now())
+            )
+            .unwrap_err()
+            .contains("expired")
+    );
+    assert_eq!(shell.document().unwrap().path, before);
+
+    assert!(
+        shell
+            .open_remote(&margin::desk::Request {
+                path: "outside.md".into(),
+                line: None
+            })
+            .is_err()
+    );
+    assert_eq!(shell.document().unwrap().path, before);
+    shell.handle_event(&key(KeyCode::Char('2')));
+    shell.handle_event(&key(KeyCode::Enter));
+    assert!(shell.finish().is_some());
+    assert!(
+        shell
+            .open_remote(&margin::desk::Request {
+                path: "notes/a.md".into(),
+                line: None
+            })
+            .unwrap_err()
+            .contains("busy")
+    );
+    assert_eq!(shell.document().unwrap().path, before);
+}
+
+#[test]
+fn desk_paths_are_repository_relative_when_launched_from_a_subdirectory() {
+    let repo = adopted_repo();
+    let git = Git::from_env(repo.env().vars().clone()).at(repo.path().join("notes"));
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(
+        &repo.path().join("notes"),
+        &operations,
+        &TuiOptions::default(),
+    );
+    shell
+        .open_remote(&margin::desk::Request {
+            path: "./notes//b.md".into(),
+            line: None,
+        })
+        .unwrap();
+    assert!(joined(&draw(&mut shell, 110, 32)).contains("Second passage"));
+    assert_eq!(shell.document().unwrap().path, "notes/b.md");
 }

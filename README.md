@@ -74,6 +74,7 @@ draft. A review records your decisions about that draft.
 | `margin hook claude` | Translate one Claude Code hook event into a capture |
 | `margin hook install claude` | Add Margin's hook entries to the local Claude Code settings |
 | `margin hook remove claude` | Delete Margin's hook entries from the local Claude Code settings |
+| `margin open content/article.md --line 42` | Show a document in the existing desk viewer |
 | `margin desk -- claude` | Compose an optional tmux desk with the agent beside Margin |
 
 Review plans use identifiers from `margin diff --json`. A completed request
@@ -112,6 +113,26 @@ assumed), and how to reattach. You own the agent process: quitting Margin
 or closing its pane leaves the agent running. Without tmux, `desk`
 refuses with the two-tab arrangement instead — run `margin tui` in one
 tab and the agent in another.
+
+Inside a desk's agent pane, `margin open content/article.md` switches the
+existing viewer to reading view while keyboard focus stays with the agent.
+Use `--line 42` for source view at that passage, or `--json` for an
+acknowledgment after the viewer draws. Paths are repository-relative and
+must be eligible for the viewer's writing scope. Opening saves no content,
+creates no checkpoint, and changes no review decisions. Finish any viewer
+input, confirmation, or external editor before retrying a busy response.
+Each desk has its own private socket, including desks in the same repository;
+detaching and reattaching preserves the connection. A closed viewer reports
+an error with instructions to start a new desk.
+
+Add this instruction to agent guidance yourself; it works with any agent
+that can run shell commands:
+
+> When asked to show a document in Margin, find its repository-relative path and
+> run `margin open PATH`. Use `--line N` for a particular passage.
+
+For opt-in clickable links, see [the terminal adapter setup](docs/desk-links.md).
+Agent hooks and automatic changes to agent configuration are unnecessary.
 
 Use `--json` for structured command results. Use `--help` on any command
 for its options. Files outside the writing scope stay outside Margin's
@@ -239,26 +260,6 @@ For more detail, see:
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
-
-### Open documents from the agent pane
-
-Inside `margin desk -- claude` (or any shell-capable agent), run
-`margin open notes/article.md` to switch the existing viewer without moving
-keyboard focus. `margin open notes/article.md --line 42` selects source view;
-`--json` returns the usual command envelope. Paths are repository-relative and
-must be eligible for the viewer's current scope. Opening changes no content,
-checkpoint, or review decisions. Close pending dialogs or the external editor
-before opening another document. A closed viewer requires a new desk.
-
-Add this instruction to your agent guidance if useful:
-
-> When asked to show a document in Margin, find its repository-relative path and
-> run `margin open PATH`. Use `--line N` for a particular passage.
-
-Each desk passes a private `MARGIN_DESK_SOCKET` to its agent and viewer. The
-viewer owns cleanup; detaching and reattaching preserves the connection, including
-when narrow layouts put Margin in its own window. No agent configuration is
-changed. Clickable terminal links are a future integration.
 
 ### Pointer navigation
 

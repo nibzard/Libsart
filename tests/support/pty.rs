@@ -437,7 +437,12 @@ impl Pty {
         // platform defines.
         unsafe {
             let mut termios = std::mem::zeroed::<ffi::Termios>();
-            if tcgetattr(self.slave.as_raw_fd(), &mut termios) != 0 {
+            // On macOS the slave can stop accepting ioctls after its
+            // controlling session exits; the retained master still
+            // reports the restored terminal attributes.
+            if tcgetattr(self.slave.as_raw_fd(), &mut termios) != 0
+                && tcgetattr(self.master.as_raw_fd(), &mut termios) != 0
+            {
                 return false;
             }
             (termios.c_lflag & ffi::ICANON) != 0 && (termios.c_lflag & ffi::ECHO) != 0

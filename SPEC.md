@@ -355,7 +355,6 @@ This is Margin's own interface guarantee. The supported Git mutation environment
 | `doctor` | Optional `--json` | Read-only diagnostics and bounded recovery argv suggestions |
 | `tui` | Optional initial document/view | Interactive review surface |
 | `edit` | `--path`; configured editor argv | Explicit terminal editor handoff |
-| `open` | `PATH [--line N] [--json]` | Ask this desk viewer to display an eligible document; acknowledge after drawing |
 | `desk` | `-- AGENT ARGS...` | Optional tmux arrangement and explicit child process launch |
 | `hook install\|remove claude` | Optional `--dry-run` | Exact integration configuration changes |
 | `hook claude` | Hook protocol JSON on stdin | Translate a supported Claude hook to a capture operation |
@@ -803,7 +802,12 @@ The active view is shown in a persistent tab row above the content. The
 navigator is a compact document outline: only the selected document expands
 its parsed Markdown headings, and reading scroll tracks the current heading.
 HTML comments are hidden in the Read presentation by default and remain
-available in source view with their original source-line coordinates.
+available in source view with their original source-line coordinates. An
+outermost Markdown table renders as an aligned grid inside the reading
+measure: cells pad to their column widths, the delimiter row becomes one
+horizontal rule, over-wide cells wrap instead of drifting past the
+measure, and every rendered row keeps its source-line anchor; source view
+keeps the exact pipe rows.
 Changes emphasizes changed words within before/after excerpts; grouping
 rationale and review identity are available on demand instead of repeated
 for every passage. Decision counts state that choices are not applied until
@@ -950,16 +954,6 @@ Editor process exit is a refresh boundary. It is not automatic approval and only
 
 ### 12.6 tmux desk
 
-Each desk gives its agent and viewer a distinct Unix socket address through
-`MARGIN_DESK_SOCKET`. A mode-0700 directory protects the bounded local protocol.
-The viewer owns the socket lifetime, including across detach/reattach. `margin
-open PATH [--line N]` validates the viewer scope and path, opens reading or source
-view, and acknowledges only after drawing. Failures preserve the document;
-unfinished dialogs and editor handoffs return bounded busy errors. This channel
-never injects terminal keys, changes focus, captures a checkpoint, or changes
-review decisions. Closed viewers require a new desk. Clickable links are deferred.
-
-
 tmux already supplies sessions, windows, split panes, selection, and zoom. Margin composes those operations and documents the actual configured switching controls. [I3][I4]
 
 Outside tmux, `desk` creates a dedicated session with an agent pane and Margin pane. Inside an existing session, create a clearly named window after the explicit desk command; leave unrelated panes intact. On narrow displays, choose a zoomed/focused view instead of two unreadable columns.
@@ -967,6 +961,35 @@ Outside tmux, `desk` creates a dedicated session with an agent pane and Margin p
 Pass the explicit agent executable and argv through a supported direct-exec mechanism. If the target tmux contract requires shell interpretation, use a single documented platform-specific quoting boundary and adversarial argument tests; never interpolate document content. Do not modify global tmux configuration or use screen keystrokes as a program API. If tmux is missing, explain how to run `margin tui` in another tab; the core product remains available.
 
 The writer owns the agent process. Quitting Margin must not kill the agent or unrelated tmux sessions. `desk` reports the processes/session it created and its attach/exit behavior. Existing user bindings are queried or described accurately; do not assume the default prefix has not changed.
+
+`margin open PATH [--line N] [--json]` controls the existing desk viewer.
+The launcher gives both panes a unique `MARGIN_DESK_SOCKET` address using
+a literal `env` assignment in tmux's direct-exec argv. The viewer owns a Unix listener in
+a directory with mode 0700 and current-user ownership. The launcher never
+removes a live socket on detach; the viewer removes its socket and directory
+on normal exit. An uncatchable kill can leave a private stale directory;
+new desks allocate fresh identities and never reuse its listener address.
+
+The local protocol bounds each JSON message to 8 KiB, rejects unknown fields,
+and uses an end-of-write boundary. A listener thread handles malformed input
+and busy replies even while the TUI waits for an external editor. Input reads
+have a 500 ms deadline; queued navigation expires after two seconds. Client
+startup retries and acknowledgments are bounded by the smaller of the CLI
+budget and five seconds. Expired queued requests are discarded. Success is
+acknowledged only after validation, application, and drawing. A failed draw
+cannot report successful opening. Paths use the existing document parser,
+scope resolver, file-type, containment, and symlink checks. Rejected navigation
+leaves the current document intact. The request changes no checkpoint,
+content, approval, or existing review decision, and calls no tmux selection
+or input command. This also applies to Margin's separate narrow-layout window.
+
+`margin open PATH --link` emits an explicit OSC 8 desk link; `--json` emits
+its URL without escape sequences. `margin open --url URL` dispatches it through
+the same transport, independently of the handler's inherited desk environment.
+A link encodes the unique socket identity, literal path, and optional line;
+a closed linked desk fails rather than falling back to another viewer.
+Terminal setup is opt-in and described in `docs/desk-links.md`. Ordinary agent
+file links do not imply routing to Margin.
 
 ### 12.7 The notes channel
 
@@ -1613,7 +1636,7 @@ And the writer returns to the same document context
 | ADR-007 | Cooperative single writer and explicit recovery | Claimed CAS over arbitrary writers, transaction journal | Clear concurrency/failure boundary; stronger isolation is a separate future workflow |
 | ADR-008 | Identity storage profile initially | Silent Git normalization/filter bypass | Narrower repository compatibility; add profiles with explicit fidelity tests |
 | ADR-009 | One Cargo package and six runtime dependencies | Multi-crate framework, zero-dependency terminal/parser implementations | Small architecture; splits/additions need actual evidence |
-| ADR-010 | Hooks capture boundaries; tmux arranges views; private local sockets open documents | Terminal scraping, send-keys orchestration | Minimal integration; no generalized agent platform |
+| ADR-010 | Hooks capture boundaries; tmux arranges views; a private per-desk Unix socket carries bounded viewer navigation with acknowledgment after drawing | Terminal scraping, send-keys orchestration, repository-global socket, agent-specific hooks | Agent and viewer remain independent; focus stays with the agent, even in narrow layouts. Revisit for cross-host desks or verified terminal adapters needing a different channel |
 | ADR-011 | TLA+ plus real tests plus benchmarks | Treating one assurance method as complete | Each method has an explicit boundary and evidence gate |
 | ADR-012 | No durable review-selection journal | Automatic crash replay/resume state | Lost selections are reviewed again; committed history is sufficient to recover content |
 | ADR-013 | Measurements use fixed corpora and actual registered hardware | Anecdotes, cherry-picked microbenchmarks | Results reproducible; targets remain unmeasured until baseline exists |

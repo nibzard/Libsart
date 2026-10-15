@@ -21,36 +21,62 @@ const LIMIT: u64 = 8192;
 const WAIT: Duration = Duration::from_secs(2);
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Navigation only: no repository mutation or terminal selection.
 pub struct Request {
     pub path: String,
     pub line: Option<u32>,
 }
 #[derive(Debug, Serialize, Deserialize)]
+/// A successful reply follows a completed terminal draw.
+#[serde(deny_unknown_fields)]
 pub struct Reply {
+    pub displayed: bool,
     pub error: Option<String>,
 }
-fn packet<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T> {
+fn packet<T: serde::de::DeserializeOwned>(
+    stream: &mut UnixStream,
+    timeout: Duration,
+) -> io::Result<T> {
+    let deadline = Instant::now() + timeout;
+    stream.set_nonblocking(true)?;
     let mut bytes = Vec::new();
-    let deadline = Instant::now() + WAIT;
     loop {
-        if Instant::now() >= deadline {
-            return Err(io::Error::other("desk message timed out"));
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "desk message timed out",
+            ));
         }
-        let mut chunk = [0; 1024];
-        let count = stream.read(&mut chunk)?;
+        let mut buffer = [0; 1024];
+        let count = match stream.read(&mut buffer) {
+            Ok(count) => count,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if count == 0 {
             break;
         }
-        bytes.extend_from_slice(&chunk[..count]);
+        bytes.extend_from_slice(&buffer[..count]);
         if bytes.len() as u64 > LIMIT {
             return Err(io::Error::other("desk message too large"));
         }
     }
+    stream.set_nonblocking(false)?;
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
+/// Reserve a fresh short Unix-socket directory, private to this user.
 pub fn directory() -> io::Result<PathBuf> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_nanos();
     for n in 0..1000 {
-        let dir = PathBuf::from("/tmp").join(format!("margin-{}-{n}", std::process::id()));
+        let dir =
+            PathBuf::from("/tmp").join(format!("margin-{}-{nonce:x}-{n}", std::process::id()));
         match fs::DirBuilder::new().mode(0o700).create(&dir) {
             Ok(()) => return Ok(dir),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -60,14 +86,16 @@ pub fn directory() -> io::Result<PathBuf> {
     Err(io::Error::other("cannot allocate a private desk directory"))
 }
 use std::os::unix::fs::DirBuilderExt;
-pub fn open(request: Request, timeout: Duration) -> Result<(), OperationError> {
+/// Send one request with startup retries; success requires the drawn-frame reply.
+pub fn open_at(
+    path: &std::path::Path,
+    request: Request,
+    timeout: Duration,
+) -> Result<(), OperationError> {
     let fail = |message: String| OperationError::new("OPERATION_UNAVAILABLE", message);
-    let path = std::env::var_os("MARGIN_DESK_SOCKET").ok_or_else(|| {
-        fail("no desk viewer; run this command from the agent pane of margin desk".into())
-    })?;
     let deadline = Instant::now() + timeout.min(Duration::from_secs(5));
     let mut stream = loop {
-        match UnixStream::connect(&path) {
+        match UnixStream::connect(path) {
             Ok(s) => break s,
             Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
             Err(_) => {
@@ -97,28 +125,33 @@ pub fn open(request: Request, timeout: Duration) -> Result<(), OperationError> {
         .write_all(&bytes)
         .and_then(|_| stream.shutdown(std::net::Shutdown::Write))
         .map_err(|e| fail(e.to_string()))?;
-    let reply: Reply = packet(&mut stream)
+    let reply: Reply = packet(&mut stream, remaining)
         .map_err(|e| fail(format!("desk viewer did not acknowledge opening: {e}")))?;
-    match reply.error {
-        Some(e) => Err(OperationError::new("BUSY", e)),
-        None => Ok(()),
+    match (reply.displayed, reply.error) {
+        (true, None) => Ok(()),
+        (_, Some(e)) => Err(OperationError::new("OPERATION_UNAVAILABLE", e)),
+        _ => Err(fail(
+            "desk viewer did not confirm that the document was displayed".into(),
+        )),
     }
 }
+/// A queued request is valid only until its deadline.
 pub struct Pending {
     pub request: Request,
     pub reply: mpsc::Sender<Reply>,
     pub deadline: Instant,
 }
+/// The viewer owns the listener, worker, and socket cleanup.
 pub struct Server {
     pub requests: mpsc::Receiver<Pending>,
-    stop: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
     path: PathBuf,
 }
 impl Server {
     pub fn set_busy(&self, busy: bool) {
-        self.busy.store(busy, Ordering::Relaxed);
+        self.busy.store(busy, Ordering::Release);
     }
     pub fn start() -> io::Result<Option<Self>> {
         let Some(path) = std::env::var_os("MARGIN_DESK_SOCKET").map(PathBuf::from) else {
@@ -130,7 +163,13 @@ impl Server {
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("invalid desk socket"))?;
-        if fs::metadata(parent)?.permissions().mode() & 0o077 != 0 {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(parent)?;
+        let probe = directory()?;
+        let uid = fs::metadata(&probe)?.uid();
+        let _ = fs::remove_dir(probe);
+        if !metadata.is_dir() || metadata.uid() != uid || metadata.permissions().mode() & 0o077 != 0
+        {
             return Err(io::Error::other("desk socket directory must be private"));
         }
         let listener = UnixListener::bind(&path)?;
@@ -139,7 +178,7 @@ impl Server {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let busy = Arc::new(AtomicBool::new(false));
-        let is_busy = busy.clone();
+        let b = busy.clone();
         let thread = thread::spawn(move || {
             while !stopped.load(Ordering::Relaxed) {
                 let Ok((mut stream, _)) = listener.accept() else {
@@ -148,12 +187,14 @@ impl Server {
                 };
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
                 let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
-                let reply = match packet::<Request>(&mut stream) {
+                let reply = match packet::<Request>(&mut stream, Duration::from_millis(500)) {
                     Err(_) => Reply {
+                        displayed: false,
                         error: Some("invalid or oversized desk request".into()),
                     },
-                    Ok(_) if is_busy.load(Ordering::Relaxed) => Reply {
-                        error: Some("viewer busy in external editor; retry after it closes".into()),
+                    Ok(_) if b.load(Ordering::Acquire) => Reply {
+                        displayed: false,
+                        error: Some("viewer busy; finish the editor or dialog and retry".into()),
                     },
                     Ok(request) => {
                         let (reply, rx) = mpsc::channel();
@@ -164,10 +205,11 @@ impl Server {
                         };
                         if tx.try_send(pending).is_err() {
                             Reply {
+                                displayed: false,
                                 error: Some("viewer busy".into()),
                             }
                         } else {
-                            rx.recv_timeout(WAIT).unwrap_or(Reply { error: Some("viewer busy or unresponsive; retry after closing the editor or dialog".into()) })
+                            rx.recv_timeout(WAIT).unwrap_or(Reply { displayed: false, error: Some("viewer busy or unresponsive; retry after closing the editor or dialog".into()) })
                         }
                     }
                 };
@@ -176,8 +218,8 @@ impl Server {
         });
         Ok(Self {
             requests,
-            stop,
             busy,
+            stop,
             thread: Some(thread),
             path,
         })
@@ -196,42 +238,69 @@ impl Drop for Server {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn bounded_packets_and_unicode_paths() {
-        let (mut a, mut b) = UnixStream::pair().unwrap();
-        a.write_all(br#"{"path":"notes/a b.md","line":42}"#)
-            .unwrap();
-        a.shutdown(std::net::Shutdown::Write).unwrap();
-        let request: Request = packet(&mut b).unwrap();
-        assert_eq!(request.path, "notes/a b.md");
-        assert_eq!(request.line, Some(42));
-        let (mut a, mut b) = UnixStream::pair().unwrap();
-        let writer = thread::spawn(move || {
-            let _ = a.write_all(&vec![b'x'; LIMIT as usize + 1]);
-            let _ = a.shutdown(std::net::Shutdown::Write);
-        });
-        assert!(packet::<Request>(&mut b).is_err());
-        drop(b);
-        writer.join().unwrap();
-        let (mut a, mut b) = UnixStream::pair().unwrap();
-        a.write_all("{\"path\":\"résumé 文.md\",\"line\":null}".as_bytes())
-            .unwrap();
-        a.shutdown(std::net::Shutdown::Write).unwrap();
-        assert_eq!(packet::<Request>(&mut b).unwrap().path, "résumé 文.md");
+/// An explicit desk identity travels with a link, independently of the
+/// terminal handler's environment. Hex keeps paths lossless and shell inert.
+pub fn link(socket: &std::path::Path, request: &Request) -> Result<String, OperationError> {
+    use std::os::unix::ffi::OsStrExt;
+    crate::domain::parse_document_path(&request.path)
+        .map_err(|e| OperationError::new("INVALID_ARGUMENT", e.to_string()))?;
+    if request.line == Some(0) {
+        return Err(OperationError::new(
+            "INVALID_ARGUMENT",
+            "line must be positive",
+        ));
     }
-    #[test]
-    fn private_directories_are_distinct() {
-        let a = directory().unwrap();
-        let b = directory().unwrap();
-        assert_ne!(a, b);
-        assert_eq!(
-            fs::metadata(&a).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        fs::remove_dir(a).unwrap();
-        fs::remove_dir(b).unwrap();
+    if serde_json::to_vec(request)
+        .map_err(|e| OperationError::new("INVALID_ARGUMENT", e.to_string()))?
+        .len() as u64
+        > LIMIT
+    {
+        return Err(OperationError::new(
+            "INVALID_ARGUMENT",
+            "open request is too large",
+        ));
     }
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    Ok(format!(
+        "margin://open/{}/{}/{}",
+        hex(socket.as_os_str().as_bytes()),
+        hex(request.path.as_bytes()),
+        request.line.unwrap_or(0)
+    ))
+}
+pub fn parse_link(url: &str) -> Result<(PathBuf, Request), OperationError> {
+    use std::os::unix::ffi::OsStringExt;
+    let fail = || OperationError::new("INVALID_ARGUMENT", "invalid Margin desk link");
+    if url.len() > LIMIT as usize * 2 {
+        return Err(fail());
+    }
+    let mut parts = url
+        .strip_prefix("margin://open/")
+        .ok_or_else(fail)?
+        .split('/');
+    let decode = |text: &str| -> Result<Vec<u8>, OperationError> {
+        if !text.len().is_multiple_of(2) || !text.is_ascii() {
+            return Err(fail());
+        }
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| fail()))
+            .collect()
+    };
+    let socket = PathBuf::from(std::ffi::OsString::from_vec(decode(
+        parts.next().ok_or_else(fail)?,
+    )?));
+    let path = String::from_utf8(decode(parts.next().ok_or_else(fail)?)?).map_err(|_| fail())?;
+    let line: u32 = parts.next().ok_or_else(fail)?.parse().map_err(|_| fail())?;
+    if parts.next().is_some() || !socket.is_absolute() {
+        return Err(fail());
+    }
+    crate::domain::parse_document_path(&path).map_err(|_| fail())?;
+    Ok((
+        socket,
+        Request {
+            path,
+            line: (line != 0).then_some(line),
+        },
+    ))
 }

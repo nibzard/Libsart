@@ -221,7 +221,15 @@ pub fn launch(
     // the shell and the renderer then hold one decided mode (SPEC 11.4).
     let mut options = options.clone();
     options.color = resolved_color(options.color);
-    let mut shell = Shell::open_for_launch(root, operations, &options);
+    // Agent and document paths are repository-relative even when the
+    // desk was composed from a subdirectory.
+    let root = operations
+        .git()
+        .toplevel()
+        .unwrap_or_else(|_| root.to_path_buf());
+    let git = operations.git().clone().at(&root);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open_for_launch(&root, &operations, &options);
     let mut guard = TerminalGuard::enter().map_err(|error| {
         LaunchError::new(format!(
             "the terminal cannot enter its interactive modes: {error}"
@@ -314,12 +322,22 @@ fn drive(
     let mut redraw_for_input = false;
     loop {
         let mut acknowledgement = None;
-        if let Some(server) = &server
-            && let Ok(pending) = server.requests.try_recv()
-            && Instant::now() < pending.deadline
-        {
-            let error = shell.desk_open(&pending.request).err();
-            acknowledgement = Some((pending.reply, crate::desk::Reply { error }));
+        if let Some(server) = &server {
+            server.set_busy(shell.remote_busy());
+            if let Ok(pending) = server.requests.try_recv()
+                && Instant::now() < pending.deadline
+            {
+                let error = shell
+                    .open_remote_until(&pending.request, Some(pending.deadline))
+                    .err();
+                acknowledgement = Some((
+                    pending.reply,
+                    crate::desk::Reply {
+                        displayed: error.is_none(),
+                        error,
+                    },
+                ));
+            }
         }
         shell.poll_workspace_search();
         if let Some(worker) = worker.as_mut() {
@@ -378,9 +396,6 @@ fn drive(
             let area = terminal.size()?.into();
             terminal.resize(area)?;
             shell.editor_returned(returned);
-            if let Some(server) = &server {
-                server.set_busy(false);
-            }
             continue;
         }
         let now = Instant::now();
@@ -401,7 +416,8 @@ fn drive(
         {
             wait = wait.min(BUSY_WAIT);
         }
-        if server.is_some() {
+        if let Some(server) = &server {
+            server.set_busy(shell.remote_busy());
             wait = wait.min(BUSY_WAIT);
         }
         if event::poll(wait)? {
