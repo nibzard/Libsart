@@ -2702,15 +2702,12 @@ impl<'a> Shell<'a> {
     }
 
     fn checkpoint_edited_draft(&mut self) {
-        if self
-            .changes
-            .as_ref()
-            .is_some_and(|c| c.proposed_count() > 0)
-        {
-            self.notice =
-                Some("Finish or clear your review decisions before checkpointing edits".into());
-            return;
-        }
+        let proposed = self.changes.as_ref().map_or(0, ChangesView::proposed_count);
+        let decisions = self.changes.as_ref().and_then(|changes| {
+            self.descriptor
+                .as_ref()
+                .and_then(|scope| changes.checkpoint_decisions(self.operations, scope))
+        });
         let outcome = self.operations.create_checkpoint(&CheckpointRequest {
             scope: None,
             message: None,
@@ -2724,13 +2721,33 @@ impl<'a> Shell<'a> {
             self.notice = Some(format!("{}: {}", error.code, error.message));
             return;
         }
-        if let Some(warning) = outcome.warnings.first() {
-            self.notice = Some(warning.message.clone());
-        }
-        let notice = self.notice.take();
+        let candidate = outcome.data.as_ref().map(|data| data.candidate.as_str());
+        let warning = outcome
+            .warnings
+            .first()
+            .map(|warning| warning.message.clone());
         self.refresh();
+        let retained = match (&mut self.changes, &self.descriptor, decisions) {
+            (Some(changes), Some(scope), Some(decisions))
+                if Some(changes.candidate_oid()) == candidate =>
+            {
+                changes.retain_checkpoint_decisions(self.operations, scope, decisions)
+            }
+            _ => 0,
+        };
         self.enter_changes();
-        self.notice = notice.or_else(|| Some("Checkpoint saved; changes await your review".into()));
+        let notice = if proposed > 0 {
+            format!(
+                "Checkpoint saved; {retained} review decisions retained; {} reset. Changes await your review",
+                proposed - retained
+            )
+        } else {
+            "Checkpoint saved; changes await your review".to_string()
+        };
+        self.notice = Some(match warning {
+            Some(warning) => bounded(&format!("{notice}. {warning}")),
+            None => notice,
+        });
     }
     fn checkpoint_boundary(&mut self) -> bool {
         let result = self.operations.create_checkpoint(&CheckpointRequest {

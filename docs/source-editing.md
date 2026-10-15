@@ -61,6 +61,13 @@ preserve meaningful versions without approving them. If staging blocks history,
 the file stays saved and history capture retries later. `C` remains available
 for an explicit checkpoint. `--capture-after-edit` also applies to manual saves.
 
+To correct part of a passage during review, press `e`, edit the source, and
+press `Esc` to save. Press `C` to checkpoint and return to Changes. Margin
+retains keep and restore decisions for unchanged patches with the same source
+coordinates and context. It resets changed, removed, or uncertain decisions.
+The notice reports both counts. Review undecided groups before finishing.
+Explicit refresh with `R` still clears all decisions.
+
 ## Conflicts and recovery
 
 Each buffer captures source bytes, a content digest, the working tree, the

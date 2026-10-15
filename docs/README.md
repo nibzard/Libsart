@@ -29,5 +29,6 @@ skipped ideas are not an implementation backlog.
 - [Editing Markdown and requesting agent edits](source-editing.md)
 - [Explicit desk links](desk-links.md)
 - [Editing validation](editing-validation.md)
+- [Evidence from correcting passages during review](review-correction-evidence.md)
 - [Terminal smoke matrix](terminal-smoke-matrix.md)
 - [Verification tiers](verification-tiers.md)

@@ -101,6 +101,8 @@ Press `e` in **Read** to edit Markdown source. Margin saves after a
 750-millisecond pause. Press `Esc` to save and return to reading.
 Switching documents retains your cursor and undo history.
 Press `C` in reading to checkpoint the writing scope and open **Changes**.
+This retains review decisions for unchanged patches and reports retained and
+reset counts. Changed or uncertain groups return to undecided.
 
 | Key in the reading or review interface | Action |
 | --- | --- |

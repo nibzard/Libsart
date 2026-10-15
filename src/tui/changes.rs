@@ -22,8 +22,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::app::{
-    BoundedExcerpt, ChangeDetail, DiffRequest, Operations, ReviewOutcome, ScopeTotals,
+    BoundedExcerpt, ChangeDetail, DiffRequest, GroupedManifest, Operations, ReviewOutcome,
+    ScopeTotals, build_grouped_manifest,
 };
+use crate::domain::ScopeDescriptor;
 use crate::tui::render;
 use crate::tui::wrap::{self, ComposedLine, DisplayRow};
 
@@ -157,6 +159,53 @@ pub struct PlanCounts {
     pub unvisited: usize,
     /// Documents no group of which the writer visited.
     pub unvisited_documents: usize,
+}
+
+/// Decisions pinned to complete immutable patches before an explicit checkpoint.
+/// These are matching evidence only, never a plan that can be applied.
+pub(crate) struct CheckpointDecisions {
+    manifest: GroupedManifest,
+    scope_id: String,
+    plan: PlanDraft,
+}
+
+/// Keys retain paths, modes, complete hunks, coordinates, and grouping reasons.
+/// For independent text passages only, the file-wide index line is excluded:
+/// another passage can change the candidate blob without changing this patch.
+fn checkpoint_keys(manifest: &GroupedManifest) -> BTreeMap<Vec<u8>, Vec<String>> {
+    let mut keys: BTreeMap<Vec<u8>, Vec<String>> = BTreeMap::new();
+    for file in &manifest.files {
+        for passage in &file.groups {
+            let mut group = passage.group.clone();
+            if !file.opaque && file.whole_file_reason.is_none() {
+                for unit in &mut group.patch_units {
+                    let mut in_hunks = false;
+                    *unit = unit
+                        .split_inclusive(|byte| *byte == b'\n')
+                        .filter(|line| {
+                            if line.starts_with(b"@@ ") {
+                                in_hunks = true;
+                            }
+                            in_hunks || !line.starts_with(b"index ")
+                        })
+                        .flatten()
+                        .copied()
+                        .collect();
+                }
+            }
+            let mut key = serde_json::to_vec(&(
+                file.mode_before.map(|mode| mode.as_str()),
+                file.mode_after.map(|mode| mode.as_str()),
+                file.opaque,
+                &file.whole_file_reason,
+                &passage.reason,
+            ))
+            .expect("patch keys contain only serializable values");
+            key.extend(crate::domain::manifest_digest_input_bytes(&[group]));
+            keys.entry(key).or_default().push(passage.change_id.id());
+        }
+    }
+    keys
 }
 
 /// The Changes view state: the pinned comparison, every group it holds,
@@ -462,6 +511,89 @@ impl ChangesView {
     /// The number of proposed decisions the plan holds.
     pub fn proposed_count(&self) -> usize {
         self.plan.proposed_count()
+    }
+
+    /// Capture complete patches rather than bounded display excerpts. Stale
+    /// working files do not invalidate the immutable comparison's evidence.
+    pub(crate) fn checkpoint_decisions(
+        &self,
+        operations: &Operations<'_>,
+        scope: &ScopeDescriptor,
+    ) -> Option<CheckpointDecisions> {
+        if self.proposed_count() == 0 || !self.actionable || self.incomplete.is_some() {
+            return None;
+        }
+        let manifest = build_grouped_manifest(
+            operations.git(),
+            &self.branch_ref,
+            &self.baseline_oid,
+            &self.candidate_oid,
+            scope,
+        )
+        .ok()?;
+        if manifest.review_id.id() != self.review_id {
+            return None;
+        }
+        Some(CheckpointDecisions {
+            manifest,
+            scope_id: self.scope_id.clone(),
+            plan: self.plan.clone(),
+        })
+    }
+
+    /// Transfer only unique, exact patch matches into this fresh comparison.
+    /// Return the retained count; every unmatched old decision stays reset.
+    pub(crate) fn retain_checkpoint_decisions(
+        &mut self,
+        operations: &Operations<'_>,
+        scope: &ScopeDescriptor,
+        previous: CheckpointDecisions,
+    ) -> usize {
+        let old = &previous.manifest;
+        if !self.actionable
+            || self.incomplete.is_some()
+            || self.stale.is_some()
+            || self.branch_ref != old.branch_ref
+            || self.baseline_oid != old.baseline_oid
+            || self.scope_id != previous.scope_id
+            || scope != &old.scope
+        {
+            return 0;
+        }
+        let Ok(current) = build_grouped_manifest(
+            operations.git(),
+            &self.branch_ref,
+            &self.baseline_oid,
+            &self.candidate_oid,
+            scope,
+        ) else {
+            return 0;
+        };
+        if current.review_id.id() != self.review_id
+            || current.engine_version != old.engine_version
+            || current.git_version != old.git_version
+        {
+            return 0;
+        }
+        let current_keys = checkpoint_keys(&current);
+        let mut retained = 0;
+        for (key, old_ids) in checkpoint_keys(old) {
+            let Some(new_ids) = current_keys.get(&key) else {
+                continue;
+            };
+            if old_ids.len() != 1 || new_ids.len() != 1 {
+                continue;
+            }
+            if let Some(decision) = previous.plan.choice(&old_ids[0]) {
+                self.plan.record(&new_ids[0], decision);
+                if previous.plan.is_visited(&old_ids[0]) {
+                    self.plan.visit(&new_ids[0]);
+                }
+                retained += 1;
+            }
+        }
+        self.dirty = true;
+        retained
     }
 
     /// The change identities the plan proposes to restore, sorted: the

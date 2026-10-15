@@ -295,7 +295,18 @@ If everything is good, **Keep all changes** records a review commit, including a
 
 The displayed B/C pair is immutable. On observing a new HEAD, dirty scoped file, scope change, or changed eligibility, show **“New edits arrived. Refresh before applying.”** Disable application of the old plan. Continue allowing the writer to read it.
 
-Refresh rebuilds the review and resets unapplied selections with a notice. Selection migration is deferred. A disabled finish button must explain whether the blocker is new content, staged changes, active writing, or unsupported repository state.
+Explicit refresh rebuilds the review and resets unapplied selections with a notice.
+The **Checkpoint scope and review** action instead retains decisions for unique,
+unchanged complete patches in the fresh comparison. Matching requires the same
+baseline, branch, scope, engine, Git version, modes, grouping, source coordinates,
+and patch context. Independent text groups may match after another passage changes
+the file's blob identity. Whole-file groups require their complete original patch.
+Changed, removed, ambiguous, or unverifiable groups lose their decisions. The
+notice states retained and reset counts. The fresh plan uses only the new
+comparison's identifiers; saving and checkpointing do not approve it. A failed
+checkpoint preserves the existing decisions. Other selection migration remains
+deferred. A disabled finish button must explain whether the blocker is new
+content, staged changes, active writing, or unsupported repository state.
 
 ### 5.4 Three views
 
@@ -689,7 +700,7 @@ If the plan keeps all changes, verify that the real index equals C, then create 
 
 If the plan restores groups:
 
-1. Check the selected reverse patch against the real index and working tree.
+1. Refresh Git's cached file metadata without staging content. Then check the selected reverse patch against the real index and working tree. Unrelated dirty or missing files must remain untouched.
 2. Apply it with `git -c apply.ignoreWhitespace=false apply --index --reverse --whitespace=nowarn` under the cooperative-writer assumption. Use the same explicit whitespace policy for applicability checks and disposable-index preview.
 3. Verify that the real index tree equals T and that scoped working content equals R. Verify the staged delta remains entirely in scope.
 4. Commit the already validated index with the review trailers. Do not restage from the working tree and do not use `commit --only` as a substitute.

@@ -1902,6 +1902,16 @@ impl Git {
         require_success(&argv, output).map(|_| ())
     }
 
+    /// Refresh cached file metadata without staging content. Quiet refresh
+    /// tolerates unrelated dirty or missing files; real index errors still fail.
+    pub(crate) fn refresh_index_stat(&self) -> Result<(), GitError> {
+        self.run_ok(
+            Mode::Mutate,
+            ["update-index", "-q", "--refresh", "--ignore-submodules"],
+        )
+        .map(|_| ())
+    }
+
     /// Returns the unfiltered first-parent ancestry of `commit`, newest
     /// first, including `commit` itself, from
     /// `git rev-list --first-parent`.

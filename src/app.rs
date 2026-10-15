@@ -11630,6 +11630,12 @@ impl<'a> Operations<'a> {
     ) -> Result<(), OperationError> {
         let expected_delta: BTreeSet<OsString> =
             intended.paths.iter().map(OsString::from).collect();
+        // A save that rewrites identical bytes can invalidate Git's stat cache.
+        // The guards proved the content and index; refresh only metadata so
+        // `apply --index` can recognize that equality without staging files.
+        self.git
+            .refresh_index_stat()
+            .map_err(OperationError::from)?;
         for (path, change_id, unit) in selected_reverse_units(manifest, decided) {
             // SPEC 9.4 step 1: the applicability check against the real
             // index and working tree, under the guards that just proved
