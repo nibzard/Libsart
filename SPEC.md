@@ -873,6 +873,22 @@ non-regular, and symlinked files are skipped. The panel reports skipped and
 truncated files and search-limit exhaustion; incomplete scans never claim
 that there are no matches in the entire scope.
 
+Pointer input is a redundant path to the same actions: left-click selects a
+navigator entry, view tab, change group, or revision; menu entries run their
+existing action; workspace-search hits use the same revalidation as Enter.
+Empty visible-pane clicks move focus. Right-click opens the menu with no overlay
+and closes it while the menu stands; Help and WorkspaceSearch ignore it. Menu
+and workspace-search overlays block clicks on all underlying content. Finish
+summaries, restoration previews, and text-entry fields ignore clicks. The wheel
+moves the focused list by one entry or scrolls a free-reading column three rows.
+The last drawn frame records typed hit targets; startup and resize invalidate
+them. Releases, drags, and motion are filtered before shell fingerprinting,
+render scheduling, and repository inspections. Background work, periodic
+inspection, and keyboard input remain independent of ignored pointer traffic.
+Mouse capture enters and leaves with the other terminal modes, including editor
+handoffs. Terminal text selection remains available through Shift-drag; tmux
+mouse configuration remains the user's choice.
+
 ### 11.4 Accessible semantics
 
 Additions/deletions require text or symbols in addition to color. Color-off and low-color modes remain fully understandable. The UI must expose whether a passage is kept, restored, undecided, unavailable, or stale through labels, not hue alone.

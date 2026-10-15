@@ -260,3 +260,19 @@ For more detail, see:
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+### Pointer navigation
+
+Left-click a document or heading, a view tab, a change group, or a revision
+to make the same selection as the keyboard. Click an action-menu entry to run
+it, or a workspace-search result to open its source location. Clicking empty
+pane space moves focus. Right-click opens the action menu with no overlay and
+closes it while the menu stands. Help and text entry ignore clicks; workspace
+search accepts only clicks on its results. The wheel moves
+the focused list by one entry or scrolls the reading column by three rows.
+
+Finish summaries, restoration previews, and text fields keep their keyboard
+confirmation rules and ignore clicks. Dragging, releases, and pointer motion
+have no action. Hold Shift for your terminal's own text selection. Inside tmux,
+pointer reporting needs the user's `mouse on` setting; Margin does not change
+that setting. Every pointer action also has a keyboard binding.

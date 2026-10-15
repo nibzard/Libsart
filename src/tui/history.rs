@@ -481,6 +481,21 @@ impl HistoryView {
         self.offset
     }
 
+    pub fn revision_at_row(&self, row: usize) -> Option<usize> {
+        if self.preview.is_some() {
+            return None;
+        }
+        self.starts.iter().rposition(|start| row >= *start)
+    }
+    pub fn select(&mut self, index: usize) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.selection = index.min(self.rows.len() - 1);
+        self.dirty = true;
+        self.scroll_to_selection();
+    }
+
     /// Moves the selection one timeline row and scrolls to it; returns
     /// whether the selection moved (SPEC 11.3 `j` and `k`).
     pub fn step_selection(&mut self, direction: i32) -> bool {
