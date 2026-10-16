@@ -486,11 +486,11 @@ fn outside_tmux_the_desk_composes_an_agent_pane_and_a_margin_pane() {
     // behavior (SPEC 12.6).
     assert!(pty.shows("margin desk: session margin"));
     assert!(pty.shows(&format!(
-        "the agent pane runs {} --flag value with spaces --",
+        "the agent pane on the right runs {} --flag value with spaces --",
         agent.display()
     )));
     assert!(pty.shows(&format!(
-        "the margin pane beside it runs {} tui",
+        "the margin pane on the left runs {} tui",
         env!("CARGO_BIN_EXE_margin")
     )));
     assert!(pty.shows("tmux prefix: C-b (queried from the session"));
@@ -562,8 +562,8 @@ fn outside_tmux_the_desk_composes_an_agent_pane_and_a_margin_pane() {
         "the margin pane runs this build's interactive surface: {panes:?}"
     );
 
-    // The first words belong to the agent: its pane keeps the focus the
-    // split moved to the new pane.
+    // The first words belong to the agent: the split leaves its pane the
+    // active one, so no focus is moved to the Margin pane.
     let active = server.panes(
         "margin:agent",
         "active=#{pane_active} #{pane_start_command}",
@@ -573,6 +573,41 @@ fn outside_tmux_the_desk_composes_an_agent_pane_and_a_margin_pane() {
             .iter()
             .any(|pane| pane.starts_with("active=1") && pane.contains(agent.to_str().unwrap())),
         "the agent pane keeps the focus: {active:?}"
+    );
+
+    // The desk reads Margin left and agent right, and the Margin pane
+    // keeps its 70% share: at 170 columns that is about 119 columns of
+    // surface beside about 51 of agent.
+    let arranged = server.panes(
+        "margin:agent",
+        "left=#{pane_left} width=#{pane_width} #{pane_start_command}",
+    );
+    let side = |needle: &str| -> (&String, u16, u16) {
+        let pane = arranged
+            .iter()
+            .find(|pane| pane.contains(needle))
+            .unwrap_or_else(|| panic!("no pane running {needle}: {arranged:?}"));
+        let number = |key: &str| -> u16 {
+            pane.split_whitespace()
+                .find(|word| word.starts_with(key))
+                .and_then(|word| word[key.len()..].parse().ok())
+                .unwrap_or_else(|| panic!("no {key} in {pane}"))
+        };
+        (pane, number("left="), number("width="))
+    };
+    let (margin_pane, margin_left, margin_width) = side(env!("CARGO_BIN_EXE_margin"));
+    let (agent_pane, agent_left, agent_width) = side(agent.to_str().unwrap());
+    assert!(
+        margin_left < agent_left,
+        "the margin pane sits left of the agent pane: {margin_pane} vs {agent_pane}"
+    );
+    assert!(
+        (112..=126).contains(&margin_width),
+        "the margin pane keeps about 70% of 170 columns: {margin_pane}"
+    );
+    assert!(
+        (44..=58).contains(&agent_width),
+        "the agent pane keeps about 30% of 170 columns: {agent_pane}"
     );
 
     // No tmux configuration was written anywhere (SPEC 12.6).
@@ -708,8 +743,12 @@ fn inside_tmux_the_desk_adds_one_window_and_touches_nothing_else() {
     assert_eq!(status.code(), Some(0));
 
     assert!(pty.shows(&format!(
-        "the agent pane runs {} inside two words; the margin pane beside it",
+        "the agent pane on the right runs {} inside two words",
         agent.display()
+    )));
+    assert!(pty.shows(&format!(
+        "the margin pane on the left runs {} tui",
+        env!("CARGO_BIN_EXE_margin")
     )));
     assert!(pty.shows("tmux prefix: C-a (queried from the session"));
     assert!(pty.shows("quitting margin leaves the agent running"));
@@ -731,6 +770,25 @@ fn inside_tmux_the_desk_adds_one_window_and_touches_nothing_else() {
     assert!(soon(LIMIT, || {
         server.panes("writer:margin-desk", "#{pane_id}").len() == 2
     }));
+    // The inside desk reads Margin left and agent right, like the
+    // dedicated desk.
+    let placed = server.panes(
+        "writer:margin-desk",
+        "left=#{pane_left} #{pane_start_command}",
+    );
+    let left_of = |needle: &str| -> u16 {
+        placed
+            .iter()
+            .find(|pane| pane.contains(needle))
+            .and_then(|pane| pane.split_whitespace().next())
+            .and_then(|word| word.strip_prefix("left="))
+            .and_then(|number| number.parse().ok())
+            .unwrap_or_else(|| panic!("no pane running {needle}: {placed:?}"))
+    };
+    assert!(
+        left_of(env!("CARGO_BIN_EXE_margin")) < left_of(agent.to_str().unwrap()),
+        "the margin pane sits left of the agent pane: {placed:?}"
+    );
     let drafting = server.windows("writer", "#{window_name}");
     assert_eq!(
         drafting,
@@ -1194,7 +1252,7 @@ fn desk_open_survives_detach_without_moving_focus_in_wide_and_narrow_layouts() {
         assert!(pty.wait_for("0:agent", LIMIT));
         let active = server.run(&["display-message", "-p", "-t", "margin:agent", "#{pane_id}"]);
         let viewer = if columns >= 140 {
-            "margin:agent.1"
+            "margin:agent.0"
         } else {
             "margin:margin.0"
         };

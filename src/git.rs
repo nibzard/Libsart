@@ -1124,28 +1124,25 @@ impl Git {
         Ok(Some(String::from_utf8_lossy(raw).into_owned()))
     }
 
-    /// Returns every registered working tree, from
-    /// `git worktree list --porcelain`. One entry means the repository has
-    /// the single conventional working tree of SPEC 3.1.
-    pub fn worktree_paths(&self) -> Result<Vec<PathBuf>, GitError> {
-        let stdout = self.run_ok(Mode::Query, ["worktree", "list", "--porcelain"])?;
-        let mut paths = Vec::new();
-        for line in stdout.split(|&byte| byte == b'\n') {
-            let Some(rest) = line.strip_prefix(b"worktree ") else {
-                continue;
-            };
-            let rest = rest.strip_suffix(b"\r").unwrap_or(rest);
-            if !rest.is_empty() {
-                paths.push(PathBuf::from(os_string_from_bytes(rest.to_vec())));
+    /// Whether the selected working tree has private Git metadata separate
+    /// from the repository's common directory (SPEC 3.1). Other registered
+    /// worktrees do not affect this result. Query each path separately so
+    /// embedded newlines in directory names remain unambiguous.
+    pub fn is_linked_worktree(&self) -> Result<bool, GitError> {
+        let mut paths = Vec::with_capacity(2);
+        for option in ["--git-dir", "--git-common-dir"] {
+            let stdout =
+                self.run_ok(Mode::Query, ["rev-parse", "--path-format=absolute", option])?;
+            let raw = strip_trailing_newline(&stdout);
+            if raw.is_empty() {
+                return Err(GitError::MalformedOutput {
+                    command: format!("rev-parse {option}"),
+                    detail: "no Git metadata directory".to_string(),
+                });
             }
+            paths.push(PathBuf::from(os_string_from_bytes(raw.to_vec())));
         }
-        if paths.is_empty() {
-            return Err(GitError::MalformedOutput {
-                command: "worktree list".to_string(),
-                detail: "no working-tree records".to_string(),
-            });
-        }
-        Ok(paths)
+        Ok(paths[0] != paths[1])
     }
 
     /// Returns the effective value of one configuration key, or `None` when

@@ -9,6 +9,13 @@ code exists locally. It does not mean every change is committed or released.
 pointer hover, physical terminal validation, and the decision gate for notes
 acknowledgments. No implementation starts from this documentation update.
 
+## Proposed follow-ups
+
+- [Resumable reviews, find anything, and pinned references](review-workspace-spec.md)
+- [Ranked and typo-tolerant workspace search](search-implementation-plan.md)
+
+These are proposals; implementation has not started.
+
 ## Completed plans and decisions
 
 | Document | Status | Evidence |

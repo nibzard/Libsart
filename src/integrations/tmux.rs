@@ -47,15 +47,15 @@ const DESK_WINDOW: &str = "margin-desk";
 /// The window name of a narrow Margin surface inside an existing session.
 const DESK_REVIEW_WINDOW: &str = "margin-review";
 
-/// The share of the columns the Margin pane keeps in a side-by-side desk:
-/// at the 140-column desk threshold this holds the reading measure of the
-/// surface (SPEC 11.1) while the agent keeps a working column.
-const MARGIN_SHARE: &str = "55%";
+/// The share of the columns the Margin pane keeps on the left of a
+/// side-by-side desk: the surface holds the reading measure (SPEC 11.1)
+/// while the agent keeps a working column on the right.
+const MARGIN_SHARE: &str = "70%";
 
 /// The arrangement one terminal width supports (SPEC 11.2, 12.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Layout {
-    /// Two panes beside each other, agent left and Margin right.
+    /// Two panes beside each other, Margin left and agent right.
     SideBySide,
     /// One command per window, so a narrow desk stays readable instead of
     /// becoming two unreadable columns.
@@ -494,9 +494,14 @@ fn build_desk_surfaces(
     let target = agent_window;
     match layout {
         Layout::SideBySide => {
+            // The Margin pane is placed left of the agent pane and sized
+            // by MARGIN_SHARE; `-d` leaves the agent pane active, because
+            // the writer's first words belong to the agent.
             let mut split = words(&[
                 "split-window",
                 "-h",
+                "-b",
+                "-d",
                 "-l",
                 MARGIN_SHARE,
                 "-t",
@@ -506,9 +511,6 @@ fn build_desk_surfaces(
             ]);
             direct_exec(&mut split, margin, socket);
             run(&split)?;
-            // The writer's first words belong to the agent, so the agent
-            // pane keeps the focus the split moved to the new pane.
-            let _ = run(&words(&["select-pane", "-t", &format!("{target}.0")]));
         }
         Layout::Focused => {
             let name = review_windows.first().copied().unwrap_or(MARGIN_WINDOW);
@@ -562,10 +564,10 @@ impl Summary {
         let mut lines = vec![format!("margin desk: session {name}")];
         match layout {
             Layout::SideBySide => lines.push(format!(
-                "  window \"{AGENT_WINDOW}\": the agent pane runs {}; the margin pane beside it \
-                 runs {}",
-                show_argv(agent),
+                "  window \"{AGENT_WINDOW}\": the margin pane on the left runs {}; the agent \
+                 pane on the right runs {}",
                 show_argv(margin),
+                show_argv(agent),
             )),
             Layout::Focused => {
                 lines.push(format!(
@@ -597,9 +599,9 @@ impl Summary {
         )];
         match layout {
             Layout::SideBySide => lines.push(format!(
-                "  the agent pane runs {}; the margin pane beside it runs {}",
-                show_argv(agent),
+                "  the margin pane on the left runs {}; the agent pane on the right runs {}",
                 show_argv(margin),
+                show_argv(agent),
             )),
             Layout::Focused => {
                 lines.push(format!("  the agent pane runs {}", show_argv(agent)));
@@ -732,6 +734,13 @@ mod tests {
         summary.detached("margin");
         let text = summary.text();
         assert!(text.contains("margin desk: session margin"));
+        assert!(
+            text.contains(
+                "the margin pane on the left runs /usr/bin/margin tui; the agent pane on the \
+                 right runs claude --model"
+            ),
+            "the side-by-side report names each pane and its side: {text}"
+        );
         assert!(text.contains("claude --model"));
         assert!(text.contains("/usr/bin/margin tui"));
         assert!(text.contains("tmux prefix: C-b (queried from the session, never assumed)"));
@@ -775,6 +784,14 @@ mod tests {
                 .contains("window \"margin-desk\" in session base")
         );
         assert!(joined.text().contains("tmux prefix: C-a"));
+        assert!(
+            joined.text().contains(
+                "the margin pane on the left runs /usr/bin/margin tui; the agent pane on the \
+                 right runs claude --model"
+            ),
+            "the joined report names each pane and its side: {}",
+            joined.text()
+        );
     }
 
     #[test]

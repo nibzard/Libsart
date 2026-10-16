@@ -19,7 +19,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use margin::app::{Operations, RestoreOutcome, validate_marker};
 use margin::domain::RestorePlan;
 use margin::git::Git;
@@ -105,6 +105,21 @@ fn adapter_for(repo: &TestRepo) -> Git {
 /// One key-press event.
 fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// One wheel-notch event; -1 rolls up and 1 rolls down.
+fn wheel(direction: i32) -> Event {
+    let kind = if direction < 0 {
+        MouseEventKind::ScrollUp
+    } else {
+        MouseEventKind::ScrollDown
+    };
+    Event::Mouse(MouseEvent {
+        kind,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    })
 }
 
 /// Renders one frame and returns its rows.
@@ -433,6 +448,110 @@ fn enter_previews_the_document_against_the_current_candidate() {
 
     // The preview is one read-only proof: no repository byte moved.
     before.assert_unchanged(&oracle::snapshot(&session.repo), "the preview");
+}
+
+/// One repository whose document runs far past one screen: the standing
+/// preview composes both revision sides, so its column scrolls. The
+/// shared session's one-line documents make a preview shorter than the
+/// viewport, which cannot scroll.
+fn long_preview_repo() -> TestRepo {
+    let repo = TestRepo::init();
+    let mut document = String::from("# Deep\n\nA long document.\n");
+    for line in 1..=50 {
+        document.push_str(&format!("Deep line {line} of the long document.\n"));
+    }
+    repo.write_file("notes/a.md", document.as_bytes());
+    repo.commit_all("import");
+    let _start = init(&repo);
+    let mut edited = String::from("# Deep\n\nA long document, edited.\n");
+    for line in 1..=50 {
+        edited.push_str(&format!("Deep line {line}, edited.\n"));
+    }
+    repo.write_file("notes/a.md", edited.as_bytes());
+    checkpoint(&repo, "Deep edit");
+    repo
+}
+
+/// One wheel notch scrolls the standing preview three rows, as `j`
+/// scrolls one (SPEC 5.5, 11.3).
+#[test]
+fn wheel_notches_scroll_the_standing_preview_three_rows() {
+    let repo = long_preview_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = history_shell(&repo, &operations, "notes/a.md");
+
+    // Two steps reach the start; `Enter` opens the standing preview.
+    shell.handle_event(&key(KeyCode::Char('j')));
+    shell.handle_event(&key(KeyCode::Char('j')));
+    shell.handle_event(&key(KeyCode::Enter));
+    // One draw prepares the preview rows and the viewport, and a few
+    // notches up park the column at its top whatever it opened at.
+    draw(&mut shell, 110, 30);
+    for _ in 0..4 {
+        shell.handle_event(&wheel(-1));
+    }
+    assert_eq!(
+        shell.history().expect("the timeline stands").offset(),
+        0,
+        "the preview parks at its top",
+    );
+    shell.handle_event(&wheel(1));
+    assert_eq!(
+        shell.history().expect("the timeline stands").offset(),
+        3,
+        "one notch scrolls three rows",
+    );
+    shell.handle_event(&wheel(1));
+    assert_eq!(
+        shell.history().expect("the timeline stands").offset(),
+        6,
+        "a second notch adds three rows",
+    );
+}
+
+/// A preview scroll that moves no selection still draws the next frame
+/// in the reduced-update mode: the scroll offset is part of the frame
+/// (SPEC 11.4).
+#[test]
+fn a_preview_wheel_scroll_raises_the_redraw_signal() {
+    let repo = long_preview_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let options = TuiOptions {
+        path: Some("notes/a.md".to_string()),
+        view: View::History,
+        reduced_updates: true,
+        ..TuiOptions::default()
+    };
+    let mut shell = Shell::open(repo.path(), &operations, &options);
+
+    shell.handle_event(&key(KeyCode::Char('j')));
+    shell.handle_event(&key(KeyCode::Char('j')));
+    shell.handle_event(&key(KeyCode::Enter));
+    assert!(
+        shell.take_redraw(),
+        "the opening preview must draw in reduced-update mode",
+    );
+    draw(&mut shell, 110, 30);
+    // One unbound key leaves the preview notice standing, and one notch
+    // up clears it while the offset parks at the top: whatever signal
+    // that made is consumed here, so only the offset can move the frame
+    // below.
+    shell.handle_event(&key(KeyCode::Char('z')));
+    shell.handle_event(&wheel(-1));
+    let _ = shell.take_redraw();
+    assert_eq!(
+        shell.history().expect("the timeline stands").offset(),
+        0,
+        "the preview parks at its top",
+    );
+
+    shell.handle_event(&wheel(1));
+    assert!(
+        shell.take_redraw(),
+        "a preview scroll that moves no selection draws the frame",
+    );
 }
 
 /// The second `Enter` restores through the shared operation: one restore

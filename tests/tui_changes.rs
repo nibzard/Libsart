@@ -15,7 +15,7 @@ mod support;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use margin::app::Operations;
 use margin::git::Git;
 use margin::tui::{Shell, TuiOptions, View, render};
@@ -69,6 +69,21 @@ fn adapter_for(repo: &TestRepo) -> Git {
 /// One key-press event.
 fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// One wheel-notch event; -1 rolls up and 1 rolls down.
+fn wheel(direction: i32) -> Event {
+    let kind = if direction < 0 {
+        MouseEventKind::ScrollUp
+    } else {
+        MouseEventKind::ScrollDown
+    };
+    Event::Mouse(MouseEvent {
+        kind,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    })
 }
 
 /// Renders one frame and returns its rows.
@@ -334,6 +349,42 @@ fn every_group_renders_its_context_across_the_detail_pages() {
     let screen = joined(&page);
     assert!(screen.contains(&format!("› Group {groups} of {groups}")));
     assert!(screen.contains("this is the last passage group"));
+}
+
+#[test]
+fn wheel_notches_scroll_the_column_three_rows() {
+    // One wheel notch scrolls the changes column three rows, as `j`
+    // scrolls one (SPEC 11.3, 11.4).
+    let repo = paged_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(
+        repo.path(),
+        &operations,
+        &TuiOptions {
+            view: View::Changes,
+            ..TuiOptions::default()
+        },
+    );
+    // One draw prepares the column's rows and its viewport.
+    draw(&mut shell, 110, 30);
+    assert_eq!(
+        shell.changes().expect("the comparison loads").offset(),
+        0,
+        "the column starts at its top",
+    );
+    shell.handle_event(&wheel(1));
+    assert_eq!(
+        shell.changes().expect("the comparison loads").offset(),
+        3,
+        "one notch scrolls three rows",
+    );
+    shell.handle_event(&wheel(-1));
+    assert_eq!(
+        shell.changes().expect("the comparison loads").offset(),
+        0,
+        "one notch up scrolls three rows back",
+    );
 }
 
 #[test]

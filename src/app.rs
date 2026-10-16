@@ -1295,10 +1295,7 @@ impl fmt::Display for PolicyBlocker {
                 write!(formatter, "the directory is not inside a Git working tree")
             }
             PolicyBlocker::LinkedWorktree => {
-                write!(
-                    formatter,
-                    "the repository uses linked worktrees instead of one working tree"
-                )
+                write!(formatter, "the selected working tree is a linked worktree")
             }
             PolicyBlocker::SparseCheckout => {
                 write!(formatter, "sparse checkout is enabled for the repository")
@@ -1499,8 +1496,8 @@ pub const TRANSFORMATION_ATTRIBUTES: &[&str] =
 pub fn repository_policy_blockers(git: &Git) -> Result<Vec<PolicyBlocker>, PolicyError> {
     let mut blockers = Vec::new();
 
-    // Layout: one local, non-bare repository with one conventional working
-    // tree. Without a working tree no further check can run.
+    // Layout: the main working tree of a local, non-bare repository.
+    // Without a working tree no further check can run.
     if git.is_bare_repository()? {
         blockers.push(PolicyBlocker::BareRepository);
         return Ok(blockers);
@@ -1509,7 +1506,7 @@ pub fn repository_policy_blockers(git: &Git) -> Result<Vec<PolicyBlocker>, Polic
         blockers.push(PolicyBlocker::NotInWorkTree);
         return Ok(blockers);
     }
-    if git.worktree_paths()?.len() > 1 {
+    if git.is_linked_worktree()? {
         blockers.push(PolicyBlocker::LinkedWorktree);
     }
     if let Some(value) = git.config_value("core.sparseCheckout")?

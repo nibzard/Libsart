@@ -147,6 +147,7 @@ Replace `claude` with your agent's executable and arguments. Margin does not
 install or authenticate the agent. The screenshot uses Claude Code configured
 for Z.ai; that provider is optional.
 
+In a side-by-side desk, Margin occupies the left 70% and the agent the right 30%.
 Inside tmux, the desk adds a window. Outside tmux, it creates and attaches to
 a dedicated session. Narrow terminals use separate windows instead of split
 panes. Quitting Margin leaves the agent running. Without tmux, run `margin tui`

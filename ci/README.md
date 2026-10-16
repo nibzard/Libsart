@@ -93,8 +93,8 @@ The desk contract needs tmux 3.1 or newer, for two commands it issues:
   one argv element. The tmux manual documents this form; Margin relies
   on it and never interpolates content into a shell string.
 - The side-by-side arrangement sizes the Margin pane with
-  `split-window -l 55%`. Percentage sizes of `-l` were added in tmux
-  3.1; tmux 3.0 rejects `-l 55%` as not a number and the desk split
+  `split-window -l 70%`. Percentage sizes of `-l` were added in tmux
+  3.1; tmux 3.0 rejects `-l 70%` as not a number and the desk split
   fails.
 
 The pin is 3.4 because that is the release the composition claims were

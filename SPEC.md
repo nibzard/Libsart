@@ -4,6 +4,15 @@
 
 **One-line pitch:** A terminal writing desk that makes agent edits readable, reviewable, and reversible, with Git keeping the history.
 
+### Jobs to be done
+
+| Job holder | Job |
+| --- | --- |
+| Writer | When an agent edits my writing, help me understand the changes, preserve my voice, and recover earlier wording without interrupting my writing flow. |
+| Agent | Give me a small, predictable command interface for inspecting drafts, saving writing passes, and performing review operations explicitly delegated by the writer. |
+
+Section 1 expands these jobs into situations, observable successful outcomes, and the everyday loop.
+
 | Field | Value |
 | --- | --- |
 | Working product name | Margin |
@@ -155,14 +164,14 @@ Chat, simultaneous writers, and automatic conflict merging remain deferred.
 | Concern | Release 0.1 policy |
 | --- | --- |
 | Platforms | Linux and macOS on explicitly tested releases; other platforms get no mutation guarantee until their test matrix passes |
-| Repository | Local, non-bare Git repository with one conventional working tree |
+| Repository | Main working tree of a local, non-bare Git repository; additional registered worktrees do not themselves block mutations here |
 | Branch | One explicitly adopted attached branch per repository configuration |
 | Filesystem | Local filesystem; network mounts and synchronizing remote filesystems are outside the supported mutation envelope |
 | Writing scope | One canonical set of included path roots, exclusions, and Markdown suffixes |
 | Writers | One cooperating active writer during a mutation |
 | Git index | Clean against HEAD before normal mutations; exact-plan resume and staged-state recovery checkpoint are exceptions in Section 9.7; source-only saves preserve the index and permit staging under Section 12.8 |
 | Git operations | No active merge, rebase, cherry-pick, revert, bisect-driven checkout, or unresolved conflict |
-| Repository extensions | Linked worktrees, sparse checkout, shallow/partial clones with unavailable objects, and nested repositories are inspection-only until explicitly supported |
+| Repository extensions | Linked working trees themselves, sparse checkout, shallow/partial clones with unavailable objects, and nested repositories are inspection-only until explicitly supported |
 | Content transformations | Only the identity storage profile in Section 8.8 is supported for mutations |
 | Hooks | Existing Git hooks are honored; hooks that modify the intended commit or working files violate the supported mutation contract |
 | Scale | Acceptance envelope: 1,000 documents and 100 MiB of scoped source, with larger inputs handled through explicit limits |
@@ -1002,7 +1011,7 @@ Editor process exit is a refresh boundary. It is not automatic approval and only
 
 tmux already supplies sessions, windows, split panes, selection, and zoom. Margin composes those operations and documents the actual configured switching controls. [I3][I4]
 
-Outside tmux, `desk` creates a dedicated session with an agent pane and Margin pane. Inside an existing session, create a clearly named window after the explicit desk command; leave unrelated panes intact. On narrow displays, choose a zoomed/focused view instead of two unreadable columns.
+Outside tmux, `desk` creates a dedicated session with an agent pane and Margin pane. Inside an existing session, create a clearly named window after the explicit desk command; leave unrelated panes intact. Side by side, the Margin pane sits left with 70% of the columns and the agent right with the rest. On narrow displays, choose a zoomed/focused view instead of two unreadable columns.
 
 Pass the explicit agent executable and argv through a supported direct-exec mechanism. If the target tmux contract requires shell interpretation, use a single documented platform-specific quoting boundary and adversarial argument tests; never interpolate document content. Do not modify global tmux configuration or use screen keystrokes as a program API. If tmux is missing, explain how to run `margin tui` in another tab; the core product remains available.
 
