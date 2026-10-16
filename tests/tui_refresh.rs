@@ -286,6 +286,7 @@ fn a_reply_from_a_superseded_generation_is_discarded() {
     assert!(outcome.ok(), "the inspection succeeds over the dirty scope");
 
     shell.observe_inspection(InspectionReply {
+        reference: None,
         generation: live - 1,
         notes: None,
         outcome,
@@ -309,6 +310,7 @@ fn a_reply_from_a_superseded_generation_is_discarded() {
         path_filter: Vec::new(),
     });
     shell.observe_inspection(InspectionReply {
+        reference: None,
         generation: live,
         notes: None,
         outcome,
@@ -374,7 +376,14 @@ fn explicit_refresh_rebuilds_the_review_and_resets_selections() {
     );
 
     let screen = joined(&draw(&mut shell, 110, 30));
-    assert!(!screen.contains("Stale"), "the stale label cleared");
+    assert!(
+        !screen.contains("New edits arrived. Refresh before applying."),
+        "the active comparison's stale warning cleared"
+    );
+    assert!(
+        screen.contains("Stale saved review"),
+        "the old local choices remain inspectable after refresh"
+    );
     assert!(
         screen.contains("First passage, edited twice."),
         "the rebuilt review shows the new passages"

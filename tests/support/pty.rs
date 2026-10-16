@@ -372,6 +372,22 @@ impl Pty {
         self.shows(needle)
     }
 
+    /// Waits for a phrase on the current replayed screen, excluding old paints.
+    pub fn wait_for_screen(&mut self, needle: &str, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        loop {
+            self.pump(Duration::from_millis(120));
+            if collapse(&replayed_screen(&String::from_utf8_lossy(&self.output)))
+                .contains(&collapse(needle))
+            {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+        }
+    }
+
     /// Says whether the visible output so far contains `needle`,
     /// ignoring escape sequences and whitespace runs.
     pub fn shows(&self, needle: &str) -> bool {
@@ -515,7 +531,86 @@ pub fn visible(bytes: &[u8]) -> String {
             _ => {}
         }
     }
+    out.push_str(&replayed_screen(&text));
     collapse(&out)
+}
+
+/// Ratatui emits cell diffs, which can split a visible word around cursor
+/// moves and unchanged letters. Replay its basic cursor/erase vocabulary so
+/// PTY assertions describe the displayed screen instead of raw paint fragments.
+fn replayed_screen(text: &str) -> String {
+    let mut cells = vec![vec![' '; 300]; 120];
+    let (mut x, mut y) = (0usize, 0usize);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.next() {
+                Some('[') => {
+                    let mut args = String::new();
+                    let mut op = ' ';
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            op = c;
+                            break;
+                        }
+                        args.push(c);
+                    }
+                    let values: Vec<usize> =
+                        args.split(';').map(|s| s.parse().unwrap_or(0)).collect();
+                    let n = values.first().copied().unwrap_or(0).max(1);
+                    match op {
+                        'H' | 'f' => {
+                            y = n.saturating_sub(1).min(119);
+                            x = values
+                                .get(1)
+                                .copied()
+                                .unwrap_or(1)
+                                .max(1)
+                                .saturating_sub(1)
+                                .min(299);
+                        }
+                        'G' => x = n.saturating_sub(1).min(299),
+                        'd' => y = n.saturating_sub(1).min(119),
+                        'A' => y = y.saturating_sub(n),
+                        'B' => y = (y + n).min(119),
+                        'C' => x = (x + n).min(299),
+                        'D' => x = x.saturating_sub(n),
+                        'J' if args == "2" || args == "3" => {
+                            for row in &mut cells {
+                                row.fill(' ');
+                            }
+                        }
+                        'K' => {
+                            for c in &mut cells[y][x..] {
+                                *c = ' ';
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' {
+                            break;
+                        }
+                        if c == '\x1b' {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if c == '\r' {
+            x = 0;
+        } else if c == '\n' {
+            y = (y + 1).min(119);
+        } else if !c.is_control() {
+            cells[y][x] = c;
+            x = (x + unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).min(299);
+        }
+    }
+    cells.iter().flat_map(|r| r.iter()).collect()
 }
 
 /// Removes every whitespace character, so wrapped rows still match.

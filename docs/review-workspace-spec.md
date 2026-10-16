@@ -1,8 +1,8 @@
 # Review workspace: resume, find anything, and pinned references
 
-Status: proposed implementation specification. No implementation is implied by
-this document. Implement the three milestones below independently, preserving
-the existing CLI review and restoration protocols.
+Status: implemented and integrated on main. The three milestones below
+preserve the existing CLI review and restoration protocols. Verification and
+coverage limits are recorded in [review-workspace-verification.md](review-workspace-verification.md).
 
 ## Goal
 
@@ -24,9 +24,9 @@ Git-backed review model rather than adopting Grimoire's project format.
 - `src/tui/changes.rs` owns the pinned comparison, proposed decisions, visited
   groups, and selection. `finish.rs` composes the ordinary review plan and its
   deterministic request ID. Keep that application path authoritative.
-- SPEC 5.2 currently discards selections on quit; SPEC 8.2 permits only
-  in-memory selections and rebuildable caches. Milestone 1 explicitly adds local
-  saved review drafts and replaces the discard-on-quit rule. These files carry
+- SPEC 5.2 now flushes local review choices on quit; SPEC 8.2 permits local
+  saved review drafts alongside rebuildable caches. This replaces the original
+  discard-on-quit rule. These files carry
   user intent but never establish a baseline, receipt, or approval.
 - SPEC 5.3 still applies: a changed comparison invalidates application of the
   old plan. This proposal does not migrate decisions to new changes.
@@ -347,3 +347,28 @@ only reads and never starts or resumes a review draft.
 Ship with updated README examples, SPEC 5.2–5.4/8.2/11.1–11.4/13.3, contextual
 help, and applicable navigation/pointer plan amendments. Update backlog status
 only for work actually implemented and verified.
+
+## Navigation, search, and pointer plan coordination
+
+The workspace integrates with keyboard hover, source editing, and pointer
+navigation. The following integration rules apply:
+
+- Two reading columns are permitted only for an explicitly pinned reference at
+  140+ columns of Margin itself. The navigator is hidden; there is no third
+  prose column. Collapsing/hiding the reference restores the navigator policy.
+- Palette metadata and body search remain independent workers and result types.
+  `f`, `/`, and Ctrl+F retain their contextual document/local/body functions.
+- Pointer targets use the same pane restrictions and modal precedence as
+  keyboard dispatch. Wheel targets the focused pane; clicking a reference
+  focuses its read-only snapshot. Pointer hover remains separate.
+- Restoring a draft restores source coordinates and canonical selected IDs;
+  screen row indices are derived after wrapping and are never persisted.
+
+### Metadata field bound amendment
+
+Labels and ancestor context are each capped at 512 Unicode scalars so a single
+very long heading cannot be copied into thousands of entries without a byte
+bound. A file with truncated metadata contributes to the displayed truncated
+count. Content beyond those bounds is not claimed searchable. The 256 KiB/file,
+16 MiB total, 2,000-file, 20,000-entry, 100-result, and release latency/resource
+budgets remain unchanged.

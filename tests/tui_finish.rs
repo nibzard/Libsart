@@ -573,21 +573,16 @@ fn cancel_and_quit_never_commit_a_selection() {
     );
     before.assert_unchanged(&oracle::snapshot(&repo), "the cancelled finish");
 
-    // The summary reopens over the same plan; quit warns once about the
-    // unapplied selection and only the second press discards it. No path
-    // through quit commits (SPEC 5.2).
+    // Quit flushes local intent and never applies even while the summary stands.
     shell.handle_event(&key(KeyCode::Enter));
-    assert!(shell.finish().is_some(), "the summary reopens");
+    assert!(shell.finish().is_some());
     shell.handle_event(&key(KeyCode::Char('q')));
-    assert!(!shell.should_quit(), "the warning keeps the surface");
-    let page = draw(&mut shell, 110, 30);
-    let screen = joined(&page);
-    assert!(screen.contains("1 unapplied selection"));
-    assert!(screen.contains("Press q again to discard them and quit"));
-    shell.handle_event(&key(KeyCode::Char('q')));
+    assert!(shell.should_quit());
     assert!(
-        shell.should_quit(),
-        "the explicit second quit discards the selections",
+        shell
+            .notice()
+            .unwrap()
+            .contains("saved locally and unapplied")
     );
     assert_eq!(
         oracle::head_oid(&repo).as_deref(),

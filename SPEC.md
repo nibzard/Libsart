@@ -298,11 +298,25 @@ Changes opens a single reading column with headings, changed passages, additions
 
 The default finish action summarizes the entire writing scope: documents affected, passages restored, and changes kept, including unvisited documents. The writer explicitly chooses **Keep remaining changes and finish**. No unvisited change is silently excluded or approved by navigating away.
 
-If everything is good, **Keep all changes** records a review commit, including an empty commit when needed. No new save confirmation is required. If the writer quits before finishing, their draft is still saved; unapplied selections are discarded only after a clear notice when any exist.
+If everything is good, **Keep all changes** records a review commit, including an empty commit when needed. No new save confirmation is required. If the writer quits before finishing, their document draft remains saved and proposed choices are flushed to a local review draft. A successful save states that choices remain saved locally and unapplied. On failure, retain the in-memory plan and require an explicit quit without saving newer choices. Ctrl-C follows this same flow. Only the ordinary finish confirmation applies a review.
+
+Local review drafts begin on the first proposed decision. A startup entry and
+**Resume saved review** offer newest-first drafts with stable ID tie-breaks.
+Resume/inspect/discard are explicit; Esc leaves them intact. Resume reloads all
+detail pages and matches repository, branch, scope, validated adoption/start
+marker, B, C, complete review identity, and known decision/visited IDs. It
+never opens an actionable finish confirmation. Current blockers still apply.
+Explicit startup path/view options outrank saved navigation. Missing navigation
+targets use a valid source position or first listed document. Successful finish
+removes the completed local draft after receipt verification; cleanup failure
+reports review success plus its local error. Startup checks an attempted plan's
+receipt through read-only validation and never automatically applies a retry.
 
 ### 5.3 New edits during review
 
 The displayed B/C pair is immutable. On observing a new HEAD, dirty scoped file, scope change, or changed eligibility, show **“New edits arrived. Refresh before applying.”** Disable application of the old plan. Continue allowing the writer to read it.
+
+Refresh flushes the current local draft before rebuilding the review with no migrated choices. Old drafts remain inspectable as **Stale saved review** until explicit discard. A failed flush retains newer in-memory choices and refuses a destructive refresh. Checkpointing retains decisions only for verified unchanged patches as described below. A disabled finish button must explain whether the blocker is new content, staged changes, active writing, or unsupported repository state.
 
 Explicit refresh rebuilds the review and resets unapplied selections with a notice.
 The **Checkpoint scope and review** action instead retains decisions for unique,
@@ -326,6 +340,17 @@ content, staged changes, active writing, or unsupported repository state.
 | History | Browse Git revisions and compare or restore a document | Document, selected revision, and nearest source anchor |
 
 Uncaptured working content is labeled **Unsaved draft** and has no actionable review ID. **Save draft** invokes checkpoint. The TUI never pretends its polling saved the file. While the surface is open, polling keeps the displayed document and the document list current with the working tree: new bytes reload in place through the same label rule an interactive load uses, and the reading position survives the swap (SPEC 13.3).
+
+One read-only reference may accompany Read, Changes, or the History list.
+Pin the displayed Read source (including an unsaved preview), a selected full
+History OID, or a listed document/heading chosen independently of primary
+navigation. Replacement happens only after successful loading. Working content
+is a frozen snapshot, with fingerprint/capture time and saved/unsaved origin;
+changes on disk are labeled and refresh is explicit. Missing-at-revision differs
+from an empty document. References read at most 256 KiB and disclose truncation.
+Only their descriptor, mode, and source position are persisted. Historical
+content reloads by OID; changed working content becomes an unavailable reference
+without preventing valid decisions from resuming. Pin/refresh never changes B/C.
 
 ### 5.5 History and restoration
 
@@ -584,7 +609,21 @@ Use ordinary local Git configuration for the adopted branch, canonical scope, au
 
 The initial public configuration keys are `margin.version`, `margin.branch`, `margin.scope`, `margin.autoCheckpoint`, `margin.captureAfterEdit`, and `margin.editorArgv`. Scope and argv values use their documented JSON forms. Read/write them through Git's configuration interface, retaining unrelated values. Diagnostic status exposes their effective values without environment secrets.
 
-Allowed disposable state consists of an application lock file in the Git directory, temporary Git indexes/patch/message files, in-memory review selections, and optional rebuildable caches. None is authoritative history or approval. A cache may be deleted without losing drafts, receipts, or valid baselines.
+Allowed disposable state consists of an application lock file in the Git directory, temporary Git indexes/patch/message files, and optional rebuildable caches. Local saved review drafts additionally carry user intent under the adapter-resolved `margin/tui/reviews/<draft-id>.json`. They are never authoritative history, receipts, baselines, or approval and must not be treated as evictable caches.
+
+Drafts use versioned JSON, exclusive collision-resistant IDs, lifetime advisory
+ownership locks, private directories/files, and same-directory temporary-file
+replacement with fsync. Reject symlinks/non-regular records, unsupported or
+corrupt records, and records over 4 MiB; leave originals inspectable. Bound each
+record to 10,000 decisions, 10,000 visited IDs, and 256 source anchors; deduplicate
+IDs and reject conflicting decisions. Bound startup enumeration to 100 records
+and report omissions. Persist canonical identities, path/heading labels, source
+positions/modes, reference descriptors, monotonic generations, and the exact
+prepared plan/request after a finish attempt. Never store bodies, note text,
+terminal output, or command-line secrets. A reading-only viewer creates no
+session files. Crashes release OS ownership while JSON survives. An unavailable
+save directory leaves review usable in memory and does not block a separately
+confirmed finish through the existing operation.
 
 Initialization writes configuration only after its starting commit is verified, except transient preparation needed to run the operation. If configuration persistence fails after the commit succeeds, report that partial success and show the commit. Re-running initialization may adopt the validated matching starting marker; it must not invent approval or rewrite the commit.
 
@@ -821,7 +860,7 @@ For every fixture, assert keep-all and restore-all tree equality, selected-group
 
 ### 11.1 Visual direction
 
-The TUI should feel like a quiet professional writing surface. Use a restrained palette, strong typographic hierarchy through weight/spacing, a comfortable reading column, and minimal persistent chrome. Status occupies one compact header/footer. The file navigator collapses when not needed.
+The TUI should feel like a quiet professional writing surface. Use a restrained palette, strong typographic hierarchy through weight/spacing, a comfortable reading column, and minimal persistent chrome. Status occupies compact header/footer rows; a local-progress or saved-review offer adds a compact labeled entry without stealing focus. The file navigator collapses when not needed.
 
 Defaults: a reading measure of approximately 76 terminal cells, soft wrapping, a visible document title/section breadcrumb, explicit saved/reviewed/stale state, and a small contextual action footer. Width is adjustable within the available terminal. Avoid dense repository dashboards, commit graphs, flashing activity, decorative boxes around every paragraph, and panels that leave too little room for prose.
 
@@ -845,7 +884,8 @@ document; revision kinds and exact timestamps are available in details.
 
 | Terminal width | Layout policy |
 | --- | --- |
-| At least 140 columns for a desk | tmux may show agent and Margin side by side if each pane retains a useful reading width |
+| At least 140 columns in Margin | An explicitly shown reference uses two equal prose columns separated by one blank cell, each capped at 76 cells; hide the navigator |
+| At least 140 columns for a desk | tmux may show agent and Margin side by side if each pane retains a useful reading width; the reference threshold still uses Margin pane width |
 | 100–139 columns in Margin | Optional narrow file list plus document column |
 | 80–99 columns | Single document surface; file chooser appears as an overlay |
 | Below 80 columns | Compact single surface with reduced metadata; no silent loss of actions |
@@ -853,12 +893,18 @@ document; revision kinds and exact timestamps are available in details.
 
 Resizing must not reset a plan or mutate content. Preserve position using source anchors plus a best-effort display offset, not only a rendered row number.
 
+At 60–139 Margin columns, a shown/focused reference uses the single content
+region with **Reference · read-only** and **Back to review**. Esc returns to the
+unchanged primary view. Wide-to-narrow resizing retains the focused content;
+returning wide restores both source anchors. Hiding retains the pin and source
+positions. Finish summaries and restoration previews temporarily hide it.
+
 ### 11.3 Keyboard contract
 
 | Action | Default binding | Behavior |
 | --- | --- | --- |
 | Move focus | `Tab` / `Shift-Tab` | Cycle through navigation, document, and visible actions |
-| Action menu | `:` outside text entry | Open all actions, including Finish review, with visible disabled reasons |
+| Find anything / action menu | `:` outside text entry | Empty query lists all actions in catalog order; nonempty queries match actions, document titles/paths, and headings/ancestors with kinds and disabled reasons |
 | Read / Changes / History | `1` / `2` / `3` | Switch views with document context retained |
 | Move | Arrows or `j` / `k` | Navigate visible items/lines according to focus |
 | Page | `PgUp` / `PgDn` | Move one viewport, less one held row, according to focus |
@@ -887,7 +933,7 @@ Resizing must not reset a plan or mutate content. Preserve position using source
 | Refresh | `R` | Refresh the displayed repository state explicitly |
 | Draft checkpoints | `a` in History | Expand or collapse draft checkpoints |
 | Next undecided group | `]` in Changes or finish summary | Navigate without applying decisions |
-| Quit | `q` / `Ctrl-C` | Restore terminal; warn only about unapplied selections, not already saved drafts |
+| Quit | `q` / `Ctrl-C` | Flush local progress and restore terminal; save failure requires explicit quit without saving newer choices |
 
 Executable reading actions must also be discoverable through a compact action menu. Movement instructions belong in help. Editor commands appear in editor help. Navigation keys never change review decisions. Keymap changes are user-interface contract changes and require updating usability and snapshot tests.
 
@@ -925,11 +971,6 @@ Mouse capture enters and leaves with the other terminal modes, including editor
 handoffs. Terminal text selection remains available through Shift-drag; tmux
 mouse configuration remains the user's choice.
 
-The action menu uses stable task groups. `/` starts filtering; ordinary
-characters then become query text. Arrows and page keys select results.
-Disabled actions remain visible and are rechecked on activation. Command keys
-and menu activation share action dispatch and availability checks.
-
 Help and the finish summary scroll at every supported size. Help puts blockers
 before its action list and returns to its opening context. The document picker
 retains selection by path while filtering. Enter opens the selected result;
@@ -944,11 +985,38 @@ dialogs. Their input cannot fall through into source editing. Disk comparison
 shows the differing line span and counts omitted common opening/closing lines.
 Accepting its base revalidates that exact disk version before autosave resumes.
 
+The palette owns input focus until it closes. Printable navigation/decision
+keys are literal query text; arrows and paging select, Backspace edits, bounded
+bracketed paste inserts literal text, and Tab/Shift-Tab stay inside. Queries are
+bounded to 256 Unicode scalars. Matching is deterministic, case-insensitive
+Unicode with original spans: exact label, prefix, all tokens, bounded
+subsequence, then equivalent path/context matches. Ties use kind, path, source
+line, stable ID. Curated action aliases never interpret text as commands.
+Metadata uses listed discovery and Markdown source mappings, the same unsafe
+file exclusions and 256 KiB/file, 16 MiB/2,000-file read bounds, 20,000 entries,
+and at most 100 displayed results with omissions stated. Labels and ancestor
+context are each bounded to 512 Unicode scalars; field truncation contributes
+to the visible truncated-file count. Actions remain present
+in the empty-query menu regardless of metadata limits. Workers publish coherent
+generations; query edits debounce about 100 ms. Reduced-update mode uses Enter
+to match edited input, and a later Enter to activate. Obsolete results never
+activate. Activation rechecks action enablement in the originating pane; Finish
+opens the ordinary summary. Navigation revalidates scope, safety, and content
+identity; changed headings refresh and require reselection. Errors retain the
+query and primary review. Metadata navigation never marks groups visited.
+
+Reference is a visible focus stop, with independent scroll, source mode (`s`),
+search (`/`), and source anchor. Wheel targets focused content. Reference focus
+disables primary decisions, undo, notes, editing, restoration, and finish with
+**Return to review to …**. Palette activation retains these restrictions. Esc
+closes local search first and then returns to primary content. Reference origin
+labels never inherit the primary document's reviewed state.
+
 ### 11.4 Accessible semantics
 
 Additions/deletions require text or symbols in addition to color. Color-off and low-color modes remain fully understandable. The UI must expose whether a passage is kept, restored, undecided, unavailable, or stale through labels, not hue alone.
 
-All actions are keyboard reachable, focus is visible, disabled actions have an explanation, and status changes do not steal reading focus. Avoid animation as the only signal. Maintain a reduced-update mode for terminals or assistive setups sensitive to redraws.
+All actions are keyboard reachable, focus is visible, disabled actions have an explanation, and status changes do not steal reading focus. Modal palette input cannot expose hidden primary decisions; reference navigation never visits review groups. Avoid animation as the only signal. Maintain a reduced-update mode for terminals or assistive setups sensitive to redraws.
 
 A TUI is not automatically screen-reader accessible. Validate the named supported terminal/assistive-technology combinations. The linear text/JSON CLI is an accessible alternate representation of the same operations, but does not substitute for testing claims about the interactive surface.
 
@@ -1189,6 +1257,16 @@ Serialize Margin mutations through the shared lock. The TUI can continue reading
 Start with a default 2-second inspection interval while the TUI is open, plus immediate refresh on explicit user actions and completed local operations. Polling discovers state; it does not save versions. Each interval the worker also rereads the displayed document and rebuilds the document list, so the surface shows current disk state — new working bytes, a deleted file, an arrived document — while the reading position survives the swap and the pinned comparison re-pins only through one explicit refresh. No filesystem watcher or daemon is necessary in release 0.1.
 
 Cache by B/C/scope/engine and limit memory by bytes, not only entry count. Read blob data through batched Git protocols when beneficial. Avoid a Git process per document. Baseline/receipt indexes are rebuilt from an unfiltered batched history stream and keyed to observed HEAD; a cache miss may be slower but cannot change correctness.
+
+Local review saving uses a separate bounded worker (one active write plus one
+coalesced newest snapshot). Decision edits debounce 250 ms, with one second
+maximum pending; navigation-only saves occur at most once per second. Quit and
+finish flush current progress. Only completion of the current generation may
+label current choices saved. Drain writes before successful cleanup/discard so
+delayed work cannot recreate removed JSON. Metadata loading/matching uses a
+separate bounded worker with cancellation and query/list generations. Session
+serialization/fsync and metadata scans stay off the input loop. These local
+writes save intent only; polling never checkpoints writing content.
 
 ### 13.4 Runtime dependency budget
 
@@ -1733,7 +1811,7 @@ And the writer returns to the same document context
 | New edit arrives after review opens | Old plan remains readable but cannot apply; refresh is explicit |
 | Agent is interrupted without a Stop event | Unsaved content is visible; no invented checkpoint or approval |
 | Commit fails after restoration | Candidate remains; partial state is shown; no “review complete” claim |
-| TUI crashes with unapplied selections | Draft remains committed; selections are not inferred on restart |
+| TUI crashes with unapplied selections | Document draft remains committed; last successfully saved local choices are explicitly offered after identity/receipt checks, never inferred as approval |
 | Response disappears after commit | Same request returns the original verified receipt |
 | Another tool has staged files | Normal Margin mutation refuses without consuming staging |
 | A commit hook changes intended content | Actual commit is reported; invalid receipt cannot advance approval |

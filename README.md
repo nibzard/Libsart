@@ -111,10 +111,25 @@ reset counts. Changed or uncertain groups return to undecided.
 | `f` | Find and open a document |
 | `/` | Search the current view |
 | `Ctrl+F` | Search source across the workspace |
-| `:` | Open the action menu; press `/` inside it to filter |
+| `:` | Find actions, documents, and headings |
 | `?` | Open contextual help |
 | `]` in Changes | Jump to the next undecided group |
 | `E` in Read | Open the configured external editor |
+
+Review decisions are saved locally and remain unapplied. Quit flushes progress;
+use **Resume saved review** in `:` to return. Resume checks the complete review
+identity and requires a fresh finish confirmation. Changed comparisons leave
+older drafts available for inspection.
+
+The `:` palette accepts ordinary typing and paste as query text. Arrows select,
+Enter opens, and Esc closes. In reduced-update mode, Enter first matches an
+edited query; a later Enter opens its result.
+
+Use **Pin current document as reference**, **Pin selected version as reference**,
+or **Choose reference…** in the palette to keep a read-only snapshot nearby.
+Reference scroll and search are independent. Working snapshots refresh only on
+request. Return to review before editing, deciding, restoring, or finishing.
+See the [workspace guide](docs/review-workspace-spec.md).
 
 While editing, use `F1` for help. Ordinary keys insert text instead of running
 reading or review actions. `Ctrl+Z` and `Ctrl+Y` undo and redo source edits.

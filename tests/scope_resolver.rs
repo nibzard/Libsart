@@ -480,9 +480,17 @@ fn non_utf8_scoped_paths_are_blockers() {
     repo.commit_all("first pass");
 
     let raw = OsString::from_vec(b"\xff.md".to_vec());
-    let path = repo.path().join(&raw);
-    fs::write(&path, b"opaque\n").expect("the non-UTF-8 file can be written");
-    repo.git_ok(vec!["add".into(), "--".into(), raw.clone()]);
+    // Git can store this entry even on filesystems (including APFS)
+    // that refuse the filename. Test the resolver's index policy directly.
+    let blob = String::from_utf8(repo.git_ok(["rev-parse", "HEAD:good/g.md"])).unwrap();
+    repo.git_ok(vec![
+        "update-index".into(),
+        "--add".into(),
+        "--cacheinfo".into(),
+        "100644".into(),
+        blob.trim().into(),
+        raw.clone(),
+    ]);
 
     let resolved = resolve(&repo, &["./"], &[], &[".md"]);
     assert_eq!(

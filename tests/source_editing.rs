@@ -560,6 +560,9 @@ fn source_editing_runs_on_a_terminal_and_restores_terminal_modes() {
     pty.resize(80, 24);
     pty.pump(Duration::from_millis(100));
     pty.send_key(b"\x1b");
+    // Wait for Escape to leave editing before sending q; adjacent bytes
+    // can otherwise be decoded as Alt+q by the terminal input parser.
+    assert!(pty.wait_for_screen("focus reading", limit));
     pty.send_key(b"q");
     assert_eq!(pty.wait_exit(limit).unwrap().code(), Some(0));
     assert!(pty.terminal_is_cooked());

@@ -579,10 +579,19 @@ fn unsupported_stored_entries_refuse_instead_of_narrowing() {
 
     // A stored path that is not valid UTF-8 refuses as well.
     let bad = OsString::from_vec(b"content/ba\xffd.md".to_vec());
-    fs::write(repo.path().join(&bad), b"body\n").expect("the file is written");
-    let add: Vec<OsString> = vec!["add".into(), "--".into(), bad.clone()];
-    repo.git_ok(add);
-    repo.commit_all("odd bytes");
+    // APFS rejects non-UTF-8 filenames, while Git trees can still contain
+    // them. Seed the index directly so this exercises stored-entry policy
+    // on both macOS and Linux without relying on filesystem acceptance.
+    let blob = String::from_utf8(repo.git_ok(["rev-parse", "HEAD:content/real.md"])).unwrap();
+    repo.git_ok(vec![
+        OsString::from("update-index"),
+        "--add".into(),
+        "--cacheinfo".into(),
+        "100644".into(),
+        blob.trim().into(),
+        bad.clone(),
+    ]);
+    repo.git_ok(["commit", "-m", "odd bytes"]);
     let head = head_oid(&repo);
     let error = scoped_content_digest(&adapter, &head, &resolved)
         .expect_err("the digest refuses a non-UTF-8 path");

@@ -117,6 +117,13 @@ impl TerminalGuard {
             crossterm::event::EnableBracketedPaste,
             crossterm::event::EnableMouseCapture
         ) {
+            let _ = execute!(
+                io::stdout(),
+                crossterm::event::DisableMouseCapture,
+                crossterm::event::DisableBracketedPaste,
+                LeaveAlternateScreen,
+                crossterm::cursor::Show
+            );
             let _ = terminal::disable_raw_mode();
             return Err(error);
         }
@@ -159,6 +166,8 @@ impl TerminalGuard {
             return Ok(());
         }
         terminal::enable_raw_mode()?;
+        // If re-entry fails, Drop still owes every interactive mode.
+        self.screen = Screen::Interactive;
         execute!(
             io::stdout(),
             EnterAlternateScreen,
@@ -346,6 +355,8 @@ fn drive(
         if acknowledgement.is_none() {
             shell.poll_edit_requests();
         }
+        shell.poll_progress();
+        shell.poll_palette();
         if let Some(worker) = worker.as_mut() {
             // Every answered inspection reaches the shell before the
             // frame that shows it: a reply the shell's generation
@@ -429,6 +440,7 @@ fn drive(
         }
         if worker.as_ref().is_some_and(RefreshWorker::is_busy)
             || shell.workspace_search().searching()
+            || shell.workspace_work_pending()
         {
             wait = wait.min(BUSY_WAIT);
         }

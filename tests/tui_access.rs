@@ -167,7 +167,7 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     // Outside the Changes view, its actions state why they cannot run.
     shell.handle_event(&key(KeyCode::Char('1')));
     shell.handle_event(&key(KeyCode::Char(':')));
-    let page = draw(&mut shell, 110, 60);
+    let page = draw(&mut shell, 110, 130);
     let screen = joined(&page);
     assert!(screen.contains("Action menu"), "the menu opens with :");
     // Every action of the contract is listed with its binding.
@@ -180,7 +180,7 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
         );
     }
     assert!(screen.contains("Tab / Shift-Tab · Cycle focus"));
-    assert!(!screen.contains("PgUp / PgDn · Page"));
+    assert!(screen.contains("PgUp / PgDn · Page"));
     assert!(screen.contains("q / Ctrl-C · Quit"));
     // A disabled action carries its reason in words (SPEC 11.3).
     assert!(
@@ -194,9 +194,9 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     assert!(screen.contains("Enter · Finish review — unavailable: the Changes view only"),);
 
     // In the Changes view over a real review, the same actions enable.
-    shell.handle_event(&key(KeyCode::Char(':')));
+    shell.handle_event(&key(KeyCode::Esc));
     shell.handle_event(&key(KeyCode::Char('2')));
-    let page = draw(&mut shell, 110, 60);
+    let page = draw(&mut shell, 110, 130);
     let screen = joined(&page);
     assert!(!screen.contains("K · Keep selected group — unavailable"));
     assert!(!screen.contains("Enter · Finish review — unavailable"));
@@ -204,10 +204,10 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     // Esc closes the menu; nothing ran.
     shell.handle_event(&key(KeyCode::Char(':')));
     shell.handle_event(&key(KeyCode::Esc));
-    let page = draw(&mut shell, 110, 60);
+    let page = draw(&mut shell, 110, 130);
     let screen = joined(&page);
     assert!(!screen.contains("Action menu"));
-    assert!(screen.contains("the action menu closed; nothing ran"));
+    assert!(screen.contains("Palette closed; nothing ran"));
 }
 
 #[test]
@@ -220,19 +220,22 @@ fn the_menu_runs_the_selected_action_and_refuses_disabled_ones() {
     // Move to the Finish review entry and run it: the menu activation and
     // the Enter binding open the same summary (SPEC 11.3).
     shell.handle_event(&key(KeyCode::Char(':')));
-    let entries = shell.menu();
-    let finish = entries
+    wait_palette(&mut shell);
+    let finish = shell
+        .palette()
+        .hits
         .iter()
-        .position(|entry| entry.action == Action::FinishReview)
+        .position(|hit| hit.entry.action == Some(Action::FinishReview))
         .expect("the finish entry exists");
     for _ in 0..finish {
-        shell.handle_event(&key(KeyCode::Char('j')));
+        shell.handle_event(&key(KeyCode::Down));
     }
     let page = draw(&mut shell, 110, 40);
     assert!(
-        joined(&page).contains("› Enter · Finish review"),
+        joined(&page).contains("› Action · Enter · Finish review"),
         "the selected entry shows its marker"
     );
+    wait_palette(&mut shell);
     shell.handle_event(&key(KeyCode::Enter));
     let page = draw(&mut shell, 110, 40);
     let screen = joined(&page);
@@ -245,14 +248,17 @@ fn the_menu_runs_the_selected_action_and_refuses_disabled_ones() {
     shell.handle_event(&key(KeyCode::Esc));
     shell.handle_event(&key(KeyCode::Char('1')));
     shell.handle_event(&key(KeyCode::Char(':')));
+    wait_palette(&mut shell);
     let keep = shell
-        .menu()
+        .palette()
+        .hits
         .iter()
-        .position(|entry| entry.action == Action::KeepGroup)
+        .position(|hit| hit.entry.action == Some(Action::KeepGroup))
         .expect("the keep entry exists");
     for _ in 0..keep {
-        shell.handle_event(&key(KeyCode::Char('j')));
+        shell.handle_event(&key(KeyCode::Down));
     }
+    wait_palette(&mut shell);
     shell.handle_event(&key(KeyCode::Enter));
     let page = draw(&mut shell, 110, 40);
     let screen = joined(&page);
@@ -297,21 +303,14 @@ fn focus_cycles_three_stops_both_ways_and_shows_itself() {
     assert_eq!(shell.focus(), margin::tui::Focus::Actions);
     let page = draw(&mut shell, 110, 30);
     assert!(joined(&page).contains("focus action menu"));
-    // The full cycle visits all three stops in order.
+    // The searchable palette owns input focus until it closes.
     shell.handle_event(&key(KeyCode::Tab));
-    assert_eq!(shell.focus(), margin::tui::Focus::Documents);
-    shell.handle_event(&key(KeyCode::Tab));
-    assert_eq!(shell.focus(), margin::tui::Focus::Reading);
-    shell.handle_event(&key(KeyCode::Tab));
-    assert_eq!(shell.focus(), margin::tui::Focus::Actions);
     shell.handle_event(&key(KeyCode::BackTab));
-    assert_eq!(shell.focus(), margin::tui::Focus::Reading);
-
-    // j/k move the menu selection while it holds focus (SPEC 11.3).
-    let before = joined(&draw(&mut shell, 110, 40));
+    assert_eq!(shell.focus(), margin::tui::Focus::Actions);
     shell.handle_event(&key(KeyCode::Char('j')));
-    let after = joined(&draw(&mut shell, 110, 40));
-    assert_ne!(before, after, "the selection marker moved");
+    assert_eq!(shell.palette().query, "j");
+    shell.handle_event(&key(KeyCode::Esc));
+    assert_eq!(shell.focus(), margin::tui::Focus::Documents);
 }
 
 #[test]
@@ -404,14 +403,16 @@ fn ctrl_c_keeps_the_clean_quit_inside_text_entry() {
     );
     shell.handle_event(&key(KeyCode::Char('/')));
     shell.handle_event(&modified(KeyCode::Char('c'), KeyModifiers::CONTROL));
-    assert!(!shell.should_quit(), "the warning stands first");
-    let page = draw(&mut shell, 110, 40);
     assert!(
-        joined(&page).contains("1 unapplied selection"),
-        "the warning states the discard",
+        shell.should_quit(),
+        "Ctrl-C flushes progress inside text entry"
     );
-    shell.handle_event(&modified(KeyCode::Char('c'), KeyModifiers::CONTROL));
-    assert!(shell.should_quit(), "the second Ctrl-C quits");
+    assert!(
+        shell
+            .notice()
+            .unwrap()
+            .contains("saved locally and unapplied")
+    );
 }
 
 #[test]
@@ -1481,7 +1482,7 @@ fn wheel_notches_move_list_selections_and_change_no_text_entry() {
 
     // The wheel never closes the help page and never types into a text
     // field: the search field stands with its query empty.
-    shell.handle_event(&key(KeyCode::Char('?')));
+    select_palette_action(&mut shell, Action::Help);
     shell.handle_event(&wheel(1));
     assert!(matches!(shell.overlay(), Some(Overlay::Help)));
     shell.handle_event(&key(KeyCode::Esc));
@@ -1600,15 +1601,15 @@ fn pointer_wrapped_menu_continuation_uses_its_owner_and_disabled_checks() {
     let operations = Operations::new(&git);
     let mut shell = changes_shell(&repo, &operations);
     shell.handle_event(&key(KeyCode::Char(':')));
+    wait_palette(&mut shell);
     let edit = shell
-        .menu()
+        .palette()
+        .hits
         .iter()
-        .position(|entry| entry.action == margin::tui::Action::ExternalEditor)
+        .position(|hit| hit.entry.action == Some(Action::ExternalEditor))
         .unwrap();
-    // Select the following entry so the disabled editor entry and its wrapped
-    // explanation are visible above it in the scrolled menu.
-    for _ in 0..=edit {
-        shell.handle_event(&key(KeyCode::Char('j')));
+    for _ in 0..edit {
+        shell.handle_event(&key(KeyCode::Down));
     }
     let page = draw(&mut shell, 60, 16);
     let row = page
@@ -1635,8 +1636,13 @@ fn help_scrolls_at_supported_sizes_and_returns_to_the_menu_selection() {
         let mut shell = changes_shell(&repo, &ops);
         shell.handle_event(&key(KeyCode::Char(':')));
         shell.handle_event(&key(KeyCode::Down));
-        let menu = shell.overlay().cloned();
-        shell.handle_event(&key(KeyCode::Char('?')));
+        select_palette_action(&mut shell, Action::Help);
+        let menu_selection = shell
+            .palette()
+            .hits
+            .iter()
+            .position(|h| h.entry.action == Some(Action::Help))
+            .unwrap();
         let before = joined(&draw(&mut shell, width, height));
         assert!(before.contains("Current blockers"));
         shell.handle_event(&key(KeyCode::End));
@@ -1657,7 +1663,12 @@ fn help_scrolls_at_supported_sizes_and_returns_to_the_menu_selection() {
         assert!(filtered.contains("Next undecided"));
         assert!(!filtered.contains("Open external editor"));
         shell.handle_event(&key(KeyCode::Esc));
-        assert_eq!(shell.overlay(), menu.as_ref());
+        assert_eq!(
+            shell.overlay(),
+            Some(&Overlay::Menu {
+                selection: menu_selection
+            })
+        );
     }
 }
 
@@ -1669,16 +1680,17 @@ fn menu_filter_is_literal_and_runs_only_the_selected_available_action() {
     let mut shell = changes_shell(&repo, &ops);
     let before = oracle::snapshot(&repo);
     shell.handle_event(&key(KeyCode::Char(':')));
-    shell.handle_event(&key(KeyCode::Char('/')));
     shell.handle_event(&Event::Paste("q:rK".into()));
     assert!(!shell.should_quit());
-    assert!(joined(&draw(&mut shell, 80, 24)).contains("No actions match"));
+    wait_palette(&mut shell);
+    assert!(joined(&draw(&mut shell, 80, 24)).contains("No matching actions"));
     shell.handle_event(&key(KeyCode::Enter));
     assert!(shell.overlay().is_some());
     for _ in 0..4 {
         shell.handle_event(&key(KeyCode::Backspace));
     }
     shell.handle_event(&Event::Paste("Read view".into()));
+    wait_palette(&mut shell);
     shell.handle_event(&key(KeyCode::Enter));
     assert_eq!(shell.view(), View::Read);
     assert!(shell.overlay().is_none());
@@ -1723,4 +1735,31 @@ fn finish_can_return_to_an_undecided_group_without_applying() {
     assert_eq!(shell.changes().unwrap().selection(), 1);
     assert_eq!(shell.changes().unwrap().proposed_count(), 1);
     assert_eq!(oracle::snapshot(&repo), before);
+}
+
+fn wait_palette(shell: &mut Shell<'_>) {
+    let start = std::time::Instant::now();
+    while !shell.palette().ready() {
+        shell.poll_palette();
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn select_palette_action(shell: &mut Shell<'_>, action: Action) {
+    wait_palette(shell);
+    let target = shell
+        .palette()
+        .hits
+        .iter()
+        .position(|h| h.entry.action == Some(action))
+        .unwrap();
+    // Move to a known starting selection using the existing arrow contract.
+    for _ in 0..shell.palette().hits.len() {
+        shell.handle_event(&key(KeyCode::Up));
+    }
+    for _ in 0..target {
+        shell.handle_event(&key(KeyCode::Down));
+    }
+    shell.handle_event(&key(KeyCode::Enter));
 }
