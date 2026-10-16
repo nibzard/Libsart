@@ -251,7 +251,10 @@ fn help_and_version_stay_available_in_text_mode() {
 
     let version = margin(&env, outside.path(), &["--version"]);
     assert_eq!(exit_of(&version), 0);
-    assert_eq!(String::from_utf8_lossy(&version.stdout), "margin 0.1.0\n");
+    assert_eq!(
+        String::from_utf8_lossy(&version.stdout),
+        concat!("margin ", env!("CARGO_PKG_VERSION"), "\n")
+    );
 }
 
 #[test]

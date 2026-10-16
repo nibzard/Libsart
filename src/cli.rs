@@ -3702,7 +3702,10 @@ mod tests {
     fn version_and_help_stay_available_in_text_mode() {
         let finished = execute(argv(&["--version"]));
         assert_eq!(finished.exit, 0);
-        assert_eq!(finished.stdout.unwrap(), "margin 0.1.0\n");
+        assert_eq!(
+            finished.stdout.unwrap(),
+            concat!("margin ", env!("CARGO_PKG_VERSION"), "\n")
+        );
 
         let finished = execute(argv(&["--help"]));
         assert_eq!(finished.exit, 0);

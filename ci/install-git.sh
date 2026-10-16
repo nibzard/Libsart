@@ -61,7 +61,7 @@ marker=$prefix/.margin-installed
 
 # A completed install succeeds at once; a partial one rebuilds from scratch.
 if [ -f "$marker" ] && [ "$("$prefix/bin/git" --version 2>/dev/null || true)" = "git version $version" ]; then
-    echo "git $version already built in $prefix"
+    echo "git $version already built in $prefix" >&2
     echo "$prefix/bin"
     exit 0
 fi
@@ -71,7 +71,7 @@ mkdir -p "$prefix"
 work=$(mktemp -d "${TMPDIR:-/tmp}/margin-git.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
-echo "building git $version from $url"
+echo "building git $version from $url" >&2
 curl -fsSL --retry 3 -o "$work/$file_name" "$url"
 
 observed=$(checksum "$work/$file_name")
@@ -88,7 +88,7 @@ make_flags="NO_CURL=YesPlease NO_OPENSSL=YesPlease NO_TCLTK=YesPlease NO_GETTEXT
     cd "$work/git-$version"
     make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)" $make_flags all
     make $make_flags install
-)
+) >&2
 
 installed=$("$prefix/bin/git" --version)
 if [ "$installed" != "git version $version" ]; then
