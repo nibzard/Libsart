@@ -490,6 +490,10 @@ pub struct Git {
     /// answer, so the identity work of one operation reads it once
     /// (SPEC 17.5).
     object_format: Arc<OnceLock<ObjectFormat>>,
+    /// The Git version, once read. Every comparison contract of one
+    /// process sees the same installed Git, and clones of the adapter
+    /// share the answer, so one operation reads it once (SPEC 17.5).
+    git_version: Arc<OnceLock<String>>,
 }
 
 impl Default for Git {
@@ -513,13 +517,18 @@ impl Git {
             working_dir: None,
             limits: Limits::default(),
             object_format: Arc::new(OnceLock::new()),
+            git_version: Arc::new(OnceLock::new()),
         }
     }
 
     /// Runs this program instead of `git`. The process seam tests use it to
     /// inject hangs, floods, and malformed output (SPEC 16.5).
+    ///
+    /// The remembered Git version does not carry over: another program is
+    /// another source of that answer.
     pub fn with_program(mut self, program: impl Into<OsString>) -> Self {
         self.program = program.into();
+        self.git_version = Arc::new(OnceLock::new());
         self
     }
 
@@ -697,8 +706,12 @@ impl Git {
     }
 
     /// Returns the version string of the installed Git, without the
-    /// `git version ` prefix.
+    /// `git version ` prefix. Read once per adapter and shared with its
+    /// clones (SPEC 17.5).
     pub fn git_version(&self) -> Result<String, GitError> {
+        if let Some(cached) = self.git_version.get() {
+            return Ok(cached.clone());
+        }
         let stdout = self.run_ok(Mode::Query, ["--version"])?;
         let raw = String::from_utf8(strip_trailing_newline(&stdout).to_vec()).map_err(|error| {
             GitError::MalformedOutput {
@@ -706,12 +719,15 @@ impl Git {
                 detail: error.to_string(),
             }
         })?;
-        raw.strip_prefix("git version ")
+        let version = raw
+            .strip_prefix("git version ")
             .map(|version| version.trim().to_string())
             .ok_or_else(|| GitError::MalformedOutput {
                 command: "--version".to_string(),
                 detail: format!("unexpected version line {raw:?}"),
-            })
+            })?;
+        let _ = self.git_version.set(version.clone());
+        Ok(version)
     }
 
     /// Returns the object format of the repository.
@@ -1793,6 +1809,66 @@ impl Git {
             ["--no-replace-objects", "cat-file", "commit", commit],
         )?;
         parse_commit_object(&stdout)
+    }
+
+    /// Checks every named object's availability through one
+    /// `--batch-check` pass, without reading one content byte (SPEC 13.3).
+    ///
+    /// A rebuildable cache entry names the objects its derivation read;
+    /// this pass tells the cache whether the repository can still stand
+    /// behind them. Every object ID must be a validated canonical object
+    /// ID from this adapter, never a user string (SPEC 14.1). An empty
+    /// list runs no process and reports every object present.
+    pub fn objects_present(&self, oids: &[String]) -> Result<bool, GitError> {
+        if oids.is_empty() {
+            return Ok(true);
+        }
+        let malformed = |detail: String| GitError::MalformedOutput {
+            command: "cat-file --batch-check".to_string(),
+            detail,
+        };
+        for oid in oids {
+            if validate_oid(oid.as_bytes()).is_none() {
+                // One unvalidated name would make Git resolve a revision,
+                // which this adapter never asks it to (SPEC 14.1).
+                return Err(malformed(format!(
+                    "not a full lowercase hex object ID: {oid}"
+                )));
+            }
+        }
+        let mut input = Vec::new();
+        for oid in oids {
+            input.extend_from_slice(oid.as_bytes());
+            input.push(b'\n');
+        }
+        let argv: Vec<OsString> = ["--no-replace-objects", "cat-file", "--batch-check"]
+            .iter()
+            .map(|argument| OsString::from(*argument))
+            .collect();
+        let output = self.run_stdin(Mode::Query, argv.clone(), &input)?;
+        let output = require_success(&argv, output)?;
+        for line in output.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            // One line per named object: `<oid> <type> <size>` while it
+            // exists, `<oid> missing` once the repository cannot supply
+            // it. The input held validated object IDs only, so a line
+            // that names neither shape is malformed output, never an
+            // answer to interpret.
+            let text = String::from_utf8_lossy(line).into_owned();
+            let mut fields = text.split(' ');
+            let oid = fields.next();
+            let second = fields.next();
+            match (oid, second) {
+                (Some(oid), Some("missing")) if validate_oid(oid.as_bytes()).is_some() => {
+                    return Ok(false);
+                }
+                (Some(oid), Some(_)) if validate_oid(oid.as_bytes()).is_some() => {}
+                _ => return Err(malformed(format!("not a batch-check line: {text}"))),
+            }
+        }
+        Ok(true)
     }
 
     /// Reads one blob object's exact bytes through `git cat-file blob`

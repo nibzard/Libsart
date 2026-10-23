@@ -218,6 +218,8 @@ use crate::git::{
 };
 use crate::markdown;
 
+use serde::{Deserialize, Serialize};
+
 /// Mode `120000` in `git ls-files --stage`: a symbolic link.
 const SYMLINK_MODE: &str = "120000";
 /// Mode `160000` in `git ls-files --stage`: a gitlink, such as a submodule.
@@ -868,6 +870,16 @@ impl<'a> Identities<'a> {
     /// The review identity of one pinned comparison (SPEC 8.6).
     pub fn review(&self, context: &ReviewContext) -> Result<Fingerprint, GitError> {
         self.hash(&domain::review_id_input_bytes(context))
+    }
+
+    /// The review-context key of one pinned comparison (SPEC 8.6, 13.3):
+    /// the identity of the derivation inputs without the manifest digest,
+    /// under which the rebuildable manifest cache files one entry.
+    pub fn review_cache_key(
+        &self,
+        key: &domain::ReviewContextKey,
+    ) -> Result<Fingerprint, GitError> {
+        self.hash(&domain::review_cache_key_input_bytes(key))
     }
 
     /// The cursor digest of one detail-page position (SPEC 6.3): the review
@@ -2500,6 +2512,657 @@ pub fn build_grouped_manifest(
     })
 }
 
+// ---------------------------------------------------------------------------
+// The rebuildable manifest cache (SPEC 8.2, 13.3)
+// ---------------------------------------------------------------------------
+
+/// Where the manifest cache lives inside the Git directory (SPEC 8.2):
+/// under `margin/`, the application's own named area for disposable state,
+/// resolved through Git's metadata layout so every Margin process of one
+/// repository computes the same path.
+const MANIFEST_CACHE_DIR: &str = "margin/manifest-cache";
+
+/// The cache-entry schema version. A reader that meets another version
+/// treats the entry as a miss and rederives, so an old cache can never
+/// wedge an operation after an upgrade (SPEC 8.2: the cache is rebuildable).
+const MANIFEST_CACHE_SCHEMA: u32 = 1;
+
+/// How many entries the cache keeps. Each writing pass produces one new
+/// comparison, so this bounds the cache to the desk's recent history
+/// instead of growing with the repository (SPEC 13.3: bounded work).
+const MANIFEST_CACHE_MAX_ENTRIES: usize = 6;
+
+/// The largest entry the cache stores. A manifest beyond it is rederived
+/// on every use, which is slower and still correct (SPEC 13.3: a cache
+/// miss may be slower but cannot change correctness).
+const MANIFEST_CACHE_MAX_ENTRY_BYTES: usize = 32 * 1024 * 1024;
+
+/// The largest total size the cache keeps, so a desk of large manifests
+/// stays bounded the same way a desk of many comparisons does (SPEC 13.3).
+const MANIFEST_CACHE_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Builds the grouped manifest of one pinned comparison, reusing the
+/// repository's cache of the same comparison when it holds one (SPEC
+/// 13.3).
+///
+/// The comparison's review context — branch, baseline, candidate, scope,
+/// engine, and Git version — names the derivation inputs, and the grouping
+/// engine is deterministic for identical inputs (SPEC 8.6), so one derived
+/// manifest serves every later operation over the same comparison. The
+/// `diff` that composes a plan and the `review` that validates and applies
+/// it therefore share one derivation instead of two, in one process or
+/// across processes.
+///
+/// A stored entry is never trusted by its presence. The reader recomputes
+/// the manifest digest and the review identity from the entry's own groups
+/// and every change identity of the manifest, and compares each with the
+/// recorded value, so an entry that changed in any identity-relevant byte
+/// is a miss. The plan comparison of SPEC 7.3 then still binds the applied
+/// manifest to the review identity the writer saw. Any miss, unreadable
+/// entry, or write failure falls back to [`build_grouped_manifest`], which
+/// is the one authority; the cache only removes work, never judgment.
+fn grouped_manifest_for(
+    git: &Git,
+    branch_ref: &str,
+    baseline_oid: &str,
+    candidate_oid: &str,
+    scope: &ScopeDescriptor,
+) -> Result<GroupedManifest, ManifestError> {
+    let identities = Identities::new(git)?;
+    let key_context = domain::ReviewContextKey {
+        branch_ref: branch_ref.to_string(),
+        baseline_oid: baseline_oid.to_string(),
+        candidate_oid: candidate_oid.to_string(),
+        scope: scope.clone(),
+        engine_version: domain::ENGINE_VERSION.to_string(),
+        git_version: git.git_version()?,
+    };
+    let key = identities.review_cache_key(&key_context)?;
+    let cache = ManifestCache::open(git);
+    if let Some(manifest) = cache
+        .as_ref()
+        .and_then(|cache| cache.load(&key, &key_context, &identities))
+    {
+        return Ok(manifest);
+    }
+    let manifest = build_grouped_manifest(git, branch_ref, baseline_oid, candidate_oid, scope)?;
+    if let Some(cache) = cache {
+        cache.store(&key, &manifest);
+    }
+    Ok(manifest)
+}
+
+/// The rebuildable manifest cache of one repository (SPEC 8.2, 13.3): one
+/// directory inside the Git directory, one JSON entry per pinned
+/// comparison, named by the review-context key.
+///
+/// Nothing about the cache is authoritative. Deleting the directory loses
+/// no draft, receipt, or baseline; every entry can be rederived from the
+/// repository alone; and every failure of the cache itself is a miss, so
+/// the cache can slow a path down at worst (SPEC 8.2, 13.3).
+struct ManifestCache<'a> {
+    /// The adapter that resolved the directory.
+    git: &'a Git,
+    /// `$GIT_DIR/margin/manifest-cache`.
+    directory: PathBuf,
+}
+
+impl<'a> ManifestCache<'a> {
+    /// Resolves the cache directory, or `None` when the Git directory
+    /// cannot be resolved. The directory is created on the first store,
+    /// never by a read.
+    fn open(git: &'a Git) -> Option<ManifestCache<'a>> {
+        let root = git.git_path(MANIFEST_CACHE_DIR).ok()?;
+        Some(ManifestCache {
+            git,
+            directory: root,
+        })
+    }
+
+    /// Reads and verifies the cached manifest of `key`, or `None` when no
+    /// verifiable entry holds (SPEC 13.3). Every identity the manifest
+    /// carries is recomputed from the stored bytes and compared with the
+    /// recorded value: the manifest digest, the review identity, and every
+    /// change identity, plus the context the key claims. One batched
+    /// hashing pass covers the change identities, so verification costs
+    /// three hash processes whatever the manifest's size.
+    fn load(
+        &self,
+        key: &Fingerprint,
+        context: &domain::ReviewContextKey,
+        identities: &Identities<'_>,
+    ) -> Option<GroupedManifest> {
+        let raw = fs::read(self.directory.join(key.oid.as_str())).ok()?;
+        let entry: ManifestCacheEntry = serde_json::from_slice(&raw).ok()?;
+        if entry.schema_version != MANIFEST_CACHE_SCHEMA {
+            return None;
+        }
+        // The entry must name exactly the comparison that asked for it;
+        // the file name alone is not consulted as proof.
+        if entry.branch_ref != context.branch_ref
+            || entry.baseline_oid != context.baseline_oid
+            || entry.candidate_oid != context.candidate_oid
+            || entry.engine_version != context.engine_version
+            || entry.git_version != context.git_version
+            || entry.scope != context.scope
+        {
+            return None;
+        }
+        let manifest = entry.into_manifest(key.object_format)?;
+
+        // The recorded identities must be the identities the stored groups
+        // derive: the manifest digest, then the review identity over the
+        // same context, then every change identity of the manifest.
+        let ordered: Vec<ChangeGroup> = manifest
+            .groups()
+            .map(|group| ChangeGroup {
+                path: group.group.path.clone(),
+                patch_units: group.group.patch_units.clone(),
+            })
+            .collect();
+        let manifest_digest = identities.manifest(&ordered).ok()?;
+        if manifest_digest.oid != manifest.manifest_digest.oid {
+            return None;
+        }
+        let review_id = identities
+            .review(&ReviewContext {
+                branch_ref: context.branch_ref.clone(),
+                baseline_oid: context.baseline_oid.clone(),
+                candidate_oid: context.candidate_oid.clone(),
+                scope: context.scope.clone(),
+                engine_version: context.engine_version.clone(),
+                git_version: context.git_version.clone(),
+                manifest_digest: manifest_digest.oid.clone(),
+            })
+            .ok()?;
+        if review_id.oid != manifest.review_id.oid {
+            return None;
+        }
+        let change_ids = identities.changes(&review_id, &ordered).ok()?;
+        if manifest
+            .groups()
+            .zip(change_ids.iter())
+            .any(|(group, expected)| group.change_id.oid != expected.oid)
+        {
+            return None;
+        }
+        // The repository must still hold every object the derivation read:
+        // the commits it compared and every blob it grouped. One
+        // batch-check pass decides; an object that left the store makes
+        // the entry a miss, so the comparison is rederived — and a missing
+        // object fails the derivation itself, typed, exactly as it would
+        // without a cache (SPEC 16.6: missing object).
+        let mut wanted = vec![
+            manifest.baseline_oid.clone(),
+            manifest.candidate_oid.clone(),
+        ];
+        for file in &manifest.files {
+            wanted.extend(file.oid_before.iter().cloned());
+            wanted.extend(file.oid_after.iter().cloned());
+        }
+        wanted.sort();
+        wanted.dedup();
+        match self.git.objects_present(&wanted) {
+            Ok(true) => Some(manifest),
+            _ => None,
+        }
+    }
+
+    /// Stores one derived manifest under its key, best effort: a store
+    /// that cannot complete leaves the derivation it came from as the only
+    /// authority, and the bounded set keeps the newest entries.
+    fn store(&self, key: &Fingerprint, manifest: &GroupedManifest) {
+        let entry = ManifestCacheEntry::from_manifest(manifest);
+        let Ok(body) = serde_json::to_vec(&entry) else {
+            return;
+        };
+        if body.len() > MANIFEST_CACHE_MAX_ENTRY_BYTES {
+            return;
+        }
+        if fs::create_dir_all(&self.directory).is_err() {
+            return;
+        }
+        // One exclusive temporary file in the cache directory, renamed
+        // over the entry, so a reader never observes a half-written entry
+        // and two writers leave one complete entry.
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp = self
+            .directory
+            .join(format!(".entry-{}-{sequence}.tmp", std::process::id()));
+        let written = fs::write(&temp, &body)
+            .and_then(|_| fs::rename(&temp, self.directory.join(key.oid.as_str())));
+        if written.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        self.evict_beyond_bounds();
+    }
+
+    /// Keeps the bounded newest entries of the directory. Only files named
+    /// like entries are considered, so a concurrent writer's temporary
+    /// file is never removed, and failures are ignored: an unevictable
+    /// file only makes the directory larger. Entries of one modification
+    /// time tie by name, so one timestamp tick still evicts
+    /// deterministically.
+    fn evict_beyond_bounds(&self) {
+        let Ok(entries) = fs::read_dir(&self.directory) else {
+            return;
+        };
+        let width = key_oid_width(self.git);
+        let is_entry = |name: &str| -> bool {
+            name.len() == width
+                && name
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        };
+        let mut recorded: Vec<(SystemTime, String, u64, PathBuf)> = Vec::new();
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().into_string().ok() else {
+                continue;
+            };
+            if !is_entry(&name) {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+            recorded.push((modified, name, metadata.len(), entry.path()));
+        }
+        recorded.sort_by(
+            |(left_time, left_name, _, _), (right_time, right_name, _, _)| {
+                right_time
+                    .cmp(left_time)
+                    .then_with(|| right_name.cmp(left_name))
+            },
+        );
+        let mut kept = 0usize;
+        let mut total = 0u64;
+        for (_, _, size, path) in recorded {
+            if kept < MANIFEST_CACHE_MAX_ENTRIES && total + size <= MANIFEST_CACHE_MAX_TOTAL_BYTES {
+                kept += 1;
+                total += size;
+                continue;
+            }
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+/// The hex width of an object ID in this repository, used only to tell
+/// entry files from temporary files; `0` makes every name fail the test,
+/// which only disables eviction.
+fn key_oid_width(git: &Git) -> usize {
+    git.object_format()
+        .ok()
+        .map(|format| match format {
+            ObjectFormat::Sha1 => 40,
+            ObjectFormat::Sha256 => 64,
+        })
+        .unwrap_or(0)
+}
+
+/// The wire form of one cached manifest (SPEC 8.2): every field of
+/// [`GroupedManifest`] in a strict, versioned shape. Patch bytes and
+/// excerpts are hexadecimal text, so the entry stays inspectable with
+/// ordinary tools and no byte can be altered by JSON handling.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestCacheEntry {
+    schema_version: u32,
+    branch_ref: String,
+    baseline_oid: String,
+    candidate_oid: String,
+    scope: ScopeDescriptor,
+    engine_version: String,
+    git_version: String,
+    /// The object format every recorded identity was computed with.
+    object_format: String,
+    /// The manifest digest, without its format prefix.
+    manifest_digest: String,
+    /// The review identity, without its format prefix.
+    review_id: String,
+    files: Vec<CachedFile>,
+}
+
+/// The wire form of one [`GroupedFile`].
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CachedFile {
+    path: String,
+    kind: String,
+    mode_before: Option<String>,
+    mode_after: Option<String>,
+    oid_before: Option<String>,
+    oid_after: Option<String>,
+    opaque: bool,
+    hunks: Vec<CachedHunk>,
+    whole_file_reason: Option<String>,
+    groups: Vec<CachedPassage>,
+}
+
+/// The wire form of one [`PassageChange`].
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CachedPassage {
+    path: String,
+    reason: String,
+    hunk_indexes: Vec<usize>,
+    presentation: CachedPresentation,
+    /// The group's complete patch units, hexadecimal.
+    patch_units: Vec<String>,
+    /// The change identity, without its format prefix.
+    change_id: String,
+}
+
+/// The wire form of one [`domain::SourceHunk`].
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CachedHunk {
+    old_start: u64,
+    old_count: u64,
+    new_start: u64,
+    new_count: u64,
+    offset: usize,
+    length: usize,
+}
+
+/// The wire form of one [`markdown::GroupPresentation`].
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CachedPresentation {
+    heading: String,
+    before: CachedExcerpt,
+    after: CachedExcerpt,
+    word_hints: Vec<CachedWordHint>,
+    whitespace_only: bool,
+    link_change: bool,
+    invisible_change: bool,
+}
+
+/// The wire form of one [`markdown::SourceExcerpt`].
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CachedExcerpt {
+    first_line: u64,
+    last_line: u64,
+    /// The exact bytes, hexadecimal.
+    bytes: String,
+}
+
+/// The wire form of one [`markdown::WordHint`].
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CachedWordHint {
+    before_line: u64,
+    after_line: u64,
+    prefix: String,
+    removed: String,
+    added: String,
+    suffix: String,
+}
+
+impl ManifestCacheEntry {
+    /// Captures one derived manifest. The stored identities keep only
+    /// their object IDs; the format travels once, and the reader rejects
+    /// an entry whose format is not the repository's own.
+    fn from_manifest(manifest: &GroupedManifest) -> ManifestCacheEntry {
+        ManifestCacheEntry {
+            schema_version: MANIFEST_CACHE_SCHEMA,
+            branch_ref: manifest.branch_ref.clone(),
+            baseline_oid: manifest.baseline_oid.clone(),
+            candidate_oid: manifest.candidate_oid.clone(),
+            scope: manifest.scope.clone(),
+            engine_version: manifest.engine_version.clone(),
+            git_version: manifest.git_version.clone(),
+            object_format: manifest.review_id.object_format.as_str().to_string(),
+            manifest_digest: manifest.manifest_digest.oid.clone(),
+            review_id: manifest.review_id.oid.clone(),
+            files: manifest
+                .files
+                .iter()
+                .map(|file| CachedFile {
+                    path: file.path.clone(),
+                    kind: file.kind.as_str().to_string(),
+                    mode_before: file.mode_before.map(|mode| mode.as_str().to_string()),
+                    mode_after: file.mode_after.map(|mode| mode.as_str().to_string()),
+                    oid_before: file.oid_before.clone(),
+                    oid_after: file.oid_after.clone(),
+                    opaque: file.opaque,
+                    hunks: file
+                        .hunks
+                        .iter()
+                        .map(|hunk| CachedHunk {
+                            old_start: hunk.old_start,
+                            old_count: hunk.old_count,
+                            new_start: hunk.new_start,
+                            new_count: hunk.new_count,
+                            offset: hunk.offset,
+                            length: hunk.length,
+                        })
+                        .collect(),
+                    whole_file_reason: file.whole_file_reason.clone(),
+                    groups: file
+                        .groups
+                        .iter()
+                        .map(|group| CachedPassage {
+                            path: group.path.clone(),
+                            reason: group.reason.clone(),
+                            hunk_indexes: group.hunk_indexes.clone(),
+                            presentation: CachedPresentation {
+                                heading: group.presentation.heading.clone(),
+                                before: CachedExcerpt {
+                                    first_line: group.presentation.before.first_line,
+                                    last_line: group.presentation.before.last_line,
+                                    bytes: hex_encode(&group.presentation.before.bytes),
+                                },
+                                after: CachedExcerpt {
+                                    first_line: group.presentation.after.first_line,
+                                    last_line: group.presentation.after.last_line,
+                                    bytes: hex_encode(&group.presentation.after.bytes),
+                                },
+                                word_hints: group
+                                    .presentation
+                                    .word_hints
+                                    .iter()
+                                    .map(|hint| CachedWordHint {
+                                        before_line: hint.before_line,
+                                        after_line: hint.after_line,
+                                        prefix: hint.prefix.clone(),
+                                        removed: hint.removed.clone(),
+                                        added: hint.added.clone(),
+                                        suffix: hint.suffix.clone(),
+                                    })
+                                    .collect(),
+                                whitespace_only: group.presentation.whitespace_only,
+                                link_change: group.presentation.link_change,
+                                invisible_change: group.presentation.invisible_change,
+                            },
+                            patch_units: group
+                                .group
+                                .patch_units
+                                .iter()
+                                .map(|unit| hex_encode(unit))
+                                .collect(),
+                            change_id: group.change_id.oid.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Rebuilds the manifest from the wire form, or `None` when any field
+    /// left its contract: an unknown kind, mode, or format, bytes that
+    /// are not hexadecimal, an object ID that is not one, or one group
+    /// whose structure the manifest does not hold together, is a miss
+    /// rather than a guess.
+    fn into_manifest(self, object_format: ObjectFormat) -> Option<GroupedManifest> {
+        if self.object_format != object_format.as_str() {
+            return None;
+        }
+        if !domain::is_full_oid(&self.baseline_oid) || !domain::is_full_oid(&self.candidate_oid) {
+            return None;
+        }
+        let fingerprint = |oid: String| Fingerprint { object_format, oid };
+        let mut files = Vec::with_capacity(self.files.len());
+        for file in self.files {
+            let kind = match file.kind.as_str() {
+                "added" => domain::ChangeKind::Added,
+                "deleted" => domain::ChangeKind::Deleted,
+                "modified" => domain::ChangeKind::Modified,
+                _ => return None,
+            };
+            let mode = |raw: &Option<String>| -> Option<Option<EntryMode>> {
+                match raw.as_deref() {
+                    None => Some(None),
+                    Some("100644") => Some(Some(EntryMode::Regular)),
+                    Some("100755") => Some(Some(EntryMode::Executable)),
+                    _ => None,
+                }
+            };
+            let mode_before = mode(&file.mode_before)?;
+            let mode_after = mode(&file.mode_after)?;
+            for oid in file.oid_before.iter().chain(file.oid_after.iter()) {
+                if !domain::is_full_oid(oid) {
+                    return None;
+                }
+            }
+            for hunk in &file.hunks {
+                hunk.offset.checked_add(hunk.length)?;
+            }
+            let mut groups = Vec::with_capacity(file.groups.len());
+            for group in file.groups {
+                // The group belongs to this file, carries at least the one
+                // complete patch unit the application replays, and names
+                // only hunks the file holds.
+                if group.path != file.path
+                    || group.patch_units.is_empty()
+                    || group
+                        .hunk_indexes
+                        .iter()
+                        .any(|index| *index >= file.hunks.len())
+                {
+                    return None;
+                }
+                let mut patch_units = Vec::with_capacity(group.patch_units.len());
+                for unit in &group.patch_units {
+                    patch_units.push(hex_decode(unit)?);
+                }
+                groups.push(PassageChange {
+                    path: group.path.clone(),
+                    reason: group.reason,
+                    hunk_indexes: group.hunk_indexes,
+                    presentation: markdown::GroupPresentation {
+                        heading: group.presentation.heading,
+                        before: markdown::SourceExcerpt {
+                            first_line: group.presentation.before.first_line,
+                            last_line: group.presentation.before.last_line,
+                            bytes: hex_decode(&group.presentation.before.bytes)?,
+                        },
+                        after: markdown::SourceExcerpt {
+                            first_line: group.presentation.after.first_line,
+                            last_line: group.presentation.after.last_line,
+                            bytes: hex_decode(&group.presentation.after.bytes)?,
+                        },
+                        word_hints: group
+                            .presentation
+                            .word_hints
+                            .into_iter()
+                            .map(|hint| markdown::WordHint {
+                                before_line: hint.before_line,
+                                after_line: hint.after_line,
+                                prefix: hint.prefix,
+                                removed: hint.removed,
+                                added: hint.added,
+                                suffix: hint.suffix,
+                            })
+                            .collect(),
+                        whitespace_only: group.presentation.whitespace_only,
+                        link_change: group.presentation.link_change,
+                        invisible_change: group.presentation.invisible_change,
+                    },
+                    group: ChangeGroup {
+                        path: group.path,
+                        patch_units,
+                    },
+                    change_id: fingerprint(group.change_id),
+                });
+            }
+            files.push(GroupedFile {
+                path: file.path,
+                kind,
+                mode_before,
+                mode_after,
+                oid_before: file.oid_before,
+                oid_after: file.oid_after,
+                opaque: file.opaque,
+                hunks: file
+                    .hunks
+                    .into_iter()
+                    .map(|hunk| domain::SourceHunk {
+                        old_start: hunk.old_start,
+                        old_count: hunk.old_count,
+                        new_start: hunk.new_start,
+                        new_count: hunk.new_count,
+                        offset: hunk.offset,
+                        length: hunk.length,
+                    })
+                    .collect(),
+                whole_file_reason: file.whole_file_reason,
+                groups,
+            });
+        }
+        Some(GroupedManifest {
+            branch_ref: self.branch_ref,
+            baseline_oid: self.baseline_oid,
+            candidate_oid: self.candidate_oid,
+            scope: self.scope,
+            engine_version: self.engine_version,
+            git_version: self.git_version,
+            files,
+            manifest_digest: fingerprint(self.manifest_digest),
+            review_id: fingerprint(self.review_id),
+        })
+    }
+}
+
+/// Encodes exact bytes as lowercase hexadecimal, the cache's one byte
+/// encoding: two characters per byte, nothing transformed.
+fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        text.push(DIGITS[(byte >> 4) as usize] as char);
+        text.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    text
+}
+
+/// Decodes lowercase hexadecimal into exact bytes, or `None` when the text
+/// is not an even pair of hexadecimal digits.
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    let digits = text.as_bytes();
+    if !digits.len().is_multiple_of(2) {
+        return None;
+    }
+    let digit = |byte: u8| -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        }
+    };
+    let mut bytes = Vec::with_capacity(digits.len() / 2);
+    for pair in digits.chunks(2) {
+        bytes.push((digit(pair[0])? << 4) | digit(pair[1])?);
+    }
+    Some(bytes)
+}
+
 /// One changed file while its groups are being assembled.
 struct FileDraft {
     /// Literal repository-relative path.
@@ -3691,10 +4354,7 @@ fn staged_entry_from_index_file(
         let sha_raw = bytes
             .get(at + 40..at + 40 + oid_width)
             .ok_or(IndexRead::Unparsable)?;
-        let mut hex = String::with_capacity(sha_raw.len() * 2);
-        for byte in sha_raw {
-            hex.push_str(&format!("{byte:02x}"));
-        }
+        let hex = hex_encode(sha_raw);
         return Ok(Some((format!("{mode:06o}"), hex)));
     }
     Ok(None)
@@ -3978,12 +4638,8 @@ fn bounded_excerpt(excerpt: markdown::SourceExcerpt) -> BoundedExcerpt {
             hex: None,
         };
     }
-    let hex = excerpt
-        .bytes
-        .iter()
-        .take(cap)
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let kept = excerpt.bytes.len().min(cap);
+    let hex = hex_encode(&excerpt.bytes[..kept]);
     BoundedExcerpt {
         first_line: excerpt.first_line,
         last_line: excerpt.last_line,
@@ -4090,10 +4746,7 @@ fn bounded_document_hex(
 ) -> BoundedDocumentHex {
     let total_bytes = bytes.len();
     let kept = total_bytes.min(document_byte_cap(max_bytes).min(domain::MAX_SHOW_HEX_BYTES));
-    let hex = bytes[..kept]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let hex = hex_encode(&bytes[..kept]);
     BoundedDocumentHex {
         blob_oid: blob_oid.to_string(),
         mode,
@@ -12462,7 +13115,9 @@ impl<'a> Operations<'a> {
     ///
     /// `build_review` pages this into bounded detail; plan validation reads
     /// it as the universe of change identities one plan must decide. Both
-    /// share one build, so no second comparison path exists (SPEC 13.6).
+    /// share one build, so no second comparison path exists (SPEC 13.6),
+    /// and the manifest itself comes from the repository's rebuildable
+    /// cache when the same comparison was already derived (SPEC 13.3).
     /// The query observes only: it reads trees, blobs, and diffs through
     /// one disposable index when it previews, and refs, the real index,
     /// and working bytes stay unchanged.
@@ -12519,7 +13174,11 @@ impl<'a> Operations<'a> {
             head
         };
 
-        let manifest = build_grouped_manifest(
+        // The one grouped manifest every review phase shares, reused from
+        // the repository's rebuildable cache of the same comparison when
+        // one holds (SPEC 13.3): the diff that pinned the review and this
+        // validation of its plan derive it once between them.
+        let manifest = grouped_manifest_for(
             self.git,
             &branch_ref,
             &baseline.commit,

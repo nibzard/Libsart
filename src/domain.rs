@@ -677,6 +677,12 @@ pub const CURSOR_DOMAIN: &[u8] = b"margin-cursor-v1\0";
 /// be confused with a detail-page cursor.
 pub const LOG_CURSOR_DOMAIN: &[u8] = b"margin-log-cursor-v1\0";
 
+/// Domain separation placed in front of the canonical review-context-key
+/// bytes (SPEC 8.6, 13.3). The key names one whole pinned comparison
+/// without its manifest digest, so a rebuildable cache entry can be found
+/// before the manifest it would replace has been derived.
+pub const REVIEW_CACHE_KEY_DOMAIN: &[u8] = b"margin-review-cache-v1\0";
+
 /// Version of the engine contract: the patch generation, grouping, and
 /// canonicalization rules of SPEC 10.1 that produced a comparison. Every
 /// review identity covers it, so a changed engine regenerates every review
@@ -863,6 +869,57 @@ pub fn review_id_input_bytes(context: &ReviewContext) -> Vec<u8> {
     writer.text(&context.engine_version);
     writer.text(&context.git_version);
     writer.text(&context.manifest_digest);
+    writer.finish()
+}
+
+/// The comparison context every field of a review identity covers except
+/// the manifest digest (SPEC 7.2, 8.6): one whole pinned comparison before
+/// its groups were derived. A rebuildable cache entry is keyed by exactly
+/// these fields, because they identify the derivation inputs — the same
+/// branch, baseline, candidate, scope, engine, and Git version always
+/// derive the same manifest (SPEC 8.6, 13.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewContextKey {
+    /// Full adopted branch ref, such as `refs/heads/writing`.
+    pub branch_ref: String,
+    /// Baseline commit B.
+    pub baseline_oid: String,
+    /// Candidate commit C.
+    pub candidate_oid: String,
+    /// The canonical scope descriptor.
+    pub scope: ScopeDescriptor,
+    /// Engine contract version; see [`ENGINE_VERSION`].
+    pub engine_version: String,
+    /// Effective Git version that contributed to the comparison contract.
+    pub git_version: String,
+}
+
+impl From<&ReviewContext> for ReviewContextKey {
+    fn from(context: &ReviewContext) -> Self {
+        ReviewContextKey {
+            branch_ref: context.branch_ref.clone(),
+            baseline_oid: context.baseline_oid.clone(),
+            candidate_oid: context.candidate_oid.clone(),
+            scope: context.scope.clone(),
+            engine_version: context.engine_version.clone(),
+            git_version: context.git_version.clone(),
+        }
+    }
+}
+
+/// The canonical bytes of one review-context key (SPEC 8.6, 13.3).
+///
+/// The encoding reuses the review identity's field order under its own
+/// domain tag, so a key can never be confused with a review identity or a
+/// manifest digest, and no key collides with another context.
+pub fn review_cache_key_input_bytes(key: &ReviewContextKey) -> Vec<u8> {
+    let mut writer = CanonicalWriter::new(REVIEW_CACHE_KEY_DOMAIN);
+    writer.text(&key.branch_ref);
+    writer.text(&key.baseline_oid);
+    writer.text(&key.candidate_oid);
+    writer.bytes(&key.scope.canonical_bytes());
+    writer.text(&key.engine_version);
+    writer.text(&key.git_version);
     writer.finish()
 }
 
@@ -4529,6 +4586,76 @@ mod tests {
             assert_ne!(changed, change_bytes);
         }
         assert_eq!(change_id_input_bytes(&change), change_bytes);
+    }
+
+    #[test]
+    fn the_review_context_key_covers_the_comparison_without_the_manifest() {
+        let scope = ScopeDescriptor::assemble(
+            &[RootEntry {
+                components: vec!["content".to_string()],
+                is_dir_root: true,
+            }],
+            &[],
+            &[".md".to_string()],
+        )
+        .unwrap();
+        let context = ReviewContext {
+            branch_ref: "refs/heads/writing".to_string(),
+            baseline_oid: OID_A.to_string(),
+            candidate_oid: OID_B.to_string(),
+            scope,
+            engine_version: ENGINE_VERSION.to_string(),
+            git_version: "2.51.1".to_string(),
+            manifest_digest: OID_A.to_string(),
+        };
+        let key = ReviewContextKey::from(&context);
+        let bytes = review_cache_key_input_bytes(&key);
+        assert!(
+            bytes.starts_with(REVIEW_CACHE_KEY_DOMAIN),
+            "the cache key stays in its own domain"
+        );
+        assert!(
+            !bytes.starts_with(REVIEW_ID_DOMAIN),
+            "the review identity domain never prefixes it"
+        );
+        // The same comparison with a different manifest digest keeps the
+        // same key: the key names the derivation inputs, not the result.
+        let mut other_digest = context.clone();
+        other_digest.manifest_digest = OID_B.to_string();
+        assert_eq!(
+            review_cache_key_input_bytes(&ReviewContextKey::from(&other_digest)),
+            bytes
+        );
+        // Changing any one derivation input regenerates the key, so no
+        // entry of one comparison can be found under another (SPEC 13.3).
+        for changed in [
+            review_cache_key_input_bytes(&ReviewContextKey {
+                branch_ref: "refs/heads/other".to_string(),
+                ..key.clone()
+            }),
+            review_cache_key_input_bytes(&ReviewContextKey {
+                baseline_oid: OID_B.to_string(),
+                ..key.clone()
+            }),
+            review_cache_key_input_bytes(&ReviewContextKey {
+                candidate_oid: OID_A.to_string(),
+                ..key.clone()
+            }),
+            review_cache_key_input_bytes(&ReviewContextKey {
+                engine_version: "2".to_string(),
+                ..key.clone()
+            }),
+            review_cache_key_input_bytes(&ReviewContextKey {
+                git_version: "2.52.0".to_string(),
+                ..key.clone()
+            }),
+        ] {
+            assert_ne!(changed, bytes);
+        }
+        let mut other_scope = key.clone();
+        other_scope.scope.suffixes = vec![".markdown".to_string()];
+        assert_ne!(review_cache_key_input_bytes(&other_scope), bytes);
+        assert_eq!(review_cache_key_input_bytes(&key), bytes);
     }
 
     #[test]
