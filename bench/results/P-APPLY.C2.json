@@ -4,19 +4,19 @@
   "corpus": "C2",
   "status": "failed",
   "environment_id": "the-developer-vm",
-  "implementation_commit": "fcac83eb2fef068b632560165fe8afeb4f87efa1",
-  "executable_hash": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64",
+  "implementation_commit": "8de373d142d3b2e389324e14ccc918607ac7b544",
+  "executable_hash": "d9a9576990e0662239aca93bee713d94a674e037f2edb891ed9858d715d53bfa",
   "corpus_manifest_hash": "6270ad4db7467b23ea04cd11e6a5801d9bd4d7abe4a13f34c763499ad89ea0c9",
   "sample_count": 100,
-  "median_ms": 5271.310245000001,
-  "p95_ms": 6656.634594,
+  "median_ms": 2851.378737,
+  "p95_ms": 2961.834067,
   "budget_p95_ms": 2000,
-  "correctness_oracle": "failed",
-  "raw_samples_path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/bench/results/raw/P-APPLY.C2/2026-10-12T013933Z/samples.jsonl",
+  "correctness_oracle": "passed",
+  "raw_samples_path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-49ce8edbc9839b36/bench/results/raw/P-APPLY.C2/2026-10-12T151213Z/samples.jsonl",
   "details": {
     "metric_kind": "cli-fresh-process",
     "metric_about": "Selective review through verified review commit and response",
-    "measured_at": "2026-10-12T01:39:34Z",
+    "measured_at": "2026-10-12T15:12:13Z",
     "environment": {
       "path": "bench/environment.json",
       "git_version": "2.43.0",
@@ -30,13 +30,13 @@
       "harness_revision": "margin-benchrun/2"
     },
     "executable": {
-      "path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-b2ce9ed8645cdde4/target/release/margin",
-      "bytes": 4669056,
-      "sha256": "4cbb7e4a0472a437fff916c295e86584d3503e57114009c6eef3e61cbc409d64"
+      "path": "/home/agent/.looper/margin-e7d63a59/runtime/worktrees/task-49ce8edbc9839b36/target/release/margin",
+      "bytes": 4864344,
+      "sha256": "d9a9576990e0662239aca93bee713d94a674e037f2edb891ed9858d715d53bfa"
     },
     "corpus": {
-      "directory": "/tmp/looper_f213b06f607af254209d-t054/corpora/c2",
-      "manifest_path": "/tmp/looper_f213b06f607af254209d-t054/corpora/c2/manifest.json",
+      "directory": "/tmp/looper_750d820637eea6d38b56-t084/corpora/c2",
+      "manifest_path": "/tmp/looper_750d820637eea6d38b56-t084/corpora/c2/manifest.json",
       "manifest_sha256": "6270ad4db7467b23ea04cd11e6a5801d9bd4d7abe4a13f34c763499ad89ea0c9",
       "generator_revision": "margin-corpusgen/1",
       "seed": 7881706609582276610,
@@ -55,10 +55,10 @@
     },
     "statistics": {
       "sample_count": 100,
-      "median_ms": 5271.310245000001,
-      "p95_ms": 6656.634594,
-      "min_ms": 2687.341692,
-      "max_ms": 7489.732142,
+      "median_ms": 2851.378737,
+      "p95_ms": 2961.834067,
+      "min_ms": 2756.97946,
+      "max_ms": 3720.9112219999997,
       "method": "nearest-rank; all samples retained including slow ones"
     },
     "comparison": null,
@@ -71,6 +71,7 @@
     "memory_definition": null,
     "invalidated_blocks": [],
     "notes": [
+      "T084: one manifest derivation reused across the diff and the review apply through the rebuildable cache",
       "the p95 exceeded its budget: SPEC 17.7 requires one declared confirmation run of both versions, preserved, before the failure blocks release"
     ]
   }
