@@ -139,8 +139,14 @@ fn spawn_tui_with_args(
 
 /// Waits for the first real frame and asserts the modes it entered.
 fn drew_first_frame(pty: &mut Pty) {
+    drew_first_frame_of(pty, "First passage");
+}
+
+/// The same first-frame proof for a fixture whose document names itself
+/// differently.
+fn drew_first_frame_of(pty: &mut Pty, needle: &str) {
     assert!(
-        pty.wait_for("First passage", LIMIT),
+        pty.wait_for(needle, LIMIT),
         "the surface drew its first frame: {}",
         String::from_utf8_lossy(&pty_snapshot(pty)),
     );
@@ -206,6 +212,60 @@ fn ctrl_c_quits_cleanly_and_restores_the_terminal() {
     // Raw mode turns `Ctrl-C` into a key, not a signal: the surface
     // answers it with its clean quit (SPEC 11.3).
     pty.send_key(b"\x03");
+    assert_restored(&mut pty, 0);
+}
+
+/// One repository whose single document runs far past one screen, so one
+/// wheel notch moves rows the frame shows. Consecutive lines share no
+/// cell content, so one repaint rewrites each arriving row as one
+/// contiguous run the output matcher can read.
+fn long_repo() -> TestRepo {
+    let words = [
+        "amber", "basil", "cedar", "dusty", "ember", "fable", "ginger", "harbor", "indigo",
+        "juniper", "kelp", "lilac", "mango", "nectar", "nutmeg", "olive", "paprika", "quartz",
+        "russet", "saffron", "thistle", "umber", "violet", "walnut", "xenia", "yarrow",
+    ];
+    let repo = TestRepo::init();
+    let mut document = String::from("# Deep\n\nA long document.\n");
+    for line in 1..=60 {
+        document.push_str(&format!("{}{line:02}\n", words[line % words.len()]));
+    }
+    repo.write_file("notes/a.md", document.as_bytes());
+    repo.commit_all("import");
+    let output = margin(
+        repo.env(),
+        repo.path(),
+        &["init", "--scope", "notes/", "--json"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "init must succeed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    repo
+}
+
+/// SGR wheel bytes scroll the focused reading column: the surface reads
+/// the wheel the same way it reads `j` (SPEC 11.3, 11.5).
+#[test]
+fn wheel_bytes_scroll_the_focused_column() {
+    let repo = long_repo();
+    let mut pty = spawn_tui(&repo, &[], 110, 32);
+    drew_first_frame_of(&mut pty, "basil01");
+
+    // Ten notches down move thirty rows; a line from deep in the document
+    // reaches the frame.
+    for _ in 0..10 {
+        pty.send_key(b"\x1b[<65;10;5M");
+    }
+    assert!(
+        pty.wait_for("nutmeg40", LIMIT),
+        "the wheel scrolled the reading column: {}",
+        String::from_utf8_lossy(&pty_snapshot(&pty)),
+    );
+
+    pty.send_key(b"q");
     assert_restored(&mut pty, 0);
 }
 
@@ -363,6 +423,14 @@ fn the_editor_handoff_suspends_the_terminal_and_takes_it_back() {
     assert!(
         pty.count_raw("\x1b[?2004h") >= 2,
         "bracketed paste was re-enabled on return",
+    );
+    assert!(
+        pty.count_raw("\x1b[?1006l") >= 1,
+        "the handoff disabled mouse capture for the editor",
+    );
+    assert!(
+        pty.count_raw("\x1b[?1006h") >= 2,
+        "mouse capture was re-enabled on return",
     );
 
     // The editor itself met a cooked terminal: its own stty report shows
@@ -649,4 +717,123 @@ fn sgr_pointer_press_opens_a_document_and_release_is_ignored() {
     assert!(pty.shows_raw("\x1b[?1006l"), "mouse capture was disabled");
 
     before.assert_unchanged(&support::oracle::snapshot(&repo), "SGR pointer navigation");
+}
+
+#[test]
+fn quit_flushes_review_intent_and_a_failed_save_requires_explicit_abandonment() {
+    let repo = adopted_repo();
+    let before = support::oracle::snapshot(&repo);
+    let mut pty = spawn_tui(&repo, &[], 110, 32);
+    drew_first_frame(&mut pty);
+    pty.send_key(b"2r");
+    assert!(pty.wait_for("Not applied", LIMIT));
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+    let git = Git::from_env(repo.env().vars().clone()).at(repo.path());
+    let store = margin::tui::session::Store::from_git(&git).unwrap();
+    let entries = store.list().unwrap().0;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].record.as_ref().unwrap().decisions.len(), 1);
+    before.assert_unchanged(
+        &support::oracle::snapshot(&repo),
+        "PTY quit saves intent without approval",
+    );
+
+    let failed = adopted_repo();
+    std::fs::write(failed.path().join(".git/margin"), b"storage blocked").unwrap();
+    let mut pty = spawn_tui(&failed, &[], 110, 32);
+    drew_first_frame(&mut pty);
+    pty.send_key(b"2r");
+    pty.send_key(b"q");
+    assert!(
+        pty.wait_for("quit without saving", LIMIT),
+        "{}",
+        String::from_utf8_lossy(pty.raw_output())
+    );
+    assert!(
+        !pty.terminal_is_cooked(),
+        "the viewer retains newer choices on failure"
+    );
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+}
+
+#[test]
+fn palette_typing_and_paste_own_the_real_terminal_input_focus() {
+    let repo = adopted_repo();
+    let before = support::oracle::snapshot(&repo);
+    let mut pty = spawn_tui(&repo, &[], 120, 32);
+    drew_first_frame(&mut pty);
+    pty.send_key(b":");
+    assert!(pty.wait_for("Find anything", LIMIT));
+    pty.send_key(b"jkqrs:?");
+    pty.send_key(b"\t\x1b[Z");
+    pty.send_key(b"\x1b[200~q:r?s\x1b[201~");
+    assert!(pty.wait_for("jkqrs:?q:r?s", LIMIT));
+    assert!(!pty.terminal_is_cooked());
+    pty.send_key(b"\x1b");
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+    before.assert_unchanged(&support::oracle::snapshot(&repo), "palette literal input");
+}
+
+fn palette_action(pty: &mut Pty, query: &[u8]) {
+    pty.send_key(b":");
+    pty.send_key(query);
+    pty.send_key(b"\r");
+    assert!(
+        pty.wait_for_screen(
+            &format!("› Action · {}", String::from_utf8_lossy(query)),
+            LIMIT,
+        ),
+        "{}",
+        String::from_utf8_lossy(pty.raw_output())
+    );
+    pty.send_key(b"\r");
+}
+
+#[test]
+fn reference_focus_blocks_primary_decisions_in_a_real_terminal_and_survives_resize() {
+    let repo = adopted_repo();
+    let before = support::oracle::snapshot(&repo);
+    let mut pty = spawn_tui_with_args(&repo, &[], &["tui", "--reduced-updates"], 150, 32);
+    drew_first_frame(&mut pty);
+    palette_action(&mut pty, b"Pin current document as reference");
+    assert!(
+        pty.wait_for("Reference", LIMIT),
+        "{}",
+        String::from_utf8_lossy(pty.raw_output())
+    );
+    palette_action(&mut pty, b"Focus reference");
+    assert!(
+        pty.shows_raw("\x1b[?1000h"),
+        "wheel events are enabled on the real terminal"
+    );
+    pty.send_key(b"\x1b[<65;80;10M");
+    pty.send_key(b"rKuNe\r");
+    assert!(pty.wait_for("Return to review", LIMIT));
+    pty.resize(100, 28);
+    assert!(
+        pty.wait_for("Reference", LIMIT),
+        "{}",
+        String::from_utf8_lossy(pty.raw_output())
+    );
+    pty.send_key(b"s/First\r");
+    pty.send_key(b"\x1b");
+    pty.send_key(b"q");
+    assert_restored(&mut pty, 0);
+    let git = Git::from_env(repo.env().vars().clone()).at(repo.path());
+    assert!(
+        margin::tui::session::Store::from_git(&git)
+            .unwrap()
+            .list()
+            .unwrap()
+            .0
+            .is_empty(),
+        "reference-focused keys never started a decision draft"
+    );
+    before.assert_unchanged(
+        &support::oracle::snapshot(&repo),
+        "reference focus and resize",
+    );
 }

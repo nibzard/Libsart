@@ -1295,10 +1295,7 @@ impl fmt::Display for PolicyBlocker {
                 write!(formatter, "the directory is not inside a Git working tree")
             }
             PolicyBlocker::LinkedWorktree => {
-                write!(
-                    formatter,
-                    "the repository uses linked worktrees instead of one working tree"
-                )
+                write!(formatter, "the selected working tree is a linked worktree")
             }
             PolicyBlocker::SparseCheckout => {
                 write!(formatter, "sparse checkout is enabled for the repository")
@@ -1499,8 +1496,8 @@ pub const TRANSFORMATION_ATTRIBUTES: &[&str] =
 pub fn repository_policy_blockers(git: &Git) -> Result<Vec<PolicyBlocker>, PolicyError> {
     let mut blockers = Vec::new();
 
-    // Layout: one local, non-bare repository with one conventional working
-    // tree. Without a working tree no further check can run.
+    // Layout: the main working tree of a local, non-bare repository.
+    // Without a working tree no further check can run.
     if git.is_bare_repository()? {
         blockers.push(PolicyBlocker::BareRepository);
         return Ok(blockers);
@@ -1509,7 +1506,7 @@ pub fn repository_policy_blockers(git: &Git) -> Result<Vec<PolicyBlocker>, Polic
         blockers.push(PolicyBlocker::NotInWorkTree);
         return Ok(blockers);
     }
-    if git.worktree_paths()?.len() > 1 {
+    if git.is_linked_worktree()? {
         blockers.push(PolicyBlocker::LinkedWorktree);
     }
     if let Some(value) = git.config_value("core.sparseCheckout")?
@@ -8601,6 +8598,38 @@ impl<'a> Operations<'a> {
             walk.forget_context();
         }
         walk
+    }
+
+    /// The validated start boundary of a pinned comparison, independent of
+    /// display filters and of a later review marker used as baseline B.
+    /// Callers supply canonical identities issued by the comparison operation.
+    pub(crate) fn review_start_marker(
+        &self,
+        head: &str,
+        scope: &str,
+    ) -> Result<String, OperationError> {
+        let mut guard = self.history_walk();
+        let walk = guard.as_mut().expect("the constructor fills the walk");
+        let history = walk.own_history(head).map_err(history_walk_failed)?;
+        for commit in history {
+            match walk.validate_marker(&commit) {
+                Ok(marker) if marker.kind == CommitKind::Start => {
+                    if marker.scope_digest != scope {
+                        return Err(OperationError::new(
+                            "STALE_REVIEW",
+                            "The current adoption starts in a different scope",
+                        ));
+                    }
+                    return Ok(marker.commit);
+                }
+                Ok(_) | Err(MarkerError::Invalid(_)) => {}
+                Err(error) => return Err(history_walk_failed(error)),
+            }
+        }
+        Err(OperationError::new(
+            "BASELINE_UNAVAILABLE",
+            "The review has no verified starting marker",
+        ))
     }
 
     /// Builds the operation layer over `git` with one explicit model-action

@@ -1926,7 +1926,7 @@
       "title": "T053 committed rustfmt drift beyond T069's scope; T069's named target is already fixed",
       "priority": 2,
       "status": "done",
-      "details": "A PR-tier format gate (SPEC 18.3) must find every committed file rustfmt-clean. Acceptance: bench/perf/*.rs and tests/bench_harness.rs are rustfmt-clean, and T069 is re-scoped to the current drift or closed because tests/terminal_smoke.rs was reformatted by T066.\nEvidence: `cargo fmt --check` at c227e17 reports 77 diff sites: 61 across bench/perf/{envrec,fixture,hash,main,metric,oracle,record,runner,stats,timing}.rs and 16 in tests/bench_harness.rs, all introduced by commit 3f9a720 'Complete T053'. tests/terminal_smoke.rs \u2014 T069's target at lines 394/469/480 \u2014 no longer appears; it was fixed in c5c850d 'Complete T066'.\nVerified 2026-10-12: cargo fmt --check passes for bench/perf, tests/bench_harness.rs, and the rest of the integrated tree.",
+      "details": "A PR-tier format gate (SPEC 18.3) must find every committed file rustfmt-clean. Acceptance: bench/perf/*.rs and tests/bench_harness.rs are rustfmt-clean, and T069 is re-scoped to the current drift or closed because tests/terminal_smoke.rs was reformatted by T066.\nEvidence: `cargo fmt --check` at c227e17 reports 77 diff sites: 61 across bench/perf/{envrec,fixture,hash,main,metric,oracle,record,runner,stats,timing}.rs and 16 in tests/bench_harness.rs, all introduced by commit 3f9a720 'Complete T053'. tests/terminal_smoke.rs — T069's target at lines 394/469/480 — no longer appears; it was fixed in c5c850d 'Complete T066'.\nVerified 2026-10-12: cargo fmt --check passes for bench/perf, tests/bench_harness.rs, and the rest of the integrated tree.",
       "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
@@ -2054,7 +2054,7 @@
       "title": "docs/verification-tiers.md still says the benchmark runner is unassigned",
       "priority": 3,
       "status": "done",
-      "details": "Acceptance: the support matrix that SPEC 18.5 requires (and that T057 will publish) must not contradict the committed environment record. Update the sentence 'No runner is registered yet \u2014 bench/environment.json is unassigned' the next time the document is amended, in the same class as the SPEC.md:1315 refresh tracked by T083.\nEvidence: docs/verification-tiers.md:36-38 versus bench/environment.json:3-4, which reads \"status\": \"registered\", \"runner_id\": \"the-developer-vm\" (T074 completed 2026-10-11, before T052 closed over the document).\nVerified 2026-10-12: The verification-tier description now agrees with the registered runner record.",
+      "details": "Acceptance: the support matrix that SPEC 18.5 requires (and that T057 will publish) must not contradict the committed environment record. Update the sentence 'No runner is registered yet — bench/environment.json is unassigned' the next time the document is amended, in the same class as the SPEC.md:1315 refresh tracked by T083.\nEvidence: docs/verification-tiers.md:36-38 versus bench/environment.json:3-4, which reads \"status\": \"registered\", \"runner_id\": \"the-developer-vm\" (T074 completed 2026-10-11, before T052 closed over the document).\nVerified 2026-10-12: The verification-tier description now agrees with the registered runner record.",
       "updated_at": "2026-10-12T19:58:11.026519Z"
     },
     {
@@ -2147,6 +2147,18 @@
       ],
       "created_at": "2026-10-12T23:49:25.180594Z",
       "updated_at": "2026-10-12T23:49:25.180594Z"
+    },
+    {
+      "id": "T101",
+      "title": "Scroll the focused element with the mouse wheel",
+      "priority": 2,
+      "status": "done",
+      "details": "Acceptance: one wheel notch makes the movement j and k make in the focused element (SPEC 11.3, 11.4): three rows in the reading column, the changes column, and the standing restore preview; one entry in the document list, the timeline, the action menu, and the workspace-search results. Text entry, the help page, and the finish summary ignore the wheel; pointer motion alone draws no frame in reduced-update mode; navigation writes no repository byte; the preview scroll offset counts as a frame change. The terminal guard enables and disables mouse capture beside bracketed paste on enter, suspend, resume, and restore (SPEC 11.5), and the PTY tests prove the five-mode bytes on the first frame, quit, Ctrl-C, and the editor handoff; one PTY case injects SGR wheel bytes. Buffer tests: tui_access (focus routing, list selections, text entry, reduced updates), tui_changes, tui_history, tui_shell.",
+      "depends_on": [
+        "T046"
+      ],
+      "created_at": "2026-10-15T12:08:26.000000Z",
+      "updated_at": "2026-10-15T12:40:00.000000Z"
     }
   ]
 }

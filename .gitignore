@@ -26,3 +26,6 @@
 # Task-runtime scratch a session places in the worktree root: private
 # databases, built tool pins, and probe repositories.
 /looper_*/
+
+# Local agent worktrees are managed separately from this repository.
+/.claude/worktrees/

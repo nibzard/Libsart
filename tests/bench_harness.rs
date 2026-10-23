@@ -786,6 +786,8 @@ fn p_refresh_times_the_external_edit_to_the_arrival_notice() {
     );
 }
 
+// These samplers explicitly read Linux /proc accounting.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_memory_resources_report_their_quantities_in_mib() {
     let (fixture, environment, path, results) = sampler_fixture("memory");
@@ -852,6 +854,7 @@ fn the_memory_resources_report_their_quantities_in_mib() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn p_cpu_reports_the_idle_share_of_one_core() {
     let (fixture, environment, path, results) = sampler_fixture("p-cpu");
@@ -1269,7 +1272,11 @@ fn a_fast_incorrect_command_fails_the_benchmark() {
     let (outcome, _environment, _results) = measure(
         "incorrect",
         "P-HELP",
-        Sides::Single(PathBuf::from("/bin/false")),
+        Sides::Single(PathBuf::from(if Path::new("/bin/false").exists() {
+            "/bin/false"
+        } else {
+            "/usr/bin/false"
+        })),
         0,
         1,
         2,

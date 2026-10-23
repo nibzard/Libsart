@@ -13,7 +13,7 @@ mod support;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use margin::app::Operations;
 use margin::git::Git;
 use margin::tui::{Shell, TuiOptions, View, render};
@@ -50,6 +50,21 @@ fn adapter_for(repo: &TestRepo) -> Git {
 /// One key-press event.
 fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// One wheel-notch event; -1 rolls up and 1 rolls down.
+fn wheel(direction: i32) -> Event {
+    let kind = if direction < 0 {
+        MouseEventKind::ScrollUp
+    } else {
+        MouseEventKind::ScrollDown
+    };
+    Event::Mouse(MouseEvent {
+        kind,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    })
 }
 
 /// One modified key-press event.
@@ -594,6 +609,9 @@ fn navigation_keys_change_no_repository_bytes() {
         key(KeyCode::Char('k')),
         key(KeyCode::PageDown),
         key(KeyCode::PageUp),
+        wheel(1),
+        wheel(1),
+        wheel(-1),
         key(KeyCode::Down),
         key(KeyCode::Up),
         key(KeyCode::BackTab),

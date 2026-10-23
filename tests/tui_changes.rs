@@ -15,7 +15,7 @@ mod support;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use margin::app::Operations;
 use margin::git::Git;
 use margin::tui::{Shell, TuiOptions, View, render};
@@ -69,6 +69,21 @@ fn adapter_for(repo: &TestRepo) -> Git {
 /// One key-press event.
 fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// One wheel-notch event; -1 rolls up and 1 rolls down.
+fn wheel(direction: i32) -> Event {
+    let kind = if direction < 0 {
+        MouseEventKind::ScrollUp
+    } else {
+        MouseEventKind::ScrollDown
+    };
+    Event::Mouse(MouseEvent {
+        kind,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    })
 }
 
 /// Renders one frame and returns its rows.
@@ -334,6 +349,42 @@ fn every_group_renders_its_context_across_the_detail_pages() {
     let screen = joined(&page);
     assert!(screen.contains(&format!("› Group {groups} of {groups}")));
     assert!(screen.contains("this is the last passage group"));
+}
+
+#[test]
+fn wheel_notches_scroll_the_column_three_rows() {
+    // One wheel notch scrolls the changes column three rows, as `j`
+    // scrolls one (SPEC 11.3, 11.4).
+    let repo = paged_repo();
+    let git = adapter_for(&repo);
+    let operations = Operations::new(&git);
+    let mut shell = Shell::open(
+        repo.path(),
+        &operations,
+        &TuiOptions {
+            view: View::Changes,
+            ..TuiOptions::default()
+        },
+    );
+    // One draw prepares the column's rows and its viewport.
+    draw(&mut shell, 110, 30);
+    assert_eq!(
+        shell.changes().expect("the comparison loads").offset(),
+        0,
+        "the column starts at its top",
+    );
+    shell.handle_event(&wheel(1));
+    assert_eq!(
+        shell.changes().expect("the comparison loads").offset(),
+        3,
+        "one notch scrolls three rows",
+    );
+    shell.handle_event(&wheel(-1));
+    assert_eq!(
+        shell.changes().expect("the comparison loads").offset(),
+        0,
+        "one notch up scrolls three rows back",
+    );
 }
 
 #[test]
@@ -673,7 +724,7 @@ fn unvisited_scope_counts_stay_available() {
 }
 
 #[test]
-fn quit_warns_once_about_unapplied_selections() {
+fn quit_flushes_choices_locally_without_applying() {
     let repo = three_group_repo();
     let before = oracle::snapshot(&repo);
     let git = adapter_for(&repo);
@@ -685,34 +736,28 @@ fn quit_warns_once_about_unapplied_selections() {
     shell.handle_event(&key(KeyCode::Char('q')));
     assert!(shell.should_quit(), "an empty plan quits at once");
 
-    // With one proposed selection, the first quit warns and keeps the
-    // surface; the second discards the selections and quits (SPEC 5.2).
     let git = adapter_for(&repo);
     let operations = Operations::new(&git);
     let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
     shell.handle_event(&key(KeyCode::Char('2')));
     shell.handle_event(&key(KeyCode::Char('r')));
     shell.handle_event(&key(KeyCode::Char('q')));
-    assert!(!shell.should_quit(), "the warning keeps the surface");
-    let page = draw(&mut shell, 110, 30);
-    let screen = joined(&page);
+    assert!(shell.should_quit());
     assert!(
-        screen.contains("1 unapplied selection"),
-        "the notice counts the unapplied selections",
+        shell
+            .notice()
+            .unwrap()
+            .contains("saved locally and unapplied")
     );
-    assert!(screen.contains("Press q again to discard them and quit"));
-
-    // Any other key clears the warning, so quitting still needs the
-    // explicit second press.
-    shell.handle_event(&key(KeyCode::Char('j')));
-    let page = draw(&mut shell, 110, 30);
-    assert!(!joined(&page).contains("Press q again"));
-    shell.handle_event(&key(KeyCode::Char('q')));
-    assert!(!shell.should_quit(), "the warning stands again after a key");
-    shell.handle_event(&key(KeyCode::Char('q')));
-    assert!(
-        shell.should_quit(),
-        "the explicit second quit discards them"
+    let store = margin::tui::session::Store::from_git(&git).unwrap();
+    assert_eq!(
+        store.list().unwrap().0[0]
+            .record
+            .as_ref()
+            .unwrap()
+            .decisions
+            .len(),
+        1
     );
 
     before.assert_unchanged(&oracle::snapshot(&repo), "the quit sequence");

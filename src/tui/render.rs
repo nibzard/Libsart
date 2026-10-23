@@ -108,14 +108,18 @@ pub fn draw(shell: &mut Shell<'_>, frame: &mut Frame<'_>) {
         draw_too_small(frame, area, shell);
         return;
     }
-    let geometry = layout::frame_layout_with_navigator(area, !shell.sidebar_hidden());
+    let geometry = shell.frame_layout(area);
     shell.begin_pointer_targets(area);
     shell.record_pointer_target(
         geometry.reading,
         Target::Pane(if matches!(shell.overlay(), Some(Overlay::Menu { .. })) {
             Focus::Actions
         } else {
-            Focus::Reading
+            if shell.reference_only() {
+                Focus::Reference
+            } else {
+                Focus::Reading
+            }
         }),
     );
     if let Some(navigator) = geometry.navigator {
@@ -124,6 +128,18 @@ pub fn draw(shell: &mut Shell<'_>, frame: &mut Frame<'_>) {
     let palette = Palette::of(shell);
     draw_header(frame, geometry.header, shell, palette);
     draw_tabs(frame, geometry.tabs, shell, palette);
+    if let Some(progress) = shell.progress_label() {
+        frame.render_widget(
+            Paragraph::new(crate::cli::display_escape(&progress))
+                .style(palette.dim)
+                .wrap(widgets::Wrap { trim: false }),
+            Rect {
+                y: area.y + 2,
+                height: shell.progress_rows(area.width),
+                ..area
+            },
+        );
+    }
     if let Some(navigator) = geometry.navigator {
         draw_navigator(frame, navigator, shell, palette);
     }
@@ -147,6 +163,9 @@ pub fn draw(shell: &mut Shell<'_>, frame: &mut Frame<'_>) {
         }
     } else {
         match shell.overlay() {
+            Some(Overlay::SavedReviews { .. }) => {
+                draw_saved_reviews(frame, geometry.reading, shell, palette)
+            }
             Some(Overlay::Menu { .. }) => draw_menu(frame, geometry.reading, shell, palette),
             Some(Overlay::Help) => draw_help(frame, geometry.reading, shell, palette),
             Some(Overlay::Picker { .. }) => draw_picker(frame, geometry.reading, shell, palette),
@@ -155,12 +174,16 @@ pub fn draw(shell: &mut Shell<'_>, frame: &mut Frame<'_>) {
             }
             // The search field keeps the current view visible behind it; the
             // context row carries the query (SPEC 11.3).
+            _ if shell.reference_only() => draw_reference(frame, geometry.reading, shell, palette),
             _ => match shell.view() {
                 View::Read => draw_reading(frame, geometry.reading, shell, palette),
                 View::Changes => draw_changes(frame, geometry.reading, shell, palette),
                 View::History => draw_history(frame, geometry.reading, shell, palette),
             },
         }
+    }
+    if let Some(area) = geometry.reference {
+        draw_reference(frame, area, shell, palette);
     }
     draw_context(frame, geometry.context, shell, palette);
     draw_footer(frame, geometry.footer, shell, palette);
@@ -407,6 +430,67 @@ fn draw_reading(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
     render_reading_body(frame, body, shell, palette);
 }
 
+fn draw_reference(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
+    let Some(reference) = shell.reference() else {
+        return;
+    };
+    shell.record_pointer_target(area, Target::Pane(Focus::Reference));
+    let title = format!(
+        "{}Reference · read-only · {} · {}",
+        if shell.focus() == Focus::Reference {
+            "› "
+        } else {
+            ""
+        },
+        reference.label(),
+        reference.descriptor.path
+    );
+    frame.render_widget(
+        Paragraph::new(crate::cli::display_escape(&title)).style(
+            if shell.focus() == Focus::Reference {
+                palette.selected
+            } else {
+                palette.heading
+            },
+        ),
+        Rect { height: 1, ..area },
+    );
+    let mut lines = vec![];
+    if let Some(error) = &reference.unavailable {
+        lines.push(Line::styled(
+            crate::cli::display_escape(error),
+            palette.warning,
+        ));
+        lines.push(Line::raw(": Refresh reference or Choose reference…"));
+    }
+    if reference.changed {
+        lines.push(Line::styled(
+            "Source changed since pinning · : Refresh reference",
+            palette.warning,
+        ));
+    }
+    if reference.truncated {
+        lines.push(Line::raw("Reference truncated at 256 KiB"));
+    }
+    let held = lines.len();
+    lines.extend(
+        reference
+            .rows
+            .iter()
+            .skip(reference.offset)
+            .take((area.height as usize).saturating_sub(held + 1))
+            .map(|r| Line::styled(r.text.clone(), palette.style(r.kind))),
+    );
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)),
+        Rect {
+            y: area.y + 1,
+            height: area.height.saturating_sub(1),
+            ..area
+        },
+    );
+}
+
 /// Draws the title row of the displayed document: the path, the section
 /// breadcrumb, and the saved label in words (SPEC 11.1, 11.4).
 fn draw_document_title(
@@ -614,58 +698,192 @@ fn draw_menu(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pale
     let Some(Overlay::Menu { selection }) = shell.overlay() else {
         return;
     };
-    let entries = shell.visible_menu();
-    let title = format!(
-        "Action menu · {} · {} actions\n/ filter: {}{} · Enter runs · Esc closes",
-        entries
-            .get(*selection)
-            .map_or("Navigate", |e| e.action.group().1),
-        entries.len(),
-        crate::cli::display_escape(&shell.menu_query),
-        if shell.menu_filtering { "▏" } else { "" }
-    );
-    frame.render_widget(
-        Paragraph::new(title).style(palette.heading),
-        Rect::new(area.x, area.y, area.width, area.height.min(2)),
-    );
-    let body = Rect::new(
-        area.x,
-        area.y + area.height.min(3),
-        area.width,
-        area.height.saturating_sub(3),
-    );
-    if entries.is_empty() {
-        frame.render_widget(Paragraph::new("No actions match"), body);
-        return;
+    let palette_state = shell.palette();
+    let menu = shell.menu();
+    let mut lines = vec![
+        Line::styled("Find anything · Action menu", palette.heading),
+        Line::raw(format!(
+            "{}▏",
+            query_tail(
+                &crate::cli::display_escape(&palette_state.query),
+                area.width.saturating_sub(1) as usize
+            )
+        )),
+    ];
+    let state = if palette_state.ready() {
+        "↑/↓ select · Enter opens · Esc closes"
+    } else {
+        "Query edited or matching · Enter computes; later Enter opens"
+    };
+    lines.push(Line::raw(state));
+    if let Some(metadata) = &palette_state.metadata {
+        lines.extend(
+            wrap::wrap_text(&metadata.summary(), area.width)
+                .into_iter()
+                .map(|row| Line::raw(row.text)),
+        );
     }
-    let mut rows = Vec::new();
-    let mut selected_row = 0;
-    for (index, entry) in entries.iter().enumerate() {
-        if index == *selection {
-            selected_row = rows.len();
-        }
-        for row in wrap::wrap_text(&entry.line(index == *selection), body.width.max(1)) {
-            rows.push((index, row.text));
-        }
+    if palette_state.additional > 0 {
+        lines.push(Line::raw(format!(
+            "{} additional matching results omitted; narrow the query",
+            palette_state.additional
+        )));
     }
-    let selected_end = rows
-        .iter()
-        .rposition(|(index, _)| *index == *selection)
-        .map_or(selected_row + 1, |i| i + 1);
-    let top = selected_end
-        .saturating_sub(body.height as usize)
-        .min(selected_row);
-    let mut lines = Vec::new();
-    for (y, (index, text)) in rows.iter().skip(top).take(body.height as usize).enumerate() {
-        pointer_row(
-            shell,
-            Rect::new(body.x, body.y + y as u16, body.width, 1),
-            text,
+    if palette_state.ready() && palette_state.hits.is_empty() {
+        lines.push(Line::raw("No matching actions or documents"));
+    }
+    let held = lines.len();
+    let mut result_rows = Vec::new();
+    let mut starts = Vec::new();
+    let mut targets = Vec::new();
+    for (index, hit) in palette_state.hits.iter().enumerate() {
+        starts.push(result_rows.len());
+        let e = &hit.entry;
+        let disabled = e
+            .action
+            .and_then(|a| menu.iter().find(|m| m.action == a))
+            .and_then(|m| m.disabled.as_ref());
+        let shortcut = e.action.map_or(String::new(), |a| a.binding());
+        let label = if shortcut.is_empty() {
+            e.label.clone()
+        } else {
+            format!("{shortcut} · {}", e.label)
+        };
+        let line = format!(
+            "{} {} · {}{}{}",
+            if index == *selection { "›" } else { " " },
+            e.kind.label(),
+            label,
+            if e.path.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}:{} · {}", e.path, e.line, e.context)
+            },
+            disabled.map_or(String::new(), |r| format!(" — unavailable: {r}"))
+        );
+        let row_start = result_rows.len();
+        result_rows.extend(
+            wrap::wrap_text(&crate::cli::display_escape(&line), area.width)
+                .into_iter()
+                .map(|r| {
+                    Line::styled(
+                        r.text,
+                        if index == *selection {
+                            palette.selected
+                        } else {
+                            Style::new()
+                        },
+                    )
+                }),
+        );
+        targets.extend(std::iter::repeat_n(index, result_rows.len() - row_start));
+    }
+    let available = (area.height as usize).saturating_sub(held);
+    let start = starts.get(*selection).copied().unwrap_or(0);
+    let end = starts
+        .get(selection + 1)
+        .copied()
+        .unwrap_or(result_rows.len());
+    let top = if end > available {
+        end.saturating_sub(available).min(start)
+    } else {
+        0
+    };
+    for (row, index) in targets.iter().skip(top).take(available).enumerate() {
+        shell.record_pointer_target(
+            Rect::new(area.x, area.y + (held + row) as u16, area.width, 1),
             Target::MenuEntry(*index),
         );
-        lines.push(Line::raw(text.clone()));
     }
-    frame.render_widget(Paragraph::new(lines), body);
+    lines.extend(result_rows.into_iter().skip(top).take(available));
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+}
+
+fn draw_saved_reviews(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
+    let Some(Overlay::SavedReviews {
+        selection,
+        inspect,
+        confirm,
+    }) = shell.overlay()
+    else {
+        return;
+    };
+    let mut lines = vec![
+        "Saved reviews · local choices, never approval".to_string(),
+        "Enter resume · i inspect · d discard · PgUp/PgDn read · n fresh · Esc leave".into(),
+    ];
+    if shell.saved_reviews_omitted() {
+        lines.push("Additional saved records may be omitted (bounded enumeration)".into());
+    }
+    for (i, entry) in shell.saved_reviews().iter().enumerate() {
+        if *inspect && i != *selection {
+            continue;
+        }
+        let marker = if i == *selection { "›" } else { " " };
+        match &entry.record {
+            Ok(r) => {
+                let kept = r
+                    .decisions
+                    .iter()
+                    .filter(|c| c.decision == super::changes::Decision::Keep)
+                    .count();
+                lines.push(format!(
+                    "{marker} {} · C {} · updated {} ms UTC · {kept} keep / {} restore · {}",
+                    r.identity.branch,
+                    short(&r.identity.candidate),
+                    r.updated_ms,
+                    r.decisions.len() - kept,
+                    entry.completed.as_ref().map_or_else(
+                        || shell.saved_compatibility(r),
+                        |receipt| format!("Completed review · receipt {}", short(receipt))
+                    )
+                ));
+                if i == *selection && *inspect {
+                    lines.push(format!(
+                        "ID {} · repository {} · adoption {} · B {} · review {} · scope {}",
+                        r.id,
+                        r.identity.repository,
+                        r.identity.adoption,
+                        r.identity.baseline,
+                        r.identity.review,
+                        r.identity.scope
+                    ));
+                    for c in &r.decisions {
+                        lines.push(format!(
+                            "{:?} · {} · {} · {}",
+                            c.decision, c.path, c.heading, c.id
+                        ));
+                    }
+                }
+            }
+            Err(e) => lines.push(format!("{marker} {} · {e}", entry.id)),
+        }
+    }
+    if *confirm {
+        lines.insert(1, "Discard selected saved review? Enter confirms deletion of this draft only; Esc leaves it intact.".into());
+    }
+    let text = lines
+        .iter()
+        .map(|s| crate::cli::display_escape(s))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rows = wrap::wrap_text(&text, area.width);
+    // Keep the selected record reachable even with a long inspection.
+    let top = if *inspect {
+        shell.saved_offset()
+    } else {
+        selection.saturating_sub(area.height.saturating_sub(5) as usize)
+    };
+    frame.render_widget(
+        Paragraph::new(Text::from(
+            rows.iter()
+                .skip(top)
+                .take(area.height as usize)
+                .map(|r| Line::styled(r.text.clone(), palette.dim))
+                .collect::<Vec<_>>(),
+        )),
+        area,
+    );
 }
 
 fn draw_scrolled_text(frame: &mut Frame<'_>, area: Rect, text: &str, offset: usize) {
@@ -862,7 +1080,7 @@ fn draw_context(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: P
         return;
     }
     if let Some(notice) = shell.notice() {
-        frame.render_widget(Paragraph::new(notice.to_string()), area);
+        frame.render_widget(Paragraph::new(crate::cli::display_escape(notice)), area);
         return;
     }
     if let Some(error) = shell.history_notice() {
@@ -1000,9 +1218,9 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
         );
         return;
     }
-    if matches!(shell.overlay(), Some(Overlay::Menu { .. })) && shell.menu_filtering {
+    if matches!(shell.overlay(), Some(Overlay::Menu { .. })) {
         frame.render_widget(
-            Paragraph::new("Filter actions · ↑/↓ select · Enter run · Esc stop filtering"),
+            Paragraph::new("focus action menu · type · ↑/↓ · Enter opens · Esc closes"),
             area,
         );
         return;
@@ -1062,12 +1280,16 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
         "1 Read 2 Changes 3 History"
     };
     let (left, right) = match shell.overlay() {
+        Some(Overlay::SavedReviews { .. }) => (
+            views,
+            "↑/↓ choose · Enter resume/confirm · i inspect · d discard · n fresh · Esc close",
+        ),
         Some(Overlay::Menu { .. }) => (
             views,
             if reduced {
-                "j/k · Enter run · Esc close"
+                "type · ↑/↓ · Enter open · Esc close"
             } else {
-                "j/k choose · / filter · Enter runs · Esc closes"
+                "type query · ↑/↓ select · Enter opens · Esc closes"
             },
         ),
         Some(Overlay::Help) => (
@@ -1160,13 +1382,16 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
     let focus = match shell.focus() {
         Focus::Documents => "document list",
         Focus::Actions => "action menu",
+        Focus::Reference => "reference · read-only",
         Focus::Reading => match shell.view() {
             View::Read => "reading",
             View::Changes => "changes",
             View::History => "history",
         },
     };
-    let right = if shell.focus() == Focus::Documents && shell.overlay().is_none() {
+    let right = if shell.focus() == Focus::Reference {
+        "j/k scroll · s source · / search · d identity · Esc Back to review · : actions"
+    } else if shell.focus() == Focus::Documents && shell.overlay().is_none() {
         "j/k navigate · Enter read · ←/→ fold · [ hide · Tab focus"
     } else if shell.view() == View::Read
         && shell.overlay().is_none()
@@ -1234,7 +1459,7 @@ fn fit_action_hints(hints: &str, width: usize, discovery: bool) -> String {
 fn draw_too_small(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>) {
     let notice = shell
         .notice()
-        .map(|notice| format!("{notice}\n\n"))
+        .map(|notice| format!("{}\n\n", crate::cli::display_escape(notice)))
         .unwrap_or_default();
     let message = format!(
         "{notice}\
@@ -1261,9 +1486,31 @@ fn draw_too_small(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>) {
 /// honest about what it abbreviates.
 pub(crate) fn short(identity: &str) -> String {
     match identity.split_once(':') {
-        Some((scheme, rest)) => format!("{scheme}:{}", &rest[..rest.len().min(7)]),
-        None => identity[..identity.len().min(7)].to_string(),
+        Some((scheme, rest)) => format!("{scheme}:{}", rest.chars().take(7).collect::<String>()),
+        None => identity.chars().take(7).collect(),
     }
+}
+
+fn query_tail(text: &str, cells: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut width = 0;
+    let mut tail = Vec::new();
+    for c in text.chars().rev() {
+        let next = c.width().unwrap_or(0);
+        if width + next > cells.saturating_sub(1) {
+            break;
+        }
+        tail.push(c);
+        width += next;
+    }
+    let clipped = tail.len() < text.chars().count();
+    let mut shown = if clipped {
+        "…".to_string()
+    } else {
+        String::new()
+    };
+    shown.extend(tail.into_iter().rev());
+    shown
 }
 
 /// Fits one path or note to `columns` display characters.

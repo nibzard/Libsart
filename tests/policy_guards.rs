@@ -139,7 +139,7 @@ fn bare_repositories_and_git_directories_block() {
 }
 
 #[test]
-fn linked_worktrees_block_from_both_sides() {
+fn only_the_selected_linked_worktree_blocks() {
     let repo = seeded_repo();
     let linked = repo.root().join("linked");
     repo.git_ok(args(
@@ -147,7 +147,11 @@ fn linked_worktrees_block_from_both_sides() {
         &[&linked],
     ));
 
-    for directory in [repo.path().to_path_buf(), linked] {
+    for directory in [repo.path().to_path_buf(), repo.path().join("content")] {
+        let report = guard(&adapter_at(&repo, &directory), None);
+        assert!(report.ok(), "the main working tree must pass: {report:?}");
+    }
+    for directory in [linked.clone(), linked.join("content")] {
         let report = guard(&adapter_at(&repo, &directory), None);
         assert!(
             carries(&report, &PolicyBlocker::LinkedWorktree),
@@ -155,6 +159,28 @@ fn linked_worktrees_block_from_both_sides() {
             report.blockers
         );
     }
+    // A deleted checkout can leave its registration behind until pruning.
+    fs::remove_dir_all(&linked).unwrap();
+    let report = guard(&adapter_for(&repo), None);
+    assert!(
+        report.ok(),
+        "a stale registration must not block: {report:?}"
+    );
+}
+
+#[test]
+fn separate_git_directory_is_not_a_linked_worktree() {
+    let repo = seeded_repo();
+    let metadata = repo.root().join("separate metadata");
+    repo.git_ok(args(
+        &["init", "--quiet", "--separate-git-dir"],
+        &[&metadata],
+    ));
+    let report = guard(&adapter_for(&repo), None);
+    assert!(
+        report.ok(),
+        "a separate Git directory must pass: {report:?}"
+    );
 }
 
 #[test]

@@ -54,6 +54,7 @@ const NOTICE_CHARS: usize = 200;
 pub struct Watch {
     /// Pinned comparison and visible history commits whose annotations refresh.
     pub notes_commits: Vec<String>,
+    pub reference: Option<super::reference::Descriptor>,
     /// The repository root the paths resolve against.
     pub root: PathBuf,
     /// The displayed document's repository-relative path; `None` when no
@@ -70,6 +71,7 @@ impl Watch {
     pub fn new(root: PathBuf) -> Watch {
         Watch {
             notes_commits: Vec::new(),
+            reference: None,
             root,
             document: None,
             list: WatchList::Unadopted,
@@ -126,6 +128,8 @@ pub struct WatchedDocument {
 /// for it, the outcome of the one shared `inspect_workspace` operation,
 /// and what the watched document and list held (SPEC 13.2, 13.3).
 pub struct InspectionReply {
+    /// Descriptor identity plus bounded source fingerprint, read on the worker.
+    pub reference: Option<(super::reference::Descriptor, Option<String>)>,
     pub notes: Option<Vec<crate::notes::CommitNotes>>,
     /// The generation of the requesting shell state.
     pub generation: u64,
@@ -200,6 +204,23 @@ impl RefreshWorker {
                             candidate,
                         }
                     });
+                    let reference = job.watch.reference.map(|descriptor| {
+                        let fingerprint = super::search::read_text(
+                            &job.watch.root,
+                            &descriptor.path,
+                            shell::READ_VIEW_BYTES as usize,
+                        )
+                        .ok()
+                        .and_then(|(bytes, truncated)| {
+                            super::search::valid_text(&bytes, truncated).and_then(|text| {
+                                operations
+                                    .git()
+                                    .hash_object(shell::prepare_display(text).as_bytes())
+                                    .ok()
+                            })
+                        });
+                        (descriptor, fingerprint)
+                    });
                     let documents = match &job.watch.list {
                         WatchList::Adopted(input) => {
                             crate::app::resolve_scope(operations.git(), input)
@@ -246,6 +267,7 @@ impl RefreshWorker {
                     };
                     if reply_sender
                         .send(InspectionReply {
+                            reference,
                             notes,
                             generation: job.generation,
                             outcome,

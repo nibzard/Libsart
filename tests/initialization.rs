@@ -251,6 +251,9 @@ impl FreshFolder {
             .unwrap_or_else(|error| panic!("cannot create {}: {error}", home.display()));
         let env = IsolatedEnv::new(&home);
         let mut entries: Vec<(&str, &str)> = FOLDER_GLOBAL_CONFIG.to_vec();
+        // Keep the missing-identity fixture deterministic on hosts where
+        // Git can infer an email from the OS account and hostname.
+        entries.push(("user.useConfigOnly", "true"));
         if identity {
             entries.extend([
                 ("user.name", FIXTURE_USER_NAME),

@@ -230,6 +230,36 @@ fn margin(env: &IsolatedEnv, cwd: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn main_tree_initialization_and_checkpoint_allow_another_worktree() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/draft.md", b"original\n");
+    repo.commit_all("import");
+    let linked = repo.root().join("parked worktree");
+    repo.git_ok([
+        OsString::from("worktree"),
+        OsString::from("add"),
+        OsString::from("-b"),
+        OsString::from("parked"),
+        linked.as_os_str().to_owned(),
+    ]);
+    let parked_head = repo.git_ok(["rev-parse", "parked"]);
+    initialize(&repo);
+    repo.write_file("notes/draft.md", b"updated\n");
+    let git = adapter_for(&repo);
+    let result = Operations::new(&git).create_checkpoint(&checkpoint_of(
+        &scope_input(&["notes"], &[], &[".md"]),
+        None,
+    ));
+    assert!(result.ok(), "checkpoint must succeed: {:?}", result.error);
+    assert_eq!(repo.git_ok(["show", "HEAD:notes/draft.md"]), b"updated\n");
+    assert_eq!(repo.git_ok(["rev-parse", "parked"]), parked_head);
+    assert_eq!(
+        fs::read(linked.join("notes/draft.md")).unwrap(),
+        b"original\n"
+    );
+}
+
+#[test]
 fn checkpoints_commit_exactly_the_eligible_changes() {
     let repo = TestRepo::init();
     repo.write_file("notes/edited.md", b"# Edited\n");

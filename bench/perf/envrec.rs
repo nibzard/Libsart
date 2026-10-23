@@ -291,7 +291,20 @@ fn probe_machine_model() -> Option<String> {
 
 /// Total memory in bytes.
 fn probe_ram() -> Option<u64> {
-    let body = read_optional("/proc/meminfo")?;
+    let body = match read_optional("/proc/meminfo") {
+        Some(body) => body,
+        None => {
+            #[cfg(target_os = "macos")]
+            {
+                return command_stdout(&["sysctl", "-n", "hw.memsize"])
+                    .and_then(|s| s.parse().ok());
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                return None;
+            }
+        }
+    };
     let total = proc_field(&body, "MemTotal")?;
     let kilobytes: u64 = total.split_whitespace().next()?.parse().ok()?;
     Some(kilobytes.saturating_mul(1024))
@@ -302,7 +315,38 @@ fn probe_ram() -> Option<u64> {
 /// only costs the storage section of the record.
 fn longest_mount(path: &Path) -> Option<(String, String, String)> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let body = fs::read_to_string("/proc/mounts").ok()?;
+    let body = match fs::read_to_string("/proc/mounts") {
+        Ok(body) => body,
+        Err(_) => {
+            #[cfg(target_os = "macos")]
+            {
+                return command_stdout(&["mount"]).and_then(|body| {
+                    body.lines()
+                        .filter_map(|line| {
+                            let (device, rest) = line.split_once(" on ")?;
+                            let (mount, options) = rest.rsplit_once(" (")?;
+                            canonical.starts_with(Path::new(mount)).then(|| {
+                                (
+                                    device.to_string(),
+                                    mount.to_string(),
+                                    options
+                                        .split(',')
+                                        .next()
+                                        .unwrap_or("")
+                                        .trim_end_matches(')')
+                                        .to_string(),
+                                )
+                            })
+                        })
+                        .max_by_key(|(_, mount, _)| mount.len())
+                });
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                return None;
+            }
+        }
+    };
     let mut best: Option<(usize, String, String, String)> = None;
     for line in body.lines() {
         let mut fields = line.split_whitespace();

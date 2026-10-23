@@ -1699,6 +1699,8 @@ fn dispatch(matches: &ArgMatches) -> Finished {
                 view,
                 color,
                 reduced_updates: sub.get_flag("reduced-updates"),
+                explicit_view: sub.value_source("view")
+                    == Some(clap::parser::ValueSource::CommandLine),
             };
             match crate::tui::launch(&invocation.cwd, &operations, &options) {
                 Ok(()) => Finished {
@@ -3700,7 +3702,10 @@ mod tests {
     fn version_and_help_stay_available_in_text_mode() {
         let finished = execute(argv(&["--version"]));
         assert_eq!(finished.exit, 0);
-        assert_eq!(finished.stdout.unwrap(), "margin 0.1.0\n");
+        assert_eq!(
+            finished.stdout.unwrap(),
+            concat!("margin ", env!("CARGO_PKG_VERSION"), "\n")
+        );
 
         let finished = execute(argv(&["--help"]));
         assert_eq!(finished.exit, 0);

@@ -270,6 +270,8 @@ fn rapid_navigation_loads_only_its_last_target_and_gates_content_actions() {
         margin::tui::Action::Details,
         margin::tui::Action::FinishReview,
         margin::tui::Action::EditDocument,
+        margin::tui::Action::PinDocument,
+        margin::tui::Action::PinVersion,
     ];
     for entry in shell.menu() {
         if gated.contains(&entry.action) {

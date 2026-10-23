@@ -1079,35 +1079,41 @@ fn a_real_terminal_destination_refuses_the_raw_export() {
     repo.commit_all("import");
     let binary = env!("CARGO_BIN_EXE_margin");
 
-    // `script` runs the command with a genuine pseudo-terminal on stdout,
-    // which no standard-library test helper provides.
-    let run_on_terminal = |command: &str| {
-        let mut script = Command::new("script");
-        script
-            .args(["-qec", command, "/dev/null"])
-            .current_dir(repo.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (key, _) in std::env::vars_os() {
-            if support::env::is_scrubbed(&key) {
-                script.env_remove(&key);
-            }
-        }
-        script.envs(repo.env().vars());
-        match script.output() {
-            Ok(output) => Some(output),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => panic!("cannot run script: {error}"),
+    // Use the same real PTY harness as the lifecycle tests. GNU script's
+    // -qec form is not supported by macOS's script utility.
+    let run_on_terminal = |args: &[&str]| {
+        let envs = repo
+            .env()
+            .vars()
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.to_string_lossy().into_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut pty =
+            support::pty::Pty::spawn(Path::new(binary), args, &envs, repo.path(), 100, 24)
+                .expect("a real terminal");
+        let status = pty
+            .wait_exit(std::time::Duration::from_secs(20))
+            .expect("show exits on a terminal");
+        Output {
+            status,
+            stdout: pty.raw_output().to_vec(),
+            stderr: vec![],
         }
     };
-
-    let Some(refusal) = run_on_terminal(&format!(
-        "{binary} show --path notes/a.md --revision HEAD --format raw"
-    )) else {
-        eprintln!("script is unavailable; the terminal decision stays covered by the unit test");
-        return;
-    };
+    let refusal = run_on_terminal(&[
+        "show",
+        "--path",
+        "notes/a.md",
+        "--revision",
+        "HEAD",
+        "--format",
+        "raw",
+    ]);
     assert_eq!(exit_of(&refusal), 2, "a terminal destination refuses");
     let seen = String::from_utf8_lossy(&refusal.stdout);
     assert!(
@@ -1120,15 +1126,20 @@ fn a_real_terminal_destination_refuses_the_raw_export() {
     );
 
     // A view escapes instead of refusing, and one explicit allow exports.
-    let view = run_on_terminal(&format!("{binary} show --path notes/a.md --revision HEAD"))
-        .expect("script ran once already");
+    let view = run_on_terminal(&["show", "--path", "notes/a.md", "--revision", "HEAD"]);
     assert_eq!(exit_of(&view), 0, "a display-escaped view still works");
     assert!(String::from_utf8_lossy(&view.stdout).contains("terminal-protected bytes"));
 
-    let allowed = run_on_terminal(&format!(
-        "{binary} show --path notes/a.md --revision HEAD --format raw --allow-tty"
-    ))
-    .expect("script ran once already");
+    let allowed = run_on_terminal(&[
+        "show",
+        "--path",
+        "notes/a.md",
+        "--revision",
+        "HEAD",
+        "--format",
+        "raw",
+        "--allow-tty",
+    ]);
     assert_eq!(exit_of(&allowed), 0, "an explicit allow exports");
     assert!(String::from_utf8_lossy(&allowed.stdout).contains("terminal-protected bytes"));
 }

@@ -216,7 +216,7 @@ fn scan(root: &Path, paths: &[String], query: &str, cancelled: impl Fn() -> bool
     results
 }
 
-fn valid_text(bytes: &[u8], truncated: bool) -> Option<&str> {
+pub(crate) fn valid_text(bytes: &[u8], truncated: bool) -> Option<&str> {
     let text = match std::str::from_utf8(bytes) {
         Ok(text) => text,
         Err(error) if truncated && error.error_len().is_none() => {
@@ -239,7 +239,7 @@ pub(crate) fn hit_is_current(root: &Path, hit: &SearchHit, query: &str) -> bool 
 }
 
 /// Only listed, repository-relative regular files; do not follow symlinks.
-fn read_text(root: &Path, path: &str, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+pub(crate) fn read_text(root: &Path, path: &str, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
     if crate::domain::parse_document_path(path).is_err() {
         return Err(std::io::ErrorKind::InvalidInput.into());
     }

@@ -54,8 +54,8 @@ mod ffi {
 mod ffi {
     pub const O_NOCTTY: i32 = 0x20000;
     pub const O_RDWR: i32 = 0o2;
-    pub const O_CLOEXEC: i32 = 0o1000000;
-    pub const O_NONBLOCK: i32 = 0o4_0000;
+    pub const O_CLOEXEC: i32 = 0x1000000;
+    pub const O_NONBLOCK: i32 = 0x0004;
     pub const F_GETFL: i32 = 3;
     pub const F_SETFL: i32 = 4;
     pub const TIOCSWINSZ: u64 = 0x8008_7467;
@@ -82,7 +82,7 @@ unsafe extern "C" {
     fn unlockpt(fd: RawFd) -> i32;
     fn ptsname(fd: RawFd) -> *const c_char;
     fn ioctl(fd: RawFd, request: u64, ...) -> i32;
-    fn fcntl(fd: RawFd, command: i32, arg: i32) -> i32;
+    fn fcntl(fd: RawFd, command: i32, ...) -> i32;
     fn poll(fds: *mut PollFd, nfds: ffi::Nfds, timeout: i32) -> i32;
     fn setsid() -> i32;
     fn open(path: *const c_char, flags: i32, ...) -> RawFd;
@@ -482,40 +482,83 @@ unsafe fn set_window(fd: RawFd, columns: u16, rows: u16) {
 /// whitespace runs collapsed, so a wrapped or partially repainted frame
 /// still matches the words it drew.
 pub fn visible(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let mut out = String::with_capacity(text.len());
-    let mut characters = text.chars().peekable();
-    while let Some(character) = characters.next() {
-        if character != '\x1b' {
-            out.push(character);
-            continue;
-        }
-        match characters.next() {
-            // A control sequence: skip to its final byte.
-            Some('[') => {
-                for next in characters.by_ref() {
-                    if next.is_ascii_alphabetic() || next == '~' {
-                        break;
+    collapse(&replayed_screen(&String::from_utf8_lossy(bytes)))
+}
+
+// Reconstruct cell diffs before matching a visible-frame timing predicate.
+fn replayed_screen(text: &str) -> String {
+    let mut cells = vec![vec![' '; 300]; 120];
+    let (mut x, mut y) = (0usize, 0usize);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.next() {
+                Some('[') => {
+                    let mut args = String::new();
+                    let mut op = ' ';
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            op = c;
+                            break;
+                        }
+                        args.push(c);
+                    }
+                    let values: Vec<usize> =
+                        args.split(';').map(|s| s.parse().unwrap_or(0)).collect();
+                    let n = values.first().copied().unwrap_or(0).max(1);
+                    match op {
+                        'H' | 'f' => {
+                            y = n.saturating_sub(1).min(119);
+                            x = values
+                                .get(1)
+                                .copied()
+                                .unwrap_or(1)
+                                .max(1)
+                                .saturating_sub(1)
+                                .min(299);
+                        }
+                        'G' => x = n.saturating_sub(1).min(299),
+                        'd' => y = n.saturating_sub(1).min(119),
+                        'A' => y = y.saturating_sub(n),
+                        'B' => y = (y + n).min(119),
+                        'C' => x = (x + n).min(299),
+                        'D' => x = x.saturating_sub(n),
+                        'J' if args == "2" || args == "3" => {
+                            for row in &mut cells {
+                                row.fill(' ');
+                            }
+                        }
+                        'K' => {
+                            for c in &mut cells[y][x..] {
+                                *c = ' ';
+                            }
+                        }
+                        _ => {}
                     }
                 }
-            }
-            // An operating-system sequence: skip to its terminator.
-            Some(']') => {
-                while let Some(next) = characters.next() {
-                    if next == '\x07' {
-                        break;
-                    }
-                    if next == '\x1b' {
-                        // The string terminator is ESC backslash.
-                        characters.next();
-                        break;
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' {
+                            break;
+                        }
+                        if c == '\x1b' {
+                            chars.next();
+                            break;
+                        }
                     }
                 }
+                _ => {}
             }
-            _ => {}
+        } else if c == '\r' {
+            x = 0;
+        } else if c == '\n' {
+            y = (y + 1).min(119);
+        } else if !c.is_control() {
+            cells[y][x] = c;
+            x = (x + unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).min(299);
         }
     }
-    collapse(&out)
+    cells.iter().flat_map(|r| r.iter()).collect()
 }
 
 /// Removes every whitespace character, so wrapped rows still match.
@@ -534,6 +577,14 @@ mod tests {
         assert_eq!(
             collapse("New edits  arrived.\nRefresh"),
             "Neweditsarrived.Refresh"
+        );
+    }
+
+    #[test]
+    fn incremental_repaints_retain_unchanged_letters() {
+        assert_eq!(
+            visible(b"Finish review\x1b[1;1HF\x1b[1;4Hish review"),
+            "Finishreview"
         );
     }
 
