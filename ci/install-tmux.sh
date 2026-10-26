@@ -82,7 +82,12 @@ fi
 tar -xzf "$work/$file_name" -C "$work"
 (
     cd "$work/tmux-$version"
-    ./configure --prefix="$prefix"
+    # tmux 3.4 makes the utf8proc choice explicit: configure aborts unless
+    # --enable-utf8proc or --disable-utf8proc is given. The Linux CI tiers
+    # run the distro tmux 3.4 (Ubuntu 3.4-1build1), which is built without
+    # utf8proc, so the pinned build disables it too to keep the desk
+    # semantics identical everywhere.
+    ./configure --prefix="$prefix" --disable-utf8proc
     make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
     make install
 )
