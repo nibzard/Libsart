@@ -41,7 +41,24 @@ impl State {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Delivery {
+    pub session: String,
+    pub version: String,
+    pub emitted_at: u64,
+}
+
+pub struct Feedback {
+    pub text: Option<String>,
+    pub entries: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Request {
+    #[serde(default)]
+    pub deliveries: Vec<Delivery>,
+    #[serde(default)]
+    pub delivery_generation: u64,
     pub schema_version: u32,
     pub id: String,
     pub created_at: u64,
@@ -62,6 +79,46 @@ pub struct Request {
     #[serde(default)]
     pub applied_version: Option<Version>,
 }
+impl Request {
+    pub fn delivery_version(&self) -> String {
+        // The generation distinguishes a released claim from its earlier queue entry.
+        format!(
+            "{}:{}:{}:{}:{}:{}",
+            self.base.digest,
+            self.start,
+            self.end,
+            self.delivery_generation,
+            self.state.label(),
+            self.desk.as_deref().unwrap_or("")
+        )
+    }
+    pub fn delivery_status(&self) -> &'static str {
+        if !matches!(self.state, State::Queued | State::Cancelled | State::Undone) {
+            return "not_applicable";
+        }
+        if self
+            .deliveries
+            .iter()
+            .any(|d| d.version == self.delivery_version())
+        {
+            "delivered"
+        } else {
+            "waiting_for_delivery"
+        }
+    }
+    pub fn display_state(&self) -> &'static str {
+        if self.state == State::Queued {
+            if self.delivery_status() == "delivered" {
+                "Delivered; waiting for agent"
+            } else {
+                "Waiting for delivery"
+            }
+        } else {
+            self.state.label()
+        }
+    }
+}
+
 fn invalid(message: &str) -> OperationError {
     OperationError::new("INVALID_ARGUMENT", message)
 }
@@ -105,6 +162,8 @@ impl Operations<'_> {
             return Err(invalid("invalid source span"));
         }
         let request = Request {
+            deliveries: vec![],
+            delivery_generation: 0,
             schema_version: 1,
             id: editing::id(),
             created_at: std::time::SystemTime::now()
@@ -174,10 +233,15 @@ impl Operations<'_> {
         }
         let request: Request =
             serde_json::from_slice(&editing::read(&path, MAX_RECORD)?).map_err(editing::io)?;
-        if request
-            .applied_base
-            .as_ref()
-            .is_some_and(|v| v.text.len() > MAX_SOURCE_BYTES)
+        if request.deliveries.len() > 32
+            || request
+                .deliveries
+                .iter()
+                .any(|d| d.session.is_empty() || d.session.len() > 200 || d.version.len() > 8192)
+            || request
+                .applied_base
+                .as_ref()
+                .is_some_and(|v| v.text.len() > MAX_SOURCE_BYTES)
             || request
                 .applied_version
                 .as_ref()
@@ -638,6 +702,10 @@ impl Operations<'_> {
             ));
         }
         r.state = State::Queued;
+        r.delivery_generation = r
+            .delivery_generation
+            .checked_add(1)
+            .ok_or_else(|| invalid("delivery generation exhausted"))?;
         r.owner = None;
         self.store_edit_request(&r)?;
         Ok(r)
@@ -658,17 +726,119 @@ impl Operations<'_> {
         .map_err(editing::io)
     }
     pub fn edit_request_feedback(&self) -> Result<Option<String>, OperationError> {
+        Ok(self.prepare_request_feedback(None)?.text)
+    }
+
+    /// Select unseen versions before applying batch limits, so later requests progress.
+    pub fn prepare_request_feedback(
+        &self,
+        session: Option<&str>,
+    ) -> Result<Feedback, OperationError> {
         let requests = self.list_edit_requests()?;
-        let decisions: Vec<_>=requests.iter().rev().filter(|r| matches!(r.state,State::Cancelled|State::Undone)).take(2).map(|r|serde_json::json!({"id":r.id,"writer_action":r.state,"path":r.base.path.chars().take(60).collect::<String>()})).collect();
-        let queued: Vec<_> = requests.into_iter().filter(|r| r.state == State::Queued).take(4).map(|r| serde_json::json!({"id": r.id, "path": r.base.path.chars().take(200).collect::<String>(), "instruction": r.instruction.chars().take(80).collect::<String>()})).collect();
+        let desk = std::env::var("MARGIN_DESK_SOCKET").ok();
+        let eligible = |r: &&Request| {
+            (r.desk.is_none() || r.desk == desk)
+                && !session.is_some_and(|session| {
+                    r.deliveries
+                        .iter()
+                        .any(|d| d.session == session && d.version == r.delivery_version())
+                })
+        };
+        let decisions: Vec<_> = requests
+            .iter()
+            .rev()
+            .filter(eligible)
+            .filter(|r| matches!(r.state, State::Cancelled | State::Undone))
+            .take(2)
+            .collect();
+        let queued: Vec<_> = requests
+            .iter()
+            .filter(eligible)
+            .filter(|r| r.state == State::Queued)
+            .take(4)
+            .collect();
+        let entries = queued
+            .iter()
+            .chain(decisions.iter())
+            .map(|r| (r.id.clone(), r.delivery_version()))
+            .collect();
         if queued.is_empty() && decisions.is_empty() {
-            return Ok(None);
+            return Ok(Feedback {
+                text: None,
+                entries,
+            });
         }
-        Ok(Some(format!(
-            "Margin edit requests are waiting (delivery at this turn). Inspect with `margin requests inspect ID --json`, claim with `margin requests claim ID --owner SESSION --json`, then submit a UTF-8 replacement file with `margin requests submit ID --owner SESSION --input FILE --explanation TEXT --json`. Replace only the captured source span. Do not write the document directly. Requests: {}. Recent writer decisions (do not repeat cancelled or undone work): {}",
-            serde_json::to_string(&queued).map_err(editing::io)?,
-            serde_json::to_string(&decisions).map_err(editing::io)?
-        )))
+        let queued_count = requests.iter().filter(|r| r.state == State::Queued).count();
+        let queued: Vec<_> = queued.into_iter().map(|r| serde_json::json!({"id":r.id,"path":r.base.path.chars().take(200).collect::<String>(),"instruction":r.instruction.chars().take(80).collect::<String>()})).collect();
+        let decisions: Vec<_> = decisions.into_iter().map(|r| serde_json::json!({"id":r.id,"writer_action":r.state,"path":r.base.path.chars().take(60).collect::<String>()})).collect();
+        Ok(Feedback {
+            text: Some(format!(
+                "Margin request update ({queued_count} queued in repository). Inspect with `margin requests inspect ID --json`, claim with `margin requests claim ID --owner SESSION --json`, then submit a UTF-8 replacement file with `margin requests submit ID --owner SESSION --input FILE --explanation TEXT --json`. Replace only the captured source span. Do not write the document directly. Requests: {}. Recent writer decisions (do not repeat cancelled or undone work): {}. Use `margin requests list --json` for the complete queue.",
+                serde_json::to_string(&queued).map_err(editing::io)?,
+                serde_json::to_string(&decisions).map_err(editing::io)?
+            )),
+            entries,
+        })
+    }
+
+    /// Explicit recovery for a lost hook response; claims remain untouched.
+    pub fn redeliver_edit_request(
+        &self,
+        id: &str,
+        session: &str,
+    ) -> Result<Request, OperationError> {
+        if session.is_empty() || session.len() > 200 {
+            return Err(invalid("invalid delivery session"));
+        }
+        let _guard = self.acquire_mutation_lock()?;
+        let mut r = self.inspect_edit_request(id)?;
+        let previous = r.deliveries.len();
+        r.deliveries.retain(|d| d.session != session);
+        if previous != r.deliveries.len() {
+            self.store_edit_request(&r)?;
+        }
+        Ok(r)
+    }
+
+    /// Record emitted versions without changing request ownership or lifecycle state.
+    pub fn record_request_delivery(
+        &self,
+        session: &str,
+        entries: &[(String, String)],
+    ) -> Result<(), OperationError> {
+        if session.is_empty() || session.len() > 200 {
+            return Err(invalid("invalid delivery session"));
+        }
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let _guard = self.acquire_mutation_lock()?;
+        for (id, version) in entries {
+            let mut r = self.inspect_edit_request(id)?;
+            if r.deliveries
+                .iter()
+                .any(|d| d.session == session && d.version == *version)
+            {
+                continue;
+            }
+            if r.delivery_version() != *version {
+                continue;
+            }
+            r.deliveries.retain(|d| d.session != session);
+            if r.deliveries.len() >= 32 {
+                r.deliveries.remove(0);
+            }
+            r.deliveries.push(Delivery {
+                session: session.into(),
+                version: version.clone(),
+                emitted_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            });
+            self.store_edit_request(&r)?;
+        }
+        Ok(())
     }
 }
 

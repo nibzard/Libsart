@@ -238,13 +238,20 @@ fn install_creates_the_missing_file_with_one_entry_per_event() {
     let planned = &envelope_of(&dry, "the later dry run")["data"]["planned_config"];
     assert_eq!(&config, planned, "the dry run names the bytes on disk");
 
+    let skill = repo.file_path(".claude/skills/margin/SKILL.md");
+    assert!(
+        std::fs::read_to_string(&skill)
+            .unwrap()
+            .contains("name: margin")
+    );
     // Text mode states both hook and instruction-file effects in one line.
     let text = margin(repo.env(), repo.path(), &["hook", "remove", "claude"]);
     assert_eq!(text.status.code(), Some(0));
     assert_eq!(
         String::from_utf8_lossy(&text.stdout),
-        "margin: remove; 5 hook entries and 2 instruction files changed\n",
+        "margin: remove; 5 hook entries and 3 instruction files changed\n",
     );
+    assert!(!skill.exists());
 }
 
 #[test]

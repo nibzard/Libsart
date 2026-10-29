@@ -4072,7 +4072,7 @@ impl<'a> Shell<'a> {
                     text.push_str(&format!(
                         "\n{} · {} · {}\nPassage: {}\nYou: {}\nAgent: {}\n{}\n",
                         r.base.path,
-                        r.state.label(),
+                        r.display_state(),
                         r.id,
                         passage,
                         r.instruction,
@@ -4243,8 +4243,26 @@ impl<'a> Shell<'a> {
                 )
             })
             .count();
+        let waiting = requests
+            .iter()
+            .filter(|r| {
+                r.desk == desk
+                    && r.state == crate::requests::State::Queued
+                    && r.delivery_status() == "waiting_for_delivery"
+            })
+            .count();
+        let delivered = requests
+            .iter()
+            .filter(|r| {
+                r.desk == desk
+                    && r.state == crate::requests::State::Queued
+                    && r.delivery_status() == "delivered"
+            })
+            .count();
         let status = if pending + attention > 0 {
-            format!("Agent: {pending} pending · {attention} need attention")
+            format!(
+                "Agent: {waiting} waiting for delivery · {delivered} delivered · {pending} pending · {attention} need attention"
+            )
         } else {
             String::new()
         };
@@ -4486,6 +4504,44 @@ impl<'a> Shell<'a> {
         }
         ok
     }
+    /// A read-only snapshot. Source offsets refer to the complete content digest.
+    pub fn agent_context(&self) -> serde_json::Value {
+        use serde_json::json;
+        fn excerpt(text: &str) -> serde_json::Value {
+            let mut end = text.len().min(256);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            json!({"text": &text[..end], "truncated": end < text.len(), "total_bytes": text.len()})
+        }
+        let editor = self.source_editor();
+        let active = editor.map(|e| {
+            let digest = self.operations.git().hash_object(e.text.as_bytes()).ok();
+            json!({"path":e.base.path,"source":"editor","digest":digest,"disk_digest":e.base.digest,
+                "unsaved":e.dirty(),"preview":excerpt(&e.text)})
+        });
+        let active = active.or_else(|| self.document.as_ref().map(|d| {
+            match self.operations.edit_document(&d.path) {
+                Ok(v) => json!({"path":v.path,"source":"working_file","digest":v.digest,"unsaved":false,"preview":excerpt(&v.text)}),
+                Err(e) => json!({"path":d.path,"error":e.message}),
+            }
+        }));
+        let selection = editor.and_then(|e| {
+            let span = e.selection();
+            (!span.is_empty()).then(|| {
+                json!({"start":span.start,"end":span.end,"offset_unit":"utf8_bytes",
+                "preview":excerpt(&e.text[span])})
+            })
+        });
+        let reference = self.reference.as_ref().map(|r| {
+            json!({"descriptor":r.descriptor,
+            "preview":r.text.as_deref().map(excerpt),"unavailable":r.unavailable})
+        });
+        json!({"schema_version":1,"captured_ms":super::session::now_ms(),
+            "workspace":self.root,"view":self.view.label(),"active_document":active,
+            "selection":selection,"reference":reference})
+    }
+
     pub fn source_editor(&self) -> Option<&super::editor::Editor> {
         self.source_editor.as_ref()
     }

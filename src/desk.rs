@@ -10,7 +10,7 @@ use std::{
     },
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -32,6 +32,7 @@ pub struct Request {
 pub enum Control {
     Open { path: String, line: Option<u32> },
     Status,
+    Context,
     Notify,
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -158,6 +159,7 @@ pub struct Pending {
 /// The viewer owns the listener, worker, and socket cleanup.
 pub struct Server {
     pub requests: mpsc::Receiver<Pending>,
+    context: Arc<Mutex<serde_json::Value>>,
     busy: Arc<AtomicBool>,
     notified: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
@@ -165,6 +167,15 @@ pub struct Server {
     path: PathBuf,
 }
 impl Server {
+    pub fn set_context(&self, value: serde_json::Value) {
+        let bytes = serde_json::to_vec(&value).unwrap();
+        *self.context.lock().unwrap() = if bytes.len() as u64 <= LIMIT {
+            value
+        } else {
+            serde_json::json!({"error":"viewer context exceeds the 8 KiB bound"})
+        };
+    }
+
     pub fn take_notification(&self) -> bool {
         self.notified.swap(false, Ordering::AcqRel)
     }
@@ -199,6 +210,8 @@ impl Server {
         let b = busy.clone();
         let notified = Arc::new(AtomicBool::new(false));
         let notification = notified.clone();
+        let context = Arc::new(Mutex::new(serde_json::Value::Null));
+        let published_context = context.clone();
         let thread = thread::spawn(move || {
             while !stopped.load(Ordering::Relaxed) {
                 let Ok((mut stream, _)) = listener.accept() else {
@@ -214,6 +227,11 @@ impl Server {
                     if envelope.schema_version != 1 { return Err(io::Error::other("unsupported desk schema version")); }
                     match envelope.request {
                         Control::Open { path, line } => Ok(Some(Request { path, line })),
+                        Control::Context => {
+                            let value = published_context.lock().unwrap().clone();
+                            stream.write_all(&serde_json::to_vec(&value).unwrap())?;
+                            Ok(None)
+                        }
                         Control::Status | Control::Notify => {
                             let notify = matches!(envelope.request, Control::Notify);
                             if notify { notification.store(true, Ordering::Release); }
@@ -254,6 +272,7 @@ impl Server {
             }
         });
         Ok(Self {
+            context,
             requests,
             busy,
             notified,

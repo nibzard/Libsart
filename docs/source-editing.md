@@ -194,14 +194,89 @@ requests. Requests made outside a desk can be received by a standalone viewer.
 
 Install the existing adapter explicitly with `margin hook install claude`.
 The installer also adds request guidance to its owned instruction block.
+It installs `/margin` at `.claude/skills/margin/SKILL.md`.
+Dry runs include this file. Removal deletes the unchanged skill file.
+An edited skill causes installation or removal to stop before writing.
 It upgrades an unchanged older block and preserves user-edited blocks by
 refusing to replace them. Starting a desk does not install instructions.
 
-The adapter announces queued requests on the next `UserPromptSubmit` event.
+The adapter announces queued requests on `SessionStart` and the next
+`UserPromptSubmit` event. Startup context includes existing owned requests
+and commands for inspecting writing state. This also applies when Claude
+resumes a session or starts after compaction.
+When Claude supplies `session_id`, context gives the concrete claim owner
+`claude-SESSION_ID`. Use this owner for claims and submissions.
+Existing claims remain explicit; startup never releases or transfers them.
 It uses the documented `hookSpecificOutput.additionalContext` field. It does
 not interrupt an active turn or keep Claude running after Stop.
 See the [Claude Code hook reference](https://code.claude.com/docs/en/hooks#userpromptsubmit-decision-control).
 Other agents use the generic commands above.
+
+### Track delivery
+
+Margin records request context emitted by hooks for each Claude `session_id`.
+A delivery receipt identifies the request version, session, and emission time.
+It does not confirm that Claude read the context or claimed the request.
+Claims, application, and review remain separate.
+
+For each session, the adapter sends up to four unseen queued requests and two
+unseen cancellation or undo decisions per hook. Later prompts advance through
+remaining updates. Releasing a claim creates a new delivery generation.
+Moving a request to another desk also makes it eligible for delivery there.
+Desk hooks announce requests for their desk and requests without a desk.
+Hooks without a session identifier retain repeated delivery and write no receipts.
+Writer notes retain their existing feedback behavior.
+
+`margin requests list --json` and `margin context --json` include delivery status
+and receipts. The request panel shows **Waiting for delivery** or
+**Delivered; waiting for agent** for queued requests. The reading status includes
+waiting and delivered counts. Delivered means at least one retained session
+received an offer for the current version. Inspect receipts for a specific session.
+
+If hook output is lost, clear that session's receipt and retry on the next prompt:
+
+```bash
+margin requests redeliver REQUEST_ID --session CLAUDE_SESSION_ID --json
+```
+
+Use the raw session identifier from a delivery receipt. This command preserves
+the owner, request state, source, and result. Repeating it is harmless.
+A blocked prompt records no delivery. Receipt writes use the shared repository lock
+and skip versions that changed after feedback selection. A tracking failure leaves
+context available and reports a diagnostic; later hooks can repeat the update.
+Receipt writes and hook output are separate operations. Interrupted output can
+require explicit redelivery. Concurrent hooks can emit the same update.
+
+Each request retains at most 32 session receipts. A new session replaces the oldest
+receipt at this limit. A session whose receipt was removed can receive the update again.
+Older request records remain readable with empty delivery history.
+
+## Read writing context
+
+Run `margin context --json` from the agent pane to inspect writing context.
+The response includes repository scope, review state, and pending requests.
+Pending requests include identifiers, owners, states, captured digests, and byte spans.
+
+Inside a desk, `viewer` contains the last snapshot published after a terminal draw:
+
+- `captured_ms`: snapshot time in milliseconds since the Unix epoch.
+- `active_document`: path, content digest, source, unsaved state, and preview.
+- `selection`: start and end offsets in UTF-8 bytes, plus a preview.
+- `reference`: the pinned reference descriptor and preview.
+
+The active source is the editor buffer when editing, or the working file otherwise.
+The working file can differ from the saved comparison shown in Changes or History.
+The editor digest covers unsaved text. `disk_digest` identifies its captured base.
+Reference fingerprints identify the pinned content rather than the current file.
+Each preview contains at most 256 bytes and reports truncation and complete byte length.
+Selection offsets refer to the complete active source, including omitted preview text.
+
+Check the snapshot time and content digest before acting on a passage.
+Use edit requests to obtain complete source and apply results with conflict checks.
+The context query does not save text, create requests, or approve changes.
+Without a desk, `viewer` is null. A missing or unavailable desk socket returns an error.
+A viewer from another repository is refused. Repository inspection and viewer capture
+have separate observation times; the response is not an atomic workspace snapshot.
 
 ## Storage and protocol limits
 
@@ -218,7 +293,7 @@ The legacy desk open request remains supported. Versioned control uses:
 {"schema_version":1,"request":{"operation":"status"}}
 ```
 
-Operations are `status`, `notify`, and `open`. An `open` request includes
+Operations are `status`, `notify`, `context`, and `open`. An `open` request includes
 `path` and optional `line` inside `request`. A status response reports the
 schema version and viewer busy state. A notification wakes queue polling;
 it does not acknowledge application. Socket messages retain the 8 KiB bound

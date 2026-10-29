@@ -386,6 +386,9 @@ fn drive(
                 render::draw(shell, frame);
                 Ok::<(), io::Error>(())
             })?;
+            if let Some(server) = &server {
+                server.set_context(shell.agent_context());
+            }
             drawn_once = true;
             redraw_for_input = false;
         }

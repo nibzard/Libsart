@@ -443,6 +443,24 @@ fn generic_agent_cli_and_claude_hook_exchange_requests_without_approving() {
         .unwrap();
     assert!(context.contains(&request.id));
     assert!(context.contains("Keep the example"));
+    for name in ["SessionStart", "UserPromptSubmit"] {
+        let event = serde_json::json!({"hook_event_name":name,"cwd":repo.path(),"session_id":format!("session-{name}")});
+        let hook = margin::integrations::claude::run(
+            &operations,
+            repo.path(),
+            &serde_json::to_vec(&event).unwrap(),
+        );
+        assert_eq!(hook.exit, 0);
+        let response: serde_json::Value =
+            serde_json::from_slice(hook.stdout.as_ref().unwrap()).unwrap();
+        assert_eq!(response["hookSpecificOutput"]["hookEventName"], name);
+        let context = response["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(context.contains(&request.id));
+        assert!(context.contains(&format!("--owner claude-session-{name}")));
+    }
+
     let run = |args: &[&str]| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_margin"));
         cmd.current_dir(repo.path()).args(args);
@@ -472,6 +490,26 @@ fn generic_agent_cli_and_claude_hook_exchange_requests_without_approving() {
         "--json",
     ]);
     assert_eq!(claim["effects"]["integration"], "changed");
+    let redelivery = run(&[
+        "requests",
+        "redeliver",
+        &request.id,
+        "--session",
+        "session-SessionStart",
+        "--json",
+    ]);
+    assert_eq!(redelivery["data"]["owner"], "session");
+    assert_eq!(redelivery["data"]["state"], "claimed");
+    assert_eq!(redelivery["effects"]["integration"], "changed");
+    let repeat_delivery = run(&[
+        "requests",
+        "redeliver",
+        &request.id,
+        "--session",
+        "session-SessionStart",
+        "--json",
+    ]);
+    assert_eq!(repeat_delivery["effects"]["integration"], "unchanged");
     let retried = run(&[
         "requests",
         "claim",
@@ -923,4 +961,347 @@ fn source_clicks_map_wide_graphemes_tabs_and_selection_and_wheel_keeps_cursor() 
     screen(&mut shell, 80, 24);
     assert_eq!(shell.source_editor().unwrap().cursor, cursor);
     assert_eq!(shell.source_editor().unwrap().viewport_top.get(), 3);
+}
+
+#[test]
+fn context_reports_unsaved_selection_and_cli_reads_the_desk_snapshot() {
+    use std::process::Command;
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let operations = Operations::new(&git);
+    let original = repo.read_file("notes/a.md");
+    let head = repo.git_ok(["rev-parse", "HEAD"]);
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    screen(&mut shell, 110, 30);
+    press(&mut shell, KeyCode::Char('e'), KeyModifiers::NONE);
+    shell.handle_event(&Event::Paste("界 unsaved".into()));
+    press(&mut shell, KeyCode::Home, KeyModifiers::CONTROL);
+    press(&mut shell, KeyCode::End, KeyModifiers::SHIFT);
+    let snapshot = shell.agent_context();
+    assert_eq!(snapshot["active_document"]["unsaved"], true);
+    assert_eq!(
+        snapshot["active_document"]["digest"],
+        git.hash_object(shell.source_editor().unwrap().text.as_bytes())
+            .unwrap()
+    );
+    assert_eq!(snapshot["selection"]["start"], 0);
+    assert!(
+        snapshot["selection"]["preview"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("界 unsaved")
+    );
+    assert_eq!(repo.read_file("notes/a.md"), original);
+    let request = operations
+        .create_edit_request(
+            operations.edit_document("notes/a.md").unwrap(),
+            None,
+            "Shorten",
+        )
+        .unwrap();
+    let dir = margin::desk::directory().unwrap();
+    let socket = dir.join("viewer.sock");
+    let server = margin::desk::Server::bind(socket.clone()).unwrap();
+    server.set_context(serde_json::json!({"large":"x".repeat(9000)}));
+    let bounded = margin::desk::control_at(&socket, margin::desk::Control::Context).unwrap();
+    assert!(bounded["error"].is_string());
+    server.set_context(snapshot.clone());
+    let run = |socket: Option<&std::path::Path>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_margin"));
+        command.current_dir(repo.path()).args(["context", "--json"]);
+        for (key, _) in std::env::vars_os() {
+            if support::env::is_scrubbed(&key) {
+                command.env_remove(key);
+            }
+        }
+        command
+            .envs(repo.env().vars())
+            .env_remove("MARGIN_DESK_SOCKET");
+        if let Some(socket) = socket {
+            command.env("MARGIN_DESK_SOCKET", socket);
+        }
+        command.output().unwrap()
+    };
+    let output = run(Some(&socket));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["data"]["viewer"], snapshot);
+    assert_eq!(value["data"]["pending_requests"][0]["id"], request.id);
+    let output = run(None);
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value["data"]["viewer"].is_null());
+    assert!(value["data"]["workspace"]["review"].is_string());
+    assert!(!run(Some(&dir.join("missing.sock"))).status.success());
+    let mut wrong = snapshot.clone();
+    wrong["workspace"] = serde_json::json!(dir);
+    server.set_context(wrong);
+    assert!(!run(Some(&socket)).status.success());
+
+    assert_eq!(repo.read_file("notes/a.md"), original);
+    assert_eq!(repo.git_ok(["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn delivery_is_incremental_per_session_and_release_and_decisions_are_new_versions() {
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let operations = Operations::new(&git);
+    let base = operations.edit_document("notes/a.md").unwrap();
+    let requests: Vec<_> = (0..6)
+        .map(|_| {
+            operations
+                .create_edit_request(base.clone(), None, "Shorten")
+                .unwrap()
+        })
+        .collect();
+    let emit = |session: &str| {
+        let bytes = serde_json::to_vec(&serde_json::json!({"hook_event_name":"UserPromptSubmit","cwd":repo.path(),"session_id":session})).unwrap();
+        let hook = margin::integrations::claude::run(&operations, repo.path(), &bytes);
+        assert_eq!(hook.exit, 0);
+        hook.stdout
+            .map(|bytes| String::from_utf8(bytes).unwrap())
+            .unwrap_or_default()
+    };
+    let first = emit("one");
+    assert_eq!(
+        operations
+            .list_edit_requests()
+            .unwrap()
+            .iter()
+            .filter(|r| r.delivery_status() == "delivered")
+            .count(),
+        4
+    );
+    let second = emit("one");
+    assert!(
+        requests
+            .iter()
+            .all(|r| first.contains(&r.id) || second.contains(&r.id))
+    );
+    assert!(emit("one").is_empty());
+    assert!(!emit("two").is_empty());
+    assert!(
+        operations
+            .list_edit_requests()
+            .unwrap()
+            .iter()
+            .all(|r| r.state == margin::requests::State::Queued && r.owner.is_none())
+    );
+    let id = &requests[0].id;
+    operations.claim_edit_request(id, "claude-one").unwrap();
+    operations.release_edit_request(id, "claude-one").unwrap();
+    assert_eq!(
+        operations
+            .inspect_edit_request(id)
+            .unwrap()
+            .delivery_status(),
+        "waiting_for_delivery"
+    );
+    assert!(emit("one").contains(id));
+    operations.cancel_edit_request(id).unwrap();
+    assert!(emit("one").contains("cancelled"));
+    assert!(emit("one").is_empty());
+    assert_eq!(
+        operations.inspect_edit_request(id).unwrap().state,
+        margin::requests::State::Cancelled
+    );
+    let prepared = operations.prepare_request_feedback(Some("retry")).unwrap();
+    operations
+        .record_request_delivery("retry", &prepared.entries)
+        .unwrap();
+    let before = serde_json::to_value(operations.list_edit_requests().unwrap()).unwrap();
+    operations
+        .record_request_delivery("retry", &prepared.entries)
+        .unwrap();
+    assert_eq!(
+        before,
+        serde_json::to_value(operations.list_edit_requests().unwrap()).unwrap()
+    );
+}
+
+#[test]
+fn blocked_delivery_and_stale_feedback_never_consume_new_versions_or_claims() {
+    use margin::app::InitRequest;
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let operations = Operations::new(&git);
+    let request = operations
+        .create_edit_request(
+            operations.edit_document("notes/a.md").unwrap(),
+            None,
+            "Shorten",
+        )
+        .unwrap();
+    assert!(
+        operations
+            .initialize_scope(&InitRequest {
+                auto_checkpoint: Some(true),
+                ..Default::default()
+            })
+            .ok()
+    );
+    repo.write_file("notes/a.md", b"Staged edit\n");
+    repo.git_ok(["add", "notes/a.md"]);
+    let payload = serde_json::to_vec(&serde_json::json!({"hook_event_name":"UserPromptSubmit","cwd":repo.path(),"session_id":"blocked"})).unwrap();
+    let hook = margin::integrations::claude::run(&operations, repo.path(), &payload);
+    let value: serde_json::Value = serde_json::from_slice(hook.stdout.as_ref().unwrap()).unwrap();
+    assert_eq!(value["decision"], "block");
+    assert!(
+        operations
+            .inspect_edit_request(&request.id)
+            .unwrap()
+            .deliveries
+            .is_empty()
+    );
+    repo.git_ok(["reset", "--mixed", "HEAD"]);
+    let hook = margin::integrations::claude::run(&operations, repo.path(), &payload);
+    assert!(
+        String::from_utf8(hook.stdout.unwrap())
+            .unwrap()
+            .contains(&request.id)
+    );
+    let prepared = operations.prepare_request_feedback(Some("stale")).unwrap();
+    operations.claim_edit_request(&request.id, "owner").unwrap();
+    operations
+        .record_request_delivery("stale", &prepared.entries)
+        .unwrap();
+    assert!(
+        !operations
+            .inspect_edit_request(&request.id)
+            .unwrap()
+            .deliveries
+            .iter()
+            .any(|d| d.session == "stale")
+    );
+    let before = operations.inspect_edit_request(&request.id).unwrap();
+    let retried = operations
+        .redeliver_edit_request(&request.id, "blocked")
+        .unwrap();
+    assert_eq!(retried.state, before.state);
+    assert_eq!(retried.owner, before.owner);
+    let repeat = operations
+        .redeliver_edit_request(&request.id, "blocked")
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(retried).unwrap(),
+        serde_json::to_value(repeat).unwrap()
+    );
+}
+
+#[test]
+fn undo_decisions_are_delivered_once_and_old_records_remain_readable() {
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let operations = Operations::new(&git);
+    let request = operations
+        .create_edit_request(
+            operations.edit_document("notes/a.md").unwrap(),
+            None,
+            "Shorten",
+        )
+        .unwrap();
+    // Requests from earlier versions have no delivery fields.
+    let path = git
+        .git_path("margin-editing/requests")
+        .unwrap()
+        .join(format!("{}.json", request.id));
+    let mut old = serde_json::to_value(&request).unwrap();
+    old.as_object_mut().unwrap().remove("deliveries");
+    old.as_object_mut().unwrap().remove("delivery_generation");
+    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+    assert_eq!(
+        operations
+            .inspect_edit_request(&request.id)
+            .unwrap()
+            .delivery_status(),
+        "waiting_for_delivery"
+    );
+    operations.claim_edit_request(&request.id, "owner").unwrap();
+    operations
+        .submit_edit_result(&request.id, "owner", "Replacement\n", "Shorter")
+        .unwrap();
+    operations.apply_edit_result(&request.id).unwrap();
+    operations.undo_edit_result(&request.id).unwrap();
+    let prepared = operations.prepare_request_feedback(Some("writer")).unwrap();
+    assert!(prepared.text.as_ref().unwrap().contains("undone"));
+    operations
+        .record_request_delivery("writer", &prepared.entries)
+        .unwrap();
+    assert!(
+        operations
+            .prepare_request_feedback(Some("writer"))
+            .unwrap()
+            .text
+            .is_none()
+    );
+    assert!(
+        operations
+            .prepare_request_feedback(Some("other"))
+            .unwrap()
+            .text
+            .is_some()
+    );
+    assert_eq!(
+        operations
+            .inspect_edit_request(&request.id)
+            .unwrap()
+            .owner
+            .as_deref(),
+        Some("owner")
+    );
+}
+
+#[test]
+fn delivery_receipts_are_bounded_and_queue_labels_reflect_emission() {
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let operations = Operations::new(&git);
+    let request = operations
+        .create_edit_request(
+            operations.edit_document("notes/a.md").unwrap(),
+            None,
+            "Shorten",
+        )
+        .unwrap();
+    assert_eq!(request.display_state(), "Waiting for delivery");
+    let entries = vec![(request.id.clone(), request.delivery_version())];
+    for n in 0..33 {
+        operations
+            .record_request_delivery(&format!("session-{n}"), &entries)
+            .unwrap();
+    }
+    let current = operations.inspect_edit_request(&request.id).unwrap();
+    assert_eq!(current.deliveries.len(), 32);
+    assert!(!current.deliveries.iter().any(|d| d.session == "session-0"));
+    assert_eq!(current.display_state(), "Delivered; waiting for agent");
+    assert!(
+        operations
+            .prepare_request_feedback(Some("session-0"))
+            .unwrap()
+            .text
+            .is_some()
+    );
+    assert!(
+        operations
+            .prepare_request_feedback(Some("session-32"))
+            .unwrap()
+            .text
+            .is_none()
+    );
+    let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+    screen(&mut shell, 110, 30);
+    press(&mut shell, KeyCode::Char('B'), KeyModifiers::NONE);
+    assert!(
+        shell
+            .request_panel()
+            .unwrap()
+            .contains("Delivered; waiting for agent")
+    );
+    assert_eq!(current.state, margin::requests::State::Queued);
+    assert!(current.owner.is_none());
 }

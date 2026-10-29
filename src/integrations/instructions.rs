@@ -11,6 +11,8 @@ use crate::app::OperationError;
 
 pub const LEGACY_TEMPLATE: &str = "<!-- margin:notes v1 -->\nAfter you checkpoint a draft, explain each meaningful change with Margin:\n`margin note --group <digest> --text \"<why>\"` — group digests come from\n`margin diff --json`. Writers read these notes beside your edits and\nanswer with their own; `margin notes --json` lists theirs. Native Git\nequivalent: `git notes --ref=margin`; `margin notes --schema` prints\nthe envelope schema. IDs must also be unique within each commit's notes.\n<!-- /margin:notes -->";
 pub const TEMPLATE: &str = "<!-- margin:notes v1 -->\nAfter you checkpoint a draft, explain each meaningful change with Margin:\n`margin note --group <digest> --text \"<why>\"` — group digests come from\n`margin diff --json`. Writers read these notes beside your edits and\nanswer with their own; `margin notes --json` lists theirs. Native Git\nequivalent: `git notes --ref=margin`; `margin notes --schema` prints\nthe envelope schema. IDs must also be unique within each commit's notes.\n\nFor a queued edit request, use `margin requests list --json`, then\n`margin requests inspect ID --json` and `margin requests claim ID --owner SESSION --json`.\nRead the captured source and replace only its start..end byte span.\nWrite the replacement to a temporary UTF-8 file outside the writing scope, then use\n`margin requests submit ID --owner SESSION --input FILE --explanation TEXT --json`.\nMargin applies results after saving pending input and checking the captured passage.\nKeep edits inside the requested span. Respect cancelled and undone requests.\nDo not write the requested document directly. A request never approves edits.\n<!-- /margin:notes -->";
+pub const SKILL_PATH: &str = ".claude/skills/margin/SKILL.md";
+pub const SKILL_TEMPLATE: &str = include_str!("margin-skill.md");
 const MAX_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
@@ -49,14 +51,30 @@ pub fn read(path: &Path) -> Result<Option<Vec<u8>>, OperationError> {
 }
 
 pub fn plan(root: &Path, action: SetupAction) -> Result<Vec<Patch>, OperationError> {
-    ["CLAUDE.md", "AGENTS.md"]
+    ["CLAUDE.md", "AGENTS.md", SKILL_PATH]
         .into_iter()
         .map(|name| {
             let path = root.join(name);
             let expected = read(&path)?;
             let text = std::str::from_utf8(expected.as_deref().unwrap_or_default())
                 .map_err(|_| conflict(&path, "instruction file is not UTF-8"))?;
-            let planned_text = transform(&path, text, action)?;
+            let planned_text = if name == SKILL_PATH {
+                let previous_skill = SKILL_TEMPLATE.replace(
+                    "Use `margin context --json` for writing state, viewer context, and pending requests.\nViewer context is the last published snapshot. Check `captured_ms` before using it.\nSelection offsets count UTF-8 bytes in the active document identified by `digest`.\nPreviews can be truncated. Inspect the request for complete captured source.\nA missing viewer means no desk is attached; do not infer a selection.\nUse `margin requests list --json` for the complete request list.",
+                    "Use `margin status --json` for writing state and `margin requests list --json` for requests.");
+                if !text.is_empty() && text != SKILL_TEMPLATE && text != previous_skill {
+                    return Err(conflict(
+                        &path,
+                        "skill was edited or belongs to another tool",
+                    ));
+                }
+                match action {
+                    SetupAction::Install => SKILL_TEMPLATE.to_string(),
+                    SetupAction::Remove => String::new(),
+                }
+            } else {
+                transform(&path, text, action)?
+            };
             let changed = planned_text.as_bytes() != expected.as_deref().unwrap_or_default();
             Ok(Patch {
                 path,
@@ -128,6 +146,26 @@ fn transform(path: &Path, text: &str, action: SetupAction) -> Result<String, Ope
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn skill_install_remove_and_conflict() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(SKILL_PATH);
+        let patches = plan(root.path(), SetupAction::Install).unwrap();
+        assert_eq!(patches[2].planned_text, SKILL_TEMPLATE);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, SKILL_TEMPLATE).unwrap();
+        assert!(!plan(root.path(), SetupAction::Install).unwrap()[2].changed);
+        assert!(
+            plan(root.path(), SetupAction::Remove).unwrap()[2]
+                .planned_text
+                .is_empty()
+        );
+        fs::write(&path, "User skill").unwrap();
+        assert!(plan(root.path(), SetupAction::Install).is_err());
+        assert!(plan(root.path(), SetupAction::Remove).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "User skill");
+    }
+
     #[test]
     fn reread_refuses_concurrent_edits_and_file_creation() {
         let root = tempfile::tempdir().unwrap();

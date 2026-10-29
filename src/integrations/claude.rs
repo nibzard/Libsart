@@ -49,6 +49,8 @@ pub const SUPPORTED_EVENTS: &[&str] = &[
 /// grows independently of Margin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HookEvent {
+    /// Concrete claim owner supplied by Claude Code, when available.
+    pub session_id: Option<String>,
     /// The upstream event name.
     pub name: String,
     /// The workspace directory the event names (`cwd`).
@@ -151,7 +153,25 @@ pub fn parse_payload(bytes: &[u8]) -> Result<HookEvent, PayloadError> {
         }
         None => false,
     };
+    let session_id = match object.get("session_id") {
+        None => None,
+        Some(Value::String(id))
+            if !id.is_empty()
+                && id.len() <= 190
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)) =>
+        {
+            Some(id.clone())
+        }
+        Some(_) => {
+            return Err(PayloadError::WrongType {
+                field: "session_id",
+            });
+        }
+    };
     Ok(HookEvent {
+        session_id,
         name,
         workspace,
         stop_hook_active,
@@ -416,10 +436,19 @@ pub fn run(operations: &Operations<'_>, workspace_root: &Path, bytes: &[u8]) -> 
             workspace_root.display(),
         ));
     }
-    let feedback = (event.name == "UserPromptSubmit").then(|| {
+    let mut delivery_entries = Vec::new();
+    let feedback = matches!(event.name.as_str(), "UserPromptSubmit" | "SessionStart").then(|| {
         let notes = crate::notes::feedback(operations)?;
-        let requests = operations.edit_request_feedback()?;
-        Ok::<_, OperationError>(match (notes, requests) {
+        let prepared = operations.prepare_request_feedback(event.session_id.as_deref())?;
+        delivery_entries = prepared.entries;
+        let requests = prepared.text;
+        let startup = if event.name == "SessionStart" {
+            let claims: Vec<_> = operations.list_edit_requests()?.into_iter()
+                .filter(|r| r.owner.is_some()).take(8)
+                .map(|r| json!({"id": r.id, "owner": r.owner, "state": r.state})).collect();
+            Some(format!("Margin writing workspace. Run `margin context --json` for scope, review state, and viewer context. Use /margin for request handling. Existing owned requests (up to eight): {}. Inspect before recovery.", serde_json::to_string(&claims).unwrap()))
+        } else { None };
+        let context = match (notes, requests) {
             (Some(notes), Some(requests)) => Some(
                 format!("{requests}\n\n{notes}")
                     .chars()
@@ -427,6 +456,10 @@ pub fn run(operations: &Operations<'_>, workspace_root: &Path, bytes: &[u8]) -> 
                     .collect(),
             ),
             (notes, requests) => notes.or(requests),
+        };
+        Ok::<_, OperationError>(match (startup, context) {
+            (Some(startup), Some(context)) => Some(format!("{startup}\n{context}")),
+            (startup, context) => startup.or(context),
         })
     });
     let mut outcome = translate(operations, &event);
@@ -440,9 +473,19 @@ pub fn run(operations: &Operations<'_>, workspace_root: &Path, bytes: &[u8]) -> 
         match feedback {
             Some(Ok(Some(context))) => {
                 response["hookSpecificOutput"] = json!({
-                    "hookEventName": "UserPromptSubmit", "additionalContext": context,
+                    "hookEventName": event.name, "additionalContext": session_context(&event, context),
                 });
                 outcome.stdout = Some(render(&response));
+                if let Some(session) = &event.session_id {
+                    if let Err(error) =
+                        operations.record_request_delivery(session, &delivery_entries)
+                    {
+                        outcome.stderr = Some(format!(
+                            "margin hook: delivery tracking unavailable: {}\n",
+                            bounded_message(&error.message)
+                        ));
+                    }
+                }
             }
             Some(Err(error)) => {
                 outcome.stderr = Some(format!(
@@ -454,6 +497,17 @@ pub fn run(operations: &Operations<'_>, workspace_root: &Path, bytes: &[u8]) -> 
         }
     }
     outcome
+}
+
+/// Keep session identity out of commits and make request ownership explicit.
+fn session_context(event: &HookEvent, context: String) -> String {
+    match &event.session_id {
+        Some(id) => format!(
+            "Margin claim owner for this Claude session: claude-{id}. Use this exact owner for claims and submissions. Inspect existing claims before recovery; never take another owner's claim.\n{}",
+            context.replace("--owner SESSION", &format!("--owner claude-{id}"))
+        ),
+        None => context,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -626,7 +680,14 @@ fn setup(operations: &Operations<'_>, action: SetupAction, dry_run: bool) -> Set
         }
         for patch in instructions.iter().filter(|p| p.changed) {
             super::instructions::verify(patch)?;
-            write_target(&patch.path, &patch.planned_text)?;
+            if patch.path.ends_with(super::instructions::SKILL_PATH)
+                && patch.planned_text.is_empty()
+            {
+                fs::remove_file(&patch.path)
+                    .map_err(|e| read_failure(&patch.path, &e.to_string()))?;
+            } else {
+                write_target(&patch.path, &patch.planned_text)?;
+            }
             published.push(patch.path.clone());
         }
         Ok(())
@@ -1078,6 +1139,23 @@ mod tests {
     /// One valid payload with every pinned field in place.
     fn stop_payload() -> Vec<u8> {
         br#"{"hook_event_name":"Stop","cwd":"/tmp","stop_hook_active":false}"#.to_vec()
+    }
+
+    #[test]
+    fn session_owner_is_safe_and_concrete() {
+        let event = parse_payload(
+            br#"{"hook_event_name":"SessionStart","cwd":"/tmp","session_id":"abc-123"}"#,
+        )
+        .unwrap();
+        let context = session_context(&event, "claim --owner SESSION".into());
+        assert!(context.contains("--owner claude-abc-123"));
+        for id in ["", "$(touch /tmp/oops)", "a b"] {
+            let bytes = serde_json::to_vec(
+                &json!({"hook_event_name":"Stop", "cwd":"/tmp", "session_id":id}),
+            )
+            .unwrap();
+            assert!(parse_payload(&bytes).is_err());
+        }
     }
 
     #[test]

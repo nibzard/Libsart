@@ -446,6 +446,9 @@ fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("context").about("Inspect writing context and pending requests (query)"),
+        )
+        .subcommand(
             Command::new("status")
                 .about("Report preservation and review state (query)")
                 .arg(
@@ -740,6 +743,12 @@ fn command() -> Command {
                 .about("Exchange durable document edit requests")
                 .subcommand_required(true)
                 .subcommand(Command::new("list").about("List request status (query)"))
+                .subcommand(
+                    Command::new("redeliver")
+                        .about("Retry request delivery to one session (mutation)")
+                        .arg(Arg::new("id").required(true))
+                        .arg(Arg::new("session").long("session").required(true)),
+                )
                 .subcommand(
                     Command::new("inspect")
                         .about("Read a request and its captured source (query)")
@@ -1161,8 +1170,10 @@ fn command_effect(path: &str) -> &'static str {
         | "hook claude" | "note" => "mutation",
         "requests list" | "requests inspect" => "query",
         "requests claim" | "requests submit" | "requests cancel" | "requests resume"
-        | "requests release" | "requests remove" | "requests reconcile" => "mutation",
-        "status" | "diff" | "show" | "log" | "doctor" | "notes" => "query",
+        | "requests release" | "requests remove" | "requests reconcile" | "requests redeliver" => {
+            "mutation"
+        }
+        "context" | "status" | "diff" | "show" | "log" | "doctor" | "notes" => "query",
         "tui" | "edit" | "desk" | "open" => "interactive",
         // A test fails when a new command reaches a caller unnamed here.
         _ => "unknown",
@@ -1452,6 +1463,60 @@ fn dispatch(matches: &ArgMatches) -> Finished {
                 dry_run: sub.get_flag("dry-run"),
             });
             outcome_finished("init", &outcome, project_initialization, invocation.json)
+        }
+        "context" => {
+            let outcome = operations.inspect_workspace(&InspectRequest {
+                scope: None,
+                path_filter: vec![],
+            });
+            if let Some(error) = &outcome.error {
+                return error_finished(Some("context"), error, invocation.json);
+            }
+            let result: Result<Value, OperationError> = (|| {
+                let viewer = match std::env::var_os("MARGIN_DESK_SOCKET") {
+                    Some(path) => crate::desk::control_at(
+                        &PathBuf::from(path),
+                        crate::desk::Control::Context,
+                    )?,
+                    None => Value::Null,
+                };
+                if std::env::var_os("MARGIN_DESK_SOCKET").is_some()
+                    && (viewer.is_null() || viewer.get("error").is_some())
+                {
+                    return Err(OperationError::new(
+                        "OPERATION_UNAVAILABLE",
+                        "desk context is unavailable; retry after the viewer draws",
+                    ));
+                }
+                if let Some(workspace) = viewer.get("workspace").and_then(Value::as_str) {
+                    if std::fs::canonicalize(workspace).ok()
+                        != operations
+                            .git()
+                            .toplevel()
+                            .ok()
+                            .and_then(|p| std::fs::canonicalize(p).ok())
+                    {
+                        return Err(OperationError::new(
+                            "STALE_STATE",
+                            "desk viewer belongs to another workspace",
+                        ));
+                    }
+                }
+                let requests: Vec<_> = operations.list_edit_requests()?.into_iter()
+                    .filter(|r| matches!(r.state, crate::requests::State::Queued | crate::requests::State::Claimed | crate::requests::State::ResultReady | crate::requests::State::Applying | crate::requests::State::Undoing))
+                    .map(|r| json!({"id":r.id,"path":r.base.path,"state":r.state,"owner":r.owner,"desk":r.desk,"base_digest":r.base.digest,"start":r.start,"end":r.end,"delivery_status":r.delivery_status(),"deliveries":r.deliveries})).collect();
+                Ok(
+                    json!({"schema_version":1,"workspace":project_inspection(outcome.data.as_ref().unwrap()),"viewer":viewer,"pending_requests":requests}),
+                )
+            })();
+            match result {
+                Ok(data) => finish_envelope(
+                    &Envelope::success(Some("context"), data),
+                    0,
+                    invocation.json,
+                ),
+                Err(error) => error_finished(Some("context"), &error, invocation.json),
+            }
         }
         "status" => {
             // No `--scope` option exists: the query adopts the stored scope
@@ -1746,9 +1811,10 @@ fn dispatch(matches: &ArgMatches) -> Finished {
             };
             let result: Result<Value, OperationError> = (|| {
                 match operation {
-                    "list" => Ok(Value::Array(operations.list_edit_requests()?.into_iter().map(|r| json!({"id": r.id, "path": r.base.path, "state": r.state, "owner": r.owner, "error": r.error, "desk": r.desk})).collect())),
+                    "list" => Ok(Value::Array(operations.list_edit_requests()?.into_iter().map(|r| json!({"id": r.id, "path": r.base.path, "state": r.state, "owner": r.owner, "error": r.error, "desk": r.desk, "delivery_status": r.delivery_status(), "deliveries": r.deliveries})).collect())),
                     "inspect" => serde_json::to_value(operations.inspect_edit_request(id)?).map_err(crate::editing::io),
                     "claim" => serde_json::to_value(operations.claim_edit_request(id, args.get_one::<String>("owner").unwrap())?).map_err(crate::editing::io),
+                    "redeliver" => serde_json::to_value(operations.redeliver_edit_request(id, args.get_one::<String>("session").unwrap())?).map_err(crate::editing::io),
                     "reconcile" => serde_json::to_value(operations.reconcile_edit_request(id)?).map_err(crate::editing::io),
                     "resume" => serde_json::to_value(operations.resume_edit_request(id)?).map_err(crate::editing::io),
                     "release" => serde_json::to_value(operations.release_edit_request(id, args.get_one::<String>("owner").unwrap())?).map_err(crate::editing::io),
@@ -3428,6 +3494,7 @@ mod tests {
             names,
             [
                 "checkpoint",
+                "context",
                 "desk",
                 "diff",
                 "doctor",
@@ -3445,6 +3512,7 @@ mod tests {
                 "requests inspect",
                 "requests list",
                 "requests reconcile",
+                "requests redeliver",
                 "requests release",
                 "requests remove",
                 "requests resume",

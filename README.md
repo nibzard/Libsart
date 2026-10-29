@@ -184,7 +184,8 @@ margin hook install claude
 The installer adds local hook settings and managed guidance in `CLAUDE.md` and
 `AGENTS.md`. It preserves unrelated settings and refuses to replace edited
 guidance blocks. Starting a desk alone does not install this integration.
-Queued requests reach Claude Code on your next prompt; they do not interrupt
+Queued requests reach Claude Code at startup or on your next prompt. Margin tracks
+delivery per Claude session and shows waiting and delivered counts. Requests do not interrupt
 an active turn. Other agents can use the [request commands](docs/source-editing.md#generic-agent-commands).
 
 Results preserve supported separate edits and pause on conflicts. In the editor,
@@ -208,6 +209,7 @@ Use `--help` on any command for its options and `--json` for structured results.
 | Command | Purpose |
 | --- | --- |
 | `margin status` | Inspect capture and review state |
+| `margin context --json` | Inspect writing context and pending requests |
 | `margin checkpoint --message "Revise the opening"` | Save a draft commit |
 | `margin diff` | Compare the draft with the last valid review baseline |
 | `margin diff --working` | Inspect working changes before checkpointing |
