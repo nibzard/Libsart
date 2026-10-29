@@ -1,0 +1,11 @@
+# Context
+
+## Why This Way
+Merge (not rebase) was chosen to integrate origin/main because local main
+carried 35 commits from the worktree consolidation effort, several of them
+merge commits. Rebasing would have flattened that deliberately built history.
+
+## What Came In
+Single remote commit 2356d71 (fix(ci): pass --disable-utf8proc when building
+the pinned tmux). Clean merge via the ort strategy; only ci/install-tmux.sh
+changed. No conflicts.
