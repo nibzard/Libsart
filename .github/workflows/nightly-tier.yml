@@ -141,13 +141,14 @@ jobs:
           if-no-files-found: ignore
 
   stress:
-    name: Full-scale benchmark corpora
+    name: Full-scale benchmark corpora C1 C2
     runs-on: ubuntu-24.04
-    # C3 builds its 10,000-commit corpus twice; the repaired gate measured
-    # 207 min on a loaded development machine. The budget leaves room for
-    # slower shared runners rather than cutting a reproducibility build
-    # short.
-    timeout-minutes: 420
+    # C1 and C2 together measured about 70 min on shared runners. C3 runs
+    # in its own job because it no longer fits beside them: GitHub
+    # cancels every job at 360 min regardless of timeout-minutes.
+    timeout-minutes: 150
+    env:
+      MARGIN_BENCH_FULL_C3: "0"
     steps:
       - uses: actions/checkout@v4
       - name: Stress corpus gate
@@ -156,7 +157,32 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-stress-failure
+          name: nightly-stress-c1c2-failure
+          path: ci/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  stress-c3:
+    name: Full-scale benchmark corpus C3
+    runs-on: ubuntu-24.04
+    # C3 builds its 10,000-commit corpus twice; it measured 291 min on
+    # 2026-10-28 and has run longer since as shared-runner throughput
+    # drifted. 350 min is the most a job can use: the platform cancels
+    # at 360 min, and the workflow timeout fires first with a clearer
+    # annotation.
+    timeout-minutes: 350
+    env:
+      MARGIN_BENCH_FULL_C1: "0"
+      MARGIN_BENCH_FULL_C2: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stress corpus gate
+        run: ci/run-tier.sh stress nightly
+      - name: Retain the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-stress-c3-failure
           path: ci/artifacts/
           retention-days: 30
           if-no-files-found: ignore
