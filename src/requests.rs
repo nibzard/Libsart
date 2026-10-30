@@ -96,11 +96,8 @@ impl Request {
         if !matches!(self.state, State::Queued | State::Cancelled | State::Undone) {
             return "not_applicable";
         }
-        if self
-            .deliveries
-            .iter()
-            .any(|d| d.version == self.delivery_version())
-        {
+        let version = self.delivery_version();
+        if self.deliveries.iter().any(|d| d.version == version) {
             "delivered"
         } else {
             "waiting_for_delivery"

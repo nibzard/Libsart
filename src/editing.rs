@@ -201,9 +201,16 @@ impl Operations<'_> {
                 "32 recovery records retained; inspect and remove old records before saving",
             ));
         }
-        self.store_recovery_record(&record, &serde_json::to_vec(&serde_json::json!({"schema_version": 1, "base": base, "edited": text, "observed": null})).map_err(io)?)?;
+        let mut recovery = Recovery {
+            schema_version: 1,
+            base: base.clone(),
+            edited: text.into(),
+            observed: None,
+        };
+        self.store_recovery_record(&record, &serde_json::to_vec(&recovery).map_err(io)?)?;
         let observed = self.edit_document(&base.path)?;
-        self.store_recovery_record(&record, &serde_json::to_vec(&serde_json::json!({"schema_version": 1, "base": base, "edited": text, "observed": observed})).map_err(io)?)?;
+        recovery.observed = Some(observed.clone());
+        self.store_recovery_record(&record, &serde_json::to_vec(&recovery).map_err(io)?)?;
         if observed != *base {
             return Err(stale(
                 "disk or scope changed; buffer retained; compare the recovery record before retrying",

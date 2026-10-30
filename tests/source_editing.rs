@@ -126,6 +126,30 @@ fn grapheme_movement_undo_redo_and_crlf_do_not_split_text() {
     assert_eq!(buffer.text, "e\u{301}\r\n界");
 }
 #[test]
+fn disk_refresh_keeps_the_cursor_at_a_grapheme_boundary() {
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let operations = Operations::new(&git);
+    for (text, old_cursor) in [("e\u{301}x", 1), ("👩‍💻x", 4), ("\r\nx", 1)] {
+        repo.write_file("notes/a.md", b"original text");
+        let mut editor =
+            margin::tui::editor::Editor::new(operations.edit_document("notes/a.md").unwrap());
+        editor.place_cursor(old_cursor, false);
+        repo.write_file("notes/a.md", text.as_bytes());
+        editor.accept_disk(operations.edit_document("notes/a.md").unwrap());
+        assert_eq!(editor.cursor, 0, "cursor splits {text:?}");
+        assert!(!editor.dirty());
+        editor.key(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(editor.text, "x");
+        editor.key(&KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(editor.text, text);
+        editor.key(&KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(editor.text, "original text");
+        assert_eq!(editor.cursor, old_cursor);
+    }
+}
+
+#[test]
 fn queue_claim_submission_retry_and_stale_base_are_guarded() {
     let repo = adopted(ObjectFormat::Sha1);
     let git = adapter(&repo);

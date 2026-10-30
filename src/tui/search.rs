@@ -199,7 +199,21 @@ fn scan(root: &Path, paths: &[String], query: &str, cancelled: impl Fn() -> bool
                     results.limited = true;
                     return results;
                 }
-                let start = lower[..offset].chars().count().saturating_sub(40);
+                // Lowercasing can expand a source character (İ becomes i + ◌̇).
+                // Map the match back before choosing its source context.
+                let mut remaining = lower[..offset].chars().count();
+                let column = text
+                    .chars()
+                    .take_while(|ch| {
+                        let length = ch.to_lowercase().count();
+                        if remaining < length {
+                            return false;
+                        }
+                        remaining -= length;
+                        true
+                    })
+                    .count();
+                let start = column.saturating_sub(40);
                 let excerpt: String = text.chars().skip(start).take(160).collect();
                 results.hits.push(SearchHit {
                     path: path.clone(),
@@ -284,6 +298,20 @@ mod tests {
         assert_eq!(results.skipped, 3);
         assert!(!results.limited);
         assert!(hit_is_current(root.path(), &results.hits[0], "[a].* čaj"));
+    }
+
+    #[test]
+    fn excerpt_keeps_the_match_after_expanding_lowercase_characters() {
+        let root = tempfile::tempdir().unwrap();
+        // U+0130 becomes two characters when converted to lowercase.
+        let text = format!("{}TARGET trailing text", "İ".repeat(100));
+        fs::write(root.path().join("one.md"), text).unwrap();
+        let results = scan(root.path(), &["one.md".into()], "target", || false);
+        assert_eq!(results.hits.len(), 1);
+        assert_eq!(
+            results.hits[0].excerpt,
+            format!("…{}TARGET trailing text", "İ".repeat(40))
+        );
     }
 
     #[test]

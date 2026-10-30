@@ -104,11 +104,7 @@ impl Editor {
         }
         self.remember();
         self.text = base.text.clone();
-        self.cursor = self.cursor.min(self.text.len());
-        while !self.text.is_char_boundary(self.cursor) {
-            self.cursor -= 1;
-        }
-        self.anchor = None;
+        self.place_cursor(self.cursor, false);
         self.saved(base);
     }
     pub fn dirty(&self) -> bool {
@@ -165,18 +161,12 @@ impl Editor {
         }
     }
     fn previous(&self) -> usize {
-        if self.text[..self.cursor].ends_with("\r\n") {
-            return self.cursor - 2;
-        }
         self.text[..self.cursor]
             .grapheme_indices(true)
             .next_back()
             .map_or(0, |(i, _)| i)
     }
     fn next(&self) -> usize {
-        if self.text[self.cursor..].starts_with("\r\n") {
-            return self.cursor + 2;
-        }
         self.cursor
             + self.text[self.cursor..]
                 .graphemes(true)
@@ -322,25 +312,16 @@ impl Editor {
                             .nth(target - 1)
                             .map_or(self.text.len(), |(i, _)| i + 1)
                     };
+                    let target_line = self.text[start..]
+                        .split('\n')
+                        .next()
+                        .unwrap_or("")
+                        .trim_end_matches('\r');
                     self.cursor = start
-                        + self.text[start..]
-                            .split('\n')
-                            .next()
-                            .unwrap_or("")
-                            .trim_end_matches('\r')
+                        + target_line
                             .grapheme_indices(true)
                             .nth(column)
-                            .map_or_else(
-                                || {
-                                    self.text[start..]
-                                        .split('\n')
-                                        .next()
-                                        .unwrap_or("")
-                                        .trim_end_matches('\r')
-                                        .len()
-                                },
-                                |(i, _)| i,
-                            );
+                            .map_or(target_line.len(), |(i, _)| i);
                 }
             }
         } else {

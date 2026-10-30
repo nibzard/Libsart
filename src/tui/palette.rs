@@ -170,13 +170,14 @@ pub fn matching(query: &str, entries: impl IntoIterator<Item = Entry>) -> (Vec<H
             }
             continue;
         }
-        let label = score(&entry.label, &needle);
-        let context = score(
-            &format!("{} {} {}", entry.label, entry.path, entry.context),
-            &needle,
-        )
-        .map(|(r, _)| (r + 4, vec![]));
-        if let Some((rank, spans)) = label.or(context) {
+        let matched = score(&entry.label, &needle).or_else(|| {
+            score(
+                &format!("{} {} {}", entry.label, entry.path, entry.context),
+                &needle,
+            )
+            .map(|(r, _)| (r + 4, vec![]))
+        });
+        if let Some((rank, spans)) = matched {
             hits.push(Hit { entry, rank, spans });
         }
     }
