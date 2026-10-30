@@ -24,8 +24,7 @@ const LIMIT: u64 = 8192;
 /// shared machines; the client's own five-second cap bounds it in turn.
 const WAIT: Duration = Duration::from_secs(4);
 /// The reply when the viewer's own loop does not answer within `WAIT`.
-const UNANSWERED: &str =
-    "viewer busy or unresponsive; retry after closing the editor or dialog";
+const UNANSWERED: &str = "viewer busy or unresponsive; retry after closing the editor or dialog";
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Navigation only: no repository mutation or terminal selection.
@@ -271,7 +270,10 @@ impl Server {
                                 error: Some("viewer busy".into()),
                             }
                         } else {
-                            rx.recv_timeout(WAIT).unwrap_or(Reply { displayed: false, error: Some(UNANSWERED.into()) })
+                            rx.recv_timeout(WAIT).unwrap_or(Reply {
+                                displayed: false,
+                                error: Some(UNANSWERED.into()),
+                            })
                         }
                     }
                 };
