@@ -1488,19 +1488,18 @@ fn dispatch(matches: &ArgMatches) -> Finished {
                         "desk context is unavailable; retry after the viewer draws",
                     ));
                 }
-                if let Some(workspace) = viewer.get("workspace").and_then(Value::as_str) {
-                    if std::fs::canonicalize(workspace).ok()
+                if let Some(workspace) = viewer.get("workspace").and_then(Value::as_str)
+                    && std::fs::canonicalize(workspace).ok()
                         != operations
                             .git()
                             .toplevel()
                             .ok()
                             .and_then(|p| std::fs::canonicalize(p).ok())
-                    {
-                        return Err(OperationError::new(
-                            "STALE_STATE",
-                            "desk viewer belongs to another workspace",
-                        ));
-                    }
+                {
+                    return Err(OperationError::new(
+                        "STALE_STATE",
+                        "desk viewer belongs to another workspace",
+                    ));
                 }
                 let requests: Vec<_> = operations.list_edit_requests()?.into_iter()
                     .filter(|r| matches!(r.state, crate::requests::State::Queued | crate::requests::State::Claimed | crate::requests::State::ResultReady | crate::requests::State::Applying | crate::requests::State::Undoing))

@@ -169,7 +169,7 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     shell.handle_event(&key(KeyCode::Char(':')));
     let page = draw(&mut shell, 110, 130);
     let screen = joined(&page);
-    assert!(screen.contains("Action menu"), "the menu opens with :");
+    assert!(screen.contains("Command palette"), "the menu opens with :");
     // Every action of the contract is listed with its binding.
     for action in Action::ALL.into_iter().filter(|action| action.executable()) {
         assert!(
@@ -206,7 +206,7 @@ fn the_action_menu_lists_every_action_with_bindings_and_disabled_reasons() {
     shell.handle_event(&key(KeyCode::Esc));
     let page = draw(&mut shell, 110, 130);
     let screen = joined(&page);
-    assert!(!screen.contains("Action menu"));
+    assert!(!screen.contains("Command palette"));
     assert!(screen.contains("Palette closed; nothing ran"));
 }
 
@@ -302,7 +302,7 @@ fn focus_cycles_three_stops_both_ways_and_shows_itself() {
     shell.handle_event(&key(KeyCode::Char(':')));
     assert_eq!(shell.focus(), margin::tui::Focus::Actions);
     let page = draw(&mut shell, 110, 30);
-    assert!(joined(&page).contains("focus action menu"));
+    assert!(joined(&page).contains("Command palette"));
     // The searchable palette owns input focus until it closes.
     shell.handle_event(&key(KeyCode::Tab));
     shell.handle_event(&key(KeyCode::BackTab));
@@ -340,7 +340,7 @@ fn text_entry_takes_precedence_over_the_keymap() {
         "the typed text lands in the field: {screen}",
     );
     assert_eq!(shell.view(), View::Changes, "no view key ran");
-    assert!(!screen.contains("Action menu"), "the menu key was text");
+    assert!(!screen.contains("Command palette"), "the menu key was text");
     assert!(
         shell
             .changes()
@@ -798,7 +798,7 @@ fn help_lists_the_keys_and_the_current_blockers() {
     assert!(screen.contains("Margin keys"));
     assert!(screen.contains("Tab / Shift-Tab · Cycle focus"));
     assert!(screen.contains("PgUp / PgDn · Page"));
-    assert!(screen.contains(": · Action menu"));
+    assert!(screen.contains(": · Command palette"));
     assert!(screen.contains("/ · Search within current view"));
     assert!(screen.contains("Ctrl+F · Search all documents"));
     assert!(screen.contains("Current blockers"));
@@ -898,7 +898,7 @@ fn color_off_renders_every_state_in_words_and_symbols() {
         .expect("a test backend never fails to draw");
     let screen = joined(&page_of(terminal.backend().buffer()));
     assert!(
-        screen.contains("Unsaved draft") || screen.contains("Saved"),
+        screen.contains("Not checkpointed") || screen.contains("Checkpointed"),
         "the saved state stays a word under color-off",
     );
 }

@@ -145,14 +145,55 @@ pub fn draw(shell: &mut Shell<'_>, frame: &mut Frame<'_>) {
     }
     if shell.overlay() == Some(&Overlay::Help) {
         draw_help(frame, geometry.reading, shell, palette);
-    } else if let Some(panel) = shell.request_panel() {
+    } else if matches!(shell.overlay(), Some(Overlay::Menu { .. })) {
+        draw_menu(frame, geometry.reading, shell, palette);
+    } else if let Some(panel) = shell.setup_preview() {
         draw_scrolled_text(frame, geometry.reading, panel, shell.request_scroll);
+    } else if let Some(panel) = shell.request_panel() {
+        let area = geometry.reading;
+        let body = Rect {
+            y: area.y + 2,
+            height: area.height.saturating_sub(2),
+            ..area
+        };
+        draw_scrolled_text(
+            frame,
+            body,
+            &panel.lines().skip(2).collect::<Vec<_>>().join("\n"),
+            shell.request_scroll,
+        );
+        frame.render_widget(
+            Paragraph::new("Requests · Tab next · arrows scroll · o other desks"),
+            Rect { height: 1, ..area },
+        );
+        let mut x = area.x;
+        for (label, key) in [
+            (" Prev ", crossterm::event::KeyCode::BackTab),
+            (" Next ", crossterm::event::KeyCode::Tab),
+            (" Open ", crossterm::event::KeyCode::Enter),
+            (" Cancel ", crossterm::event::KeyCode::Char('c')),
+            (" Retry delivery ", crossterm::event::KeyCode::Char('r')),
+            (" Details ", crossterm::event::KeyCode::Char('d')),
+            (" Close ", crossterm::event::KeyCode::Esc),
+        ] {
+            let button = Rect::new(
+                x,
+                area.y + 1,
+                (label.len() as u16).min(area.right().saturating_sub(x)),
+                1,
+            );
+            frame.render_widget(Paragraph::new(label).style(palette.bold), button);
+            shell.record_pointer_target(button, Target::RequestAction(key));
+            x += label.len() as u16;
+        }
     } else if let Some((path, prompt)) = shell.agent_prompt() {
         frame.render_widget(
             Paragraph::new(format!(
-                "Ask agent: {path}\nEnter queues · Esc cancels\n\n{}",
+                "Ask agent: {path}\n{}\n\nInstruction\n{}\n\nEnter queues · Esc cancels",
+                crate::cli::display_escape(&shell.request_scope_summary().unwrap_or_default()),
                 crate::cli::display_escape(prompt)
-            )),
+            ))
+            .wrap(widgets::Wrap { trim: false }),
             geometry.reading,
         );
     } else if let Some(editor) = shell.source_editor() {
@@ -260,6 +301,29 @@ fn draw_tabs(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pale
             },
         ));
     }
+    let label = " Commands Ctrl+P ";
+    shell.record_pointer_target(
+        Rect::new(
+            column,
+            area.y,
+            (label.len() as u16).min(area.right().saturating_sub(column)),
+            area.height,
+        ),
+        Target::CommandPalette,
+    );
+    spans.push(Span::styled(label, palette.dim));
+    column = column.saturating_add(label.len() as u16);
+    let label = shell.request_label();
+    shell.record_pointer_target(
+        Rect::new(
+            column,
+            area.y,
+            (label.len() as u16).min(area.right().saturating_sub(column)),
+            area.height,
+        ),
+        Target::Requests,
+    );
+    spans.push(Span::styled(label, palette.dim));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -701,7 +765,7 @@ fn draw_menu(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pale
     let palette_state = shell.palette();
     let menu = shell.menu();
     let mut lines = vec![
-        Line::styled("Find anything · Action menu", palette.heading),
+        Line::styled("Command palette · Ctrl+P", palette.heading),
         Line::raw(format!(
             "{}▏",
             query_tail(
@@ -710,6 +774,21 @@ fn draw_menu(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pale
             )
         )),
     ];
+    if let Some(editor) = shell.source_editor() {
+        let selection = editor.selection();
+        lines.push(Line::raw(format!(
+            "{} · {}",
+            editor.base.path,
+            if selection.is_empty() {
+                "Whole document".into()
+            } else {
+                format!(
+                    "Selection: {} characters",
+                    editor.text[selection].chars().count()
+                )
+            }
+        )));
+    }
     let state = if palette_state.ready() {
         "↑/↓ select · Enter opens · Esc closes"
     } else {
@@ -743,7 +822,18 @@ fn draw_menu(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pale
             .action
             .and_then(|a| menu.iter().find(|m| m.action == a))
             .and_then(|m| m.disabled.as_ref());
-        let shortcut = e.action.map_or(String::new(), |a| a.binding());
+        let shortcut = e.action.map_or(String::new(), |a| {
+            if shell.source_editor().is_some() {
+                match a {
+                    super::actions::Action::AskAgent => return "F2".into(),
+                    super::actions::Action::UndoAgentEdit => return "Ctrl+U".into(),
+                    super::actions::Action::UseAgentProposal => return "F3".into(),
+                    super::actions::Action::KeepWriterText => return "F4".into(),
+                    _ => {}
+                }
+            }
+            a.binding()
+        });
         let label = if shortcut.is_empty() {
             e.label.clone()
         } else {
@@ -1076,15 +1166,28 @@ fn draw_workspace_search(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, p
 /// it.
 fn draw_context(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Palette) {
     if let Some(error) = shell.autosave_notice() {
-        frame.render_widget(Paragraph::new(error).style(palette.warning), area);
-        return;
-    }
-    if let Some(notice) = shell.notice() {
-        frame.render_widget(Paragraph::new(crate::cli::display_escape(notice)), area);
+        frame.render_widget(
+            Paragraph::new(error)
+                .style(palette.warning)
+                .wrap(widgets::Wrap { trim: false }),
+            area,
+        );
         return;
     }
     if let Some(error) = shell.history_notice() {
-        frame.render_widget(Paragraph::new(error).style(palette.warning), area);
+        frame.render_widget(
+            Paragraph::new(error)
+                .style(palette.warning)
+                .wrap(widgets::Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    if let Some(notice) = shell.notice() {
+        frame.render_widget(
+            Paragraph::new(crate::cli::display_escape(notice)).wrap(widgets::Wrap { trim: false }),
+            area,
+        );
         return;
     }
     if let Some(activity) = shell.source_editor().and_then(|e| e.activity.as_ref()) {
@@ -1220,7 +1323,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
     }
     if matches!(shell.overlay(), Some(Overlay::Menu { .. })) {
         frame.render_widget(
-            Paragraph::new("focus action menu · type · ↑/↓ · Enter opens · Esc closes"),
+            Paragraph::new("Command palette · type · ↑/↓ · Enter opens · Esc closes"),
             area,
         );
         return;
@@ -1234,7 +1337,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, shell: &Shell<'_>, palette: Pa
     }
     if shell.request_panel().is_some() {
         frame.render_widget(
-            Paragraph::new("↑/↓ PgUp/PgDn scroll · Esc Close requests · q Quit"),
+            Paragraph::new("Tab select · ↑/↓ scroll · o other desks · Esc close · q quit"),
             area,
         );
         return;
@@ -1544,10 +1647,18 @@ fn draw_source_editor(
             } else if editor.dirty() {
                 "Saving…"
             } else {
-                "Saved"
+                "Saved to file"
             },
             crate::cli::display_escape(&editor.base.path)
         )
+    };
+    let title = if !editor.selection().is_empty() {
+        format!(
+            "{title} · {} selected · F2 Ask agent",
+            editor.text[editor.selection()].chars().count()
+        )
+    } else {
+        title
     };
     let title = if let Some(activity) = &editor.activity {
         format!("{title} · {activity}")

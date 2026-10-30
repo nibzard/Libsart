@@ -765,7 +765,7 @@ fn palette_typing_and_paste_own_the_real_terminal_input_focus() {
     let mut pty = spawn_tui(&repo, &[], 120, 32);
     drew_first_frame(&mut pty);
     pty.send_key(b":");
-    assert!(pty.wait_for("Find anything", LIMIT));
+    assert!(pty.wait_for("Command palette", LIMIT));
     pty.send_key(b"jkqrs:?");
     pty.send_key(b"\t\x1b[Z");
     pty.send_key(b"\x1b[200~q:r?s\x1b[201~");

@@ -244,6 +244,27 @@ impl RestorePreview {
 
     /// The lines of the preview page: both sides of the comparison, the
     /// proved intended result, and the action that answers it (SPEC 5.5).
+    pub fn display_lines(&self, details: bool) -> Vec<ComposedLine> {
+        let mut lines = self.lines();
+        if !details {
+            lines.retain(|line| {
+                !line.text.starts_with("From ")
+                    && !line.text.starts_with("Against the current candidate ")
+                    && !line.text.contains("Unix ")
+                    && !line.text.starts_with("Result tree ")
+            });
+            lines.insert(
+                1,
+                ComposedLine::meta(format!("From {} · {}", self.kind, self.subject)),
+            );
+        }
+        lines.insert(
+            lines.len().saturating_sub(1),
+            ComposedLine::meta("d  Show / hide technical details"),
+        );
+        lines
+    }
+
     pub fn lines(&self) -> Vec<ComposedLine> {
         let mut lines = Vec::new();
         lines.push(ComposedLine::heading(format!(
@@ -280,6 +301,9 @@ impl RestorePreview {
                 "Enter  Restore this document from the selected revision",
             ));
         }
+        lines.push(ComposedLine::meta(
+            "Restoration creates a new saved version of this document. It still needs review.",
+        ));
         lines.push(ComposedLine::meta("Esc  Cancel; nothing is applied"));
         lines
     }
@@ -759,7 +783,7 @@ impl HistoryView {
     /// as long as it stands (SPEC 5.5).
     fn compose(&mut self, width: u16) {
         if let Some(preview) = &self.preview {
-            self.display = wrap::wrap_rows(&preview.lines(), width);
+            self.display = wrap::wrap_rows(&preview.display_lines(self.details), width);
             self.starts = Vec::new();
             return;
         }
@@ -868,11 +892,7 @@ impl HistoryView {
         } else {
             String::new()
         };
-        let text = format!(
-            "{marker}{when}  {}  {}{passes}",
-            render::short(&row.commit),
-            row.subject,
-        );
+        let text = format!("{marker}{when}  {}{passes}", row.subject);
         if index == self.selection {
             ComposedLine::emphasis(text)
         } else {

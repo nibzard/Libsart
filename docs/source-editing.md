@@ -2,7 +2,7 @@
 
 Open an adopted Markdown document with `margin PATH` or `margin tui`.
 Press `e` or click a passage to edit its current source in the document pane.
-Margin saves after 750 milliseconds without input. **Saving**, **Saved**, and
+Margin saves after 750 milliseconds without input. **Saving**, **Saved to file**, and
 **Autosave paused** show the current state.
 
 Editing requires an eligible, writable UTF-8 file in the adopted writing scope.
@@ -20,6 +20,8 @@ Linked worktrees remain inspection-only under the existing repository policy.
 | Shift with movement | Select source |
 | `Ctrl+Left` / `Ctrl+Right` | Move by Unicode word |
 | `Ctrl+Home` / `Ctrl+End` | Move to the document boundaries |
+| `Ctrl+P` | Find commands without changing text or selection |
+| Left-button drag | Select source; move beyond the edge to scroll |
 | Click / Shift-click | Place the source cursor / extend selection |
 | Wheel | Scroll source without moving the cursor |
 | `Ctrl+A` | Select all source |
@@ -308,3 +310,40 @@ The editor title shows **EDITING**, followed by the save state and path.
 The footer keeps the primary controls visible at supported terminal widths.
 The request panel (`B` in reading) supports arrows, Page Up/Down, and Home/End.
 The Read context row reports pending requests and requests that need attention.
+
+## Find commands and track requests
+
+Click **Commands** or press `Ctrl+P` from any primary view or the editor.
+Type an action, document, heading, or request identifier. `Esc` returns to
+where you started. A colon still inserts `:` while editing.
+The palette shows shortcuts, disabled reasons, and the selected scope.
+
+The request composer labels **Selected passage** or **Whole document**.
+It shows the character count and a bounded source preview. `F2` saves the
+selected source before opening this composer. `Enter` queues the instruction.
+
+Click **Requests** or find **Agent requests** in the palette. Requests show
+waiting, working, attention, and finished states. `Tab` selects the next
+request; `Shift+Tab` selects the previous request. `Enter` opens its document
+and comparison when needed. Use `c` to cancel, `r` to retry the last delivery,
+and `d` for details. Retry does not change ownership or restart a claim.
+Use `o` to include other desks. A delivery receipt confirms emission only.
+
+Drag selection works inside the source editor. Release the mouse to stop.
+Shift-click and Shift+arrows remain available. To copy terminal text instead,
+use your terminal's mouse-capture bypass, commonly Shift-drag. In tmux, enable
+mouse forwarding with `set -g mouse on`. Terminal shortcuts can vary.
+
+## Set up a project
+
+In an existing Git repository, press `e` before initialization to preview the
+Markdown writing scope. `Enter` initializes it; `Esc` leaves it unchanged.
+The command palette also offers **Set up writing scope**.
+**Install Claude integration** separately previews managed settings and
+instruction files before `Enter` installs them.
+
+**Saved to file** describes disk content. **Not checkpointed** describes
+history capture. **Needs review** describes undecided changes. These are
+separate states. Finish review covers the entire writing scope. Its preview
+shows counts and unseen passages. Use `d` for technical details.
+Restoring a historical document creates a saved version that needs review.

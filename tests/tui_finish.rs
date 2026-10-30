@@ -191,15 +191,21 @@ fn the_summary_states_the_entire_scope_and_requires_explicit_intent() {
         "the unvisited scope stays stated",
     );
     assert!(screen.contains("Finishing keeps every passage you did not restore, opened or not."),);
-    assert!(screen.contains("B "), "the pinned pair shows");
-    assert!(screen.contains(" · review "));
+    assert!(
+        !screen.contains(" · review "),
+        "technical identifiers stay in Details"
+    );
     assert!(
         screen.contains("Intended result, proved by one read-only preview:"),
         "the result half of the summary",
     );
     assert!(screen.contains("2 of 3 passage groups kept · 1 restored"));
     assert!(screen.contains("Files rewritten: notes/a.md"));
-    assert!(screen.contains("Result tree "));
+    assert!(!screen.contains("Result tree "));
+    shell.handle_event(&key(KeyCode::Char('d')));
+    let details = joined(&draw(&mut shell, 110, 40));
+    assert!(details.contains("Result tree "));
+    assert!(details.contains(" · review "));
     assert!(
         screen.contains("Enter  Keep remaining changes and finish"),
         "the labeled action carries the SPEC 5.2 wording",

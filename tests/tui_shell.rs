@@ -191,7 +191,7 @@ fn before_adoption_opens_read_only_with_discovery_and_a_setup_action() {
     );
     assert!(screen.contains("A first draft."), "the working text reads");
     assert!(
-        screen.contains("Unsaved draft"),
+        screen.contains("Not checkpointed"),
         "nothing is captured before adoption"
     );
     assert!(
@@ -278,7 +278,7 @@ fn a_plain_folder_without_a_repository_still_opens_read_only() {
     );
     assert!(screen.contains("drafts/essay.md"));
     assert!(screen.contains("Opening lines."), "the working text reads");
-    assert!(screen.contains("Unsaved draft"));
+    assert!(screen.contains("Not checkpointed"));
     assert!(
         screen.contains("margin init --scope drafts/"),
         "the setup action"
@@ -308,10 +308,10 @@ fn the_read_view_shows_the_document_with_saved_and_review_state() {
     assert!(screen.contains("# One"));
     assert!(screen.contains("First passage, edited twice."));
     // The saved state of this document, in words (SPEC 5.4, 11.4).
-    assert!(screen.contains("Unsaved draft"));
+    assert!(screen.contains("Not checkpointed"));
     // The whole-scope states (SPEC 4.2, 5.2).
     assert!(
-        screen.contains("1 unsaved document"),
+        screen.contains("1 document not checkpointed"),
         "the preservation state"
     );
     assert!(
@@ -329,8 +329,11 @@ fn the_read_view_shows_the_document_with_saved_and_review_state() {
     let page = draw(&mut shell, 110, 30);
     let screen = joined(&page);
     assert!(screen.contains("notes/b.md"));
-    assert!(screen.contains("Saved"), "an unchanged document is saved");
-    assert!(!screen.contains("Unsaved draft"));
+    assert!(
+        screen.contains("Checkpointed"),
+        "an unchanged document is saved"
+    );
+    assert!(!screen.contains("Not checkpointed"));
 }
 
 #[test]
@@ -427,7 +430,7 @@ fn unusual_content_states_label_themselves_honestly() {
         screen.contains("not valid UTF-8"),
         "the content states itself"
     );
-    assert!(screen.contains("Save state unknown"));
+    assert!(screen.contains("Checkpoint state unknown"));
 
     // A deleted working file stays distinct from an empty one: the saved
     // candidate still reads, with the deletion stated (SPEC 5.5).

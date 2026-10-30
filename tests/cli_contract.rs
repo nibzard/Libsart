@@ -166,6 +166,7 @@ fn help_json_lists_the_specified_command_inventory() {
         names,
         [
             "checkpoint",
+            "context",
             "desk",
             "diff",
             "doctor",
@@ -183,6 +184,7 @@ fn help_json_lists_the_specified_command_inventory() {
             "requests inspect",
             "requests list",
             "requests reconcile",
+            "requests redeliver",
             "requests release",
             "requests remove",
             "requests resume",

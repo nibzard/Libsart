@@ -453,6 +453,10 @@ fn drive(
         }
         if event::poll(wait)? {
             let event = event::read()?;
+            if shell.accepts_source_drag(&event) {
+                shell.handle_event(&event);
+                continue;
+            }
             if let Some(inspect) = dispatch_input(&event, || shell.handle_event(&event)) {
                 redraw_for_input = true;
                 if inspect && let Some(worker) = worker.as_mut() {

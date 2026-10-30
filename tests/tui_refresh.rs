@@ -491,7 +491,7 @@ fn refresh_preserves_the_reading_anchor_and_position() {
         "the reading position restored from the anchor"
     );
     assert!(
-        screen.contains("Unsaved draft"),
+        screen.contains("Not checkpointed"),
         "the reloaded document states its new save state"
     );
 }
@@ -626,7 +626,7 @@ fn polling_reloads_the_displayed_document_without_a_key_press() {
         "the displayed document shows the new bytes: {screen}"
     );
     assert!(
-        screen.contains("Unsaved draft"),
+        screen.contains("Not checkpointed"),
         "the working bytes differ from the candidate, so the label says so"
     );
     // The same poll also saw an arrival, and the arrival notice keeps its
@@ -771,7 +771,7 @@ fn polling_marks_a_deleted_displayed_document_gone() {
     poll_once(&mut worker, &mut shell);
     let screen = joined(&draw(&mut shell, 110, 30));
     assert!(
-        screen.contains("Saved, working file gone"),
+        screen.contains("Checkpointed, working file gone"),
         "the label states the deletion: {screen}"
     );
     // The deletion is one working edit, so the arrival notice keeps its

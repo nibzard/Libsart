@@ -91,7 +91,7 @@ outside an overlay's rectangle:
    nothing.
 
 Only left and right button-down events have actions. Releases, middle
-clicks, and drags do nothing. Menu activation uses the existing disabled
+clicks, and drags outside an active source selection do nothing. Menu activation uses the existing disabled
 action checks. No click reaches content underneath a standing context.
 
 ## 4. Hover: shared foundation, later phase
@@ -173,9 +173,10 @@ for every ignored event.
 
 ## 7. Deliberately skipped
 
-- **Drag and drag-select.** Text selection stays the terminal's own job
-  (Shift-drag bypasses capture). In-surface dragging earns nothing over
-  the wheel.
+- **Source drag selection (historical decision, superseded).** The source
+  editor supports left-button drag selection and bounded edge scrolling.
+  Release, keyboard input, focus loss, resize, and document changes stop it.
+  Other views ignore drags. Terminal selection uses the terminal bypass.
 - **Double-click.** No action needs it; the menu runs on one click.
 - **Reading-column row clicks (historical decision, superseded).** Clicking a
   source passage now opens editing at its source line. See the

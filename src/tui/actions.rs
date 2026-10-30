@@ -10,6 +10,11 @@
 /// One action of the keyboard contract (SPEC 11.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    InstallClaude,
+    Initialize,
+    UseAgentProposal,
+    KeepWriterText,
+    CompareAgent,
     Refresh,
     HistoryCheckpoints,
     PreviewRestore,
@@ -86,7 +91,12 @@ pub enum Action {
 
 impl Action {
     /// Every action in SPEC 11.3 table order.
-    pub const ALL: [Action; 44] = [
+    pub const ALL: [Action; 49] = [
+        Action::InstallClaude,
+        Action::Initialize,
+        Action::UseAgentProposal,
+        Action::KeepWriterText,
+        Action::CompareAgent,
         Action::CycleFocus,
         Action::ActionMenu,
         Action::ReadView,
@@ -136,6 +146,11 @@ impl Action {
     /// The name the menu and the help list print.
     pub fn name(self) -> &'static str {
         match self {
+            Action::InstallClaude => "Install Claude integration",
+            Action::Initialize => "Set up writing scope",
+            Action::UseAgentProposal => "Use agent proposal",
+            Action::KeepWriterText => "Keep my text",
+            Action::CompareAgent => "Compare agent proposal",
             Action::Refresh => "Refresh",
             Action::HistoryCheckpoints => "Expand draft checkpoints",
             Action::PreviewRestore => "Preview document restoration",
@@ -152,7 +167,7 @@ impl Action {
             Action::SeparateReview => "Start a separate review draft",
             Action::QuitWithoutSaving => "Quit without saving newer choices",
             Action::CycleFocus => "Cycle focus",
-            Action::ActionMenu => "Action menu",
+            Action::ActionMenu => "Command palette",
             Action::ReadView => "Read view",
             Action::ChangesView => "Changes view",
             Action::HistoryView => "History view",
@@ -185,6 +200,10 @@ impl Action {
 
     pub fn aliases(self) -> &'static str {
         match self {
+            Action::AskAgent => "ask agent selected passage rewrite instruction",
+            Action::AgentRequests => "requests delivery waiting conflict compare proposal",
+            Action::CheckpointDraft => "save draft checkpoint scope review",
+            Action::UndoAgentEdit => "undo agent revert latest edit",
             Action::ResumeReview => "resume saved progress draft session",
             Action::DocumentPicker => "file open document",
             Action::WorkspaceSearch => "find all files body text",

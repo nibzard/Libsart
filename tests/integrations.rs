@@ -431,9 +431,8 @@ fn session_boundaries_capture_best_effort() {
     let repo = adopted_repo(true);
     let head_before = support::oracle::head_oid(&repo);
 
-    // Each session boundary is one best-effort ordinary checkpoint: the
-    // capture happens, but no output reaches the agent, because these
-    // events discard or ignore JSON output (SPEC 12.2).
+    // Each session boundary makes an ordinary checkpoint. Startup also
+    // supplies writing context; failure and end remain silent.
     let mut previous = head_before;
     for (pass, (fixture, label)) in [
         ("session-start.json", "startup"),
@@ -446,10 +445,25 @@ fn session_boundaries_capture_best_effort() {
         edit_scope(&repo, pass + 1);
         let output = hook(repo.env(), repo.path(), &payload(fixture, repo.path()));
         assert_eq!(output.status.code(), Some(0), "{label} succeeds");
-        assert!(
-            output.stdout.is_empty(),
-            "{label} prints no protocol output"
-        );
+        if fixture == "session-start.json" {
+            let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                response["hookSpecificOutput"]["hookEventName"],
+                "SessionStart"
+            );
+            assert!(
+                response["hookSpecificOutput"]["additionalContext"]
+                    .as_str()
+                    .unwrap()
+                    .contains("margin context --json")
+            );
+            assert!(response.get("decision").is_none());
+        } else {
+            assert!(
+                output.stdout.is_empty(),
+                "{label} prints no protocol output"
+            );
+        }
         let head = support::oracle::head_oid(&repo).expect("the boundary captured");
         assert_ne!(previous, Some(head.clone()), "{label} captured the pass");
         previous = Some(head);

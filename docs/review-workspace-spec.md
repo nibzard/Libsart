@@ -372,3 +372,19 @@ bound. A file with truncated metadata contributes to the displayed truncated
 count. Content beyond those bounds is not claimed searchable. The 256 KiB/file,
 16 MiB total, 2,000-file, 20,000-entry, 100-result, and release latency/resource
 budgets remain unchanged.
+
+## Interface additions, October 2026
+
+The command palette is available through **Commands**, `Ctrl+P`, and `:`
+outside editing. Palette input takes priority over source input. Cancel
+restores the invoking focus and selection. Requests join action, document,
+and heading results. Actions recheck current operation guards before running.
+
+The persistent **Requests** entry opens a drawer. It groups durable request
+states and offers inspection, cancellation, and delivery retry. Comparison,
+keep-text, and use-proposal commands call the same guarded editor operations.
+Other desks require an explicit toggle. Delivery does not imply acceptance.
+
+Finish review keeps counts and effects visible; `d` reveals identifiers.
+Initialization and Claude installation each require their own visible preview.
+These confirmations do not replace operation-layer validation.

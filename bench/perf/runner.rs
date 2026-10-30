@@ -581,10 +581,14 @@ fn useful_frame_needles(fixture: &Fixture) -> Result<(String, String, Vec<String
         &text
     };
     let content: String = pty::collapse(source).chars().take(40).collect();
-    let saved = ["Saved", "Unsaved draft", "Saved, working file gone"]
-        .iter()
-        .map(|label| pty::collapse(label))
-        .collect();
+    let saved = [
+        "Checkpointed",
+        "Not checkpointed",
+        "Checkpointed, working file gone",
+    ]
+    .iter()
+    .map(|label| pty::collapse(label))
+    .collect();
     Ok((identity, content, saved))
 }
 

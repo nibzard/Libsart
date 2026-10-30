@@ -326,6 +326,18 @@ fn passage_request_applies_in_the_open_editor_and_preserves_unreviewed_history()
     let request = operations.list_edit_requests().unwrap().pop().unwrap();
     assert_eq!((request.start, request.end), (0, 1));
     operations.claim_edit_request(&request.id, "agent").unwrap();
+    shell.notify_edit_requests();
+    shell.poll_edit_requests();
+    assert!(!shell.notice().unwrap_or("").contains("queued"));
+    assert!(
+        shell
+            .source_editor()
+            .unwrap()
+            .activity
+            .as_deref()
+            .unwrap_or("")
+            .contains("working")
+    );
     operations
         .submit_edit_result(&request.id, "agent", "##", "A smaller heading")
         .unwrap();
@@ -1304,4 +1316,309 @@ fn delivery_receipts_are_bounded_and_queue_labels_reflect_emission() {
     );
     assert_eq!(current.state, margin::requests::State::Queued);
     assert!(current.owner.is_none());
+}
+
+#[test]
+fn shift_arrow_selection_stays_visible_across_unchanged_refreshes() {
+    use margin::app::InspectRequest;
+    use margin::tui::InspectionReply;
+    use ratatui::style::Modifier;
+    for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
+        let repo = adopted(ObjectFormat::Sha1);
+        repo.write_file("notes/a.md", b"First line\nSecond line\nThird line\n");
+        let git = adapter(&repo);
+        let operations = Operations::new(&git);
+        let mut shell = Shell::open(repo.path(), &operations, &TuiOptions::default());
+        screen(&mut shell, 110, 30);
+        press(&mut shell, KeyCode::Char('e'), KeyModifiers::NONE);
+        press(&mut shell, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut shell, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut shell, code, KeyModifiers::SHIFT);
+        let selection = shell.source_editor().unwrap().selection();
+        assert!(!selection.is_empty(), "{code:?}");
+        for _ in 0..3 {
+            let outcome = operations.inspect_workspace(&InspectRequest {
+                scope: None,
+                path_filter: vec![],
+            });
+            shell.observe_inspection(InspectionReply {
+                generation: shell.generation(),
+                outcome,
+                document: None,
+                documents: None,
+                notes: None,
+                reference: None,
+            });
+            assert_eq!(
+                shell.source_editor().unwrap().selection(),
+                selection,
+                "{code:?}"
+            );
+            let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+            terminal
+                .draw(|frame| render::draw(&mut shell, frame))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = &shell.source_editor().unwrap().text;
+            let mut offset = 0;
+            let mut highlighted = 0;
+            for source in text.split_inclusive('\n') {
+                let line = source.trim_end_matches('\n');
+                let (y, x) = buffer
+                    .content
+                    .chunks(110)
+                    .enumerate()
+                    .find_map(|(y, cells)| {
+                        let row: String = cells.iter().map(|c| c.symbol()).collect();
+                        row.find(line).map(|x| (y, row[..x].chars().count()))
+                    })
+                    .expect("source line is visible");
+                for byte in 0..line.len() {
+                    if selection.contains(&(offset + byte)) {
+                        assert!(
+                            buffer[(x as u16 + byte as u16, y as u16)]
+                                .modifier
+                                .contains(Modifier::REVERSED),
+                            "{code:?}: selected source byte {} must be highlighted",
+                            offset + byte
+                        );
+                        highlighted += 1;
+                    }
+                }
+                offset += source.len();
+            }
+            assert!(highlighted > 0);
+        }
+    }
+}
+
+#[test]
+fn unchanged_disk_observation_preserves_agent_conflict_details() {
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let operations = Operations::new(&git);
+    let base = operations.edit_document("notes/a.md").unwrap();
+    let mut editor = margin::tui::editor::Editor::new(base.clone());
+    editor.conflicting_request = Some("pending-agent".into());
+    editor.conflict = Some("Both versions need comparison".into());
+    editor.key(&KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+    for _ in 0..3 {
+        editor.accept_disk(base.clone());
+    }
+    assert_eq!(
+        editor.conflict.as_deref(),
+        Some("Both versions need comparison")
+    );
+    assert_eq!(editor.conflicting_request.as_deref(), Some("pending-agent"));
+    assert_eq!(editor.selection(), 0..1);
+}
+
+#[test]
+fn palette_cancel_preserves_unsaved_text_selection_and_file() {
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let ops = Operations::new(&git);
+    let original = repo.read_file("notes/a.md");
+    let mut shell = Shell::open(repo.path(), &ops, &TuiOptions::default());
+    press(&mut shell, KeyCode::Char('e'), KeyModifiers::NONE);
+    shell.handle_event(&Event::Paste("Unsaved: ".into()));
+    press(&mut shell, KeyCode::Right, KeyModifiers::SHIFT);
+    let before = shell.source_editor().unwrap().clone();
+    press(&mut shell, KeyCode::Char('p'), KeyModifiers::CONTROL);
+    shell.handle_event(&Event::Paste("ask agent".into()));
+    assert!(screen(&mut shell, 80, 24).contains("Command palette"));
+    shell.poll_autosave_at(std::time::Instant::now() + std::time::Duration::from_secs(2));
+    assert_eq!(repo.read_file("notes/a.md"), original);
+    press(&mut shell, KeyCode::Esc, KeyModifiers::NONE);
+    let after = shell.source_editor().unwrap();
+    assert_eq!(after.text, before.text);
+    assert_eq!(after.selection(), before.selection());
+    assert_eq!(after.cursor, before.cursor);
+    assert_eq!(repo.read_file("notes/a.md"), original);
+    press(&mut shell, KeyCode::F(2), KeyModifiers::NONE);
+    let summary = shell.request_scope_summary().unwrap();
+    assert!(summary.starts_with("Selected passage · 1 characters"));
+}
+
+#[test]
+fn drag_selects_graphemes_and_release_stops_selection() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let ops = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &ops, &TuiOptions::default());
+    press(&mut shell, KeyCode::Char('e'), KeyModifiers::NONE);
+    press(&mut shell, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    shell.handle_event(&Event::Paste("a\t界e\u{301}X\r\nsecond line\r\n".into()));
+    press(&mut shell, KeyCode::Home, KeyModifiers::CONTROL);
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| render::draw(&mut shell, f)).unwrap();
+    let cell = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .position(|c| c.symbol() == "界")
+        .unwrap();
+    let (x, y) = ((cell % 80) as u16, (cell / 80) as u16);
+    let mouse = |kind, column| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    shell.handle_event(&mouse(MouseEventKind::Down(MouseButton::Left), x));
+    shell.handle_event(&mouse(MouseEventKind::Drag(MouseButton::Left), x + 3));
+    let editor = shell.source_editor().unwrap();
+    assert_eq!(&editor.text[editor.selection()], "界e\u{301}");
+    let selection = editor.selection();
+    shell.handle_event(&mouse(MouseEventKind::Up(MouseButton::Left), x + 3));
+    shell.handle_event(&mouse(MouseEventKind::Drag(MouseButton::Left), x + 4));
+    assert_eq!(shell.source_editor().unwrap().selection(), selection);
+    terminal.draw(|f| render::draw(&mut shell, f)).unwrap();
+    shell.handle_event(&mouse(MouseEventKind::Down(MouseButton::Left), x + 3));
+    shell.handle_event(&mouse(MouseEventKind::Drag(MouseButton::Left), x));
+    assert_eq!(shell.source_editor().unwrap().selection(), selection);
+    shell.handle_event(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: x,
+        row: y + 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    let editor = shell.source_editor().unwrap();
+    assert!(editor.text[editor.selection()].contains("\r\n"));
+    let multiline = editor.selection();
+    shell.handle_event(&Event::FocusLost);
+    shell.handle_event(&mouse(MouseEventKind::Drag(MouseButton::Left), x + 4));
+    assert_eq!(shell.source_editor().unwrap().selection(), multiline);
+}
+
+#[test]
+fn setup_preview_cancel_is_read_only_and_confirm_enables_editing() {
+    let repo = TestRepo::init();
+    repo.write_file("notes/a.md", b"# New writer\n");
+    repo.commit_all("Import");
+    let git = adapter(&repo);
+    let ops = Operations::new(&git);
+    let mut shell = Shell::open(repo.path(), &ops, &TuiOptions::default());
+    let head = repo.git_ok(["rev-parse", "HEAD"]);
+    press(&mut shell, KeyCode::Char('e'), KeyModifiers::NONE);
+    assert!(shell.setup_preview().unwrap().contains("notes/a.md"));
+    press(&mut shell, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(repo.git_ok(["rev-parse", "HEAD"]), head);
+    assert!(ops.edit_document("notes/a.md").is_err());
+    press(&mut shell, KeyCode::Char('e'), KeyModifiers::NONE);
+    press(&mut shell, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(ops.edit_document("notes/a.md").is_ok());
+    press(&mut shell, KeyCode::Char('e'), KeyModifiers::NONE);
+    assert!(shell.source_editor().is_some());
+}
+
+#[test]
+fn restarted_drawer_compares_retained_proposal_and_keep_clears_conflict() {
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let ops = Operations::new(&git);
+    let base = ops.edit_document("notes/a.md").unwrap();
+    let request = ops
+        .create_edit_request(base.clone(), None, "Rewrite the passage")
+        .unwrap();
+    ops.claim_edit_request(&request.id, "original-owner")
+        .unwrap();
+    ops.submit_edit_result(
+        &request.id,
+        "original-owner",
+        "Agent proposal",
+        "Proposal explanation",
+    )
+    .unwrap();
+    ops.save_document(&base, "Writer version").unwrap();
+    assert_eq!(
+        ops.apply_edit_result(&request.id).unwrap().state,
+        State::Stale
+    );
+    let mut shell = Shell::open(repo.path(), &ops, &TuiOptions::default());
+    press(&mut shell, KeyCode::Char('B'), KeyModifiers::NONE);
+    assert!(shell.request_panel().unwrap().contains("Needs your choice"));
+    press(&mut shell, KeyCode::Enter, KeyModifiers::NONE);
+    let page = screen(&mut shell, 80, 24);
+    assert!(page.contains("Writer version"));
+    assert!(page.contains("Agent proposal"));
+    press(&mut shell, KeyCode::F(4), KeyModifiers::NONE);
+    assert_eq!(
+        ops.inspect_edit_request(&request.id).unwrap().state,
+        State::Cancelled
+    );
+    assert_eq!(repo.read_file("notes/a.md"), b"Writer version");
+    assert!(shell.source_editor().unwrap().conflicting_request.is_none());
+    assert!(!screen(&mut shell, 80, 24).contains("needs comparison"));
+    press(&mut shell, KeyCode::Char('p'), KeyModifiers::CONTROL);
+    shell.handle_event(&Event::Paste("Agent requests".into()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !shell.palette().ready() && std::time::Instant::now() < deadline {
+        shell.poll_palette();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    press(&mut shell, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        !shell
+            .request_panel()
+            .unwrap()
+            .contains("compare them before choosing")
+    );
+}
+
+#[test]
+fn drawer_retry_does_not_change_claim_and_palette_finds_request_identifier() {
+    let repo = adopted(ObjectFormat::Sha1);
+    let git = adapter(&repo);
+    let ops = Operations::new(&git);
+    let base = ops.edit_document("notes/a.md").unwrap();
+    let request = ops
+        .create_edit_request(base, None, "Revise carefully")
+        .unwrap();
+    ops.record_request_delivery(
+        "session-one",
+        &[(request.id.clone(), request.delivery_version())],
+    )
+    .unwrap();
+    ops.claim_edit_request(&request.id, "original-owner")
+        .unwrap();
+    let mut shell = Shell::open(repo.path(), &ops, &TuiOptions::default());
+    press(&mut shell, KeyCode::Char('p'), KeyModifiers::CONTROL);
+    shell.handle_event(&Event::Paste(request.id.clone()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !shell.palette().ready() && std::time::Instant::now() < deadline {
+        shell.poll_palette();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(shell.palette().ready());
+    press(&mut shell, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(shell.request_panel().unwrap().contains("Revise carefully"));
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| render::draw(&mut shell, f)).unwrap();
+    let row = &terminal.backend().buffer().content[80..160];
+    let x = row
+        .windows(8)
+        .position(|cells| cells.iter().map(|c| c.symbol()).collect::<String>() == "Commands")
+        .unwrap() as u16;
+    shell.handle_event(&Event::Mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: x,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(matches!(
+        shell.overlay(),
+        Some(margin::tui::Overlay::Menu { .. })
+    ));
+    press(&mut shell, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(shell.request_panel().unwrap().contains("Revise carefully"));
+    press(&mut shell, KeyCode::Char('r'), KeyModifiers::NONE);
+    let retried = ops.inspect_edit_request(&request.id).unwrap();
+    assert_eq!(retried.owner.as_deref(), Some("original-owner"));
+    assert_eq!(retried.state, State::Claimed);
+    assert!(retried.deliveries.is_empty());
 }

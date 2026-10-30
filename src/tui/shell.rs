@@ -255,10 +255,10 @@ impl SavedState {
     /// The label the interface prints. Words, never hue alone (SPEC 11.4).
     pub fn label(self) -> &'static str {
         match self {
-            SavedState::Saved => "Saved",
-            SavedState::UnsavedDraft => "Unsaved draft",
-            SavedState::WorkingFileGone => "Saved, working file gone",
-            SavedState::Unknown => "Save state unknown",
+            SavedState::Saved => "Checkpointed",
+            SavedState::UnsavedDraft => "Not checkpointed",
+            SavedState::WorkingFileGone => "Checkpointed, working file gone",
+            SavedState::Unknown => "Checkpoint state unknown",
         }
     }
 }
@@ -359,13 +359,13 @@ impl WorkspaceSnapshot {
     /// The sentence that states the preservation state in words.
     pub fn preservation_sentence(&self) -> String {
         match self.preservation {
-            PreservationState::Captured => "all drafts saved".to_string(),
+            PreservationState::Captured => "all drafts checkpointed".to_string(),
             PreservationState::Uncaptured => match self.uncaptured {
-                Some(1) => "1 unsaved document".to_string(),
-                Some(count) => format!("{count} unsaved documents"),
-                None => "unsaved drafts".to_string(),
+                Some(1) => "1 document not checkpointed".to_string(),
+                Some(count) => format!("{count} documents not checkpointed"),
+                None => "drafts not checkpointed".to_string(),
             },
-            PreservationState::Unknown => "save state unknown".to_string(),
+            PreservationState::Unknown => "checkpoint state unknown".to_string(),
         }
     }
 
@@ -451,6 +451,7 @@ struct FinishPanel {
     summary: FinishSummary,
     rows: Vec<DisplayRow>,
     width: u16,
+    details: bool,
 }
 
 /// One saved reading position of a document the writer left (SPEC 5.4):
@@ -479,6 +480,7 @@ pub struct Shell<'a> {
     selection: usize,
     document: Option<DocumentView>,
     source_lines: Vec<String>,
+    source_drag: bool,
     headings: Vec<wrap::Heading>,
     sidebar_hidden: bool,
     outline_folded: bool,
@@ -539,6 +541,8 @@ pub struct Shell<'a> {
     pub(crate) finish_scroll: usize,
     pub(crate) request_scroll: usize,
     pub(crate) agent_status: String,
+    request_counts: (usize, usize),
+    queued_notice: Option<(String, String)>,
     pointer: RefCell<super::pointer::PointerTargets>,
     workspace_search: WorkspaceSearch,
     search_worker: Option<SearchWorker>,
@@ -562,7 +566,13 @@ pub struct Shell<'a> {
     )>,
     request_poll: std::time::Instant,
     recovery_poll: std::time::Instant,
+    integration_preview: Option<String>,
+    setup_preview: Option<(app::InitRequest, String)>,
     request_panel: Option<String>,
+    request_ids: Vec<String>,
+    request_selection: usize,
+    request_details: bool,
+    request_other_desks: bool,
     /// The configured editor argv of the local settings (SPEC 12.5),
     /// cached at open and at every rebuild so the menu states its reason
     /// without one Git query per frame.
@@ -581,6 +591,7 @@ pub struct Shell<'a> {
     /// How the surface may decorate its text (SPEC 11.4).
     color: ColorMode,
     notice: Option<String>,
+    notice_subject: std::cell::RefCell<Option<(String, Option<String>)>>,
     /// Whether one quit warning about unapplied selections stands (SPEC 5.2).
     quit_warning: bool,
     quit: bool,
@@ -623,6 +634,24 @@ impl<'a> Shell<'a> {
                 || self.focus == Focus::Reference
                 || (self.focus == Focus::Actions && self.menu_origin == Focus::Reference));
         let mut frame = layout::frame_layout_with_reference(area, !self.sidebar_hidden, presented);
+        let notice_rows = self
+            .autosave_notice()
+            .as_deref()
+            .or(self.history_notice())
+            .or(self.notice())
+            .map_or(1, |text| {
+                wrap::wrap_text(text, area.width).len().clamp(1, 3) as u16
+            });
+        let extra = notice_rows.saturating_sub(1);
+        frame.context.y = frame.context.y.saturating_sub(extra);
+        frame.context.height = notice_rows;
+        frame.reading.height = frame.reading.height.saturating_sub(extra);
+        if let Some(rect) = &mut frame.navigator {
+            rect.height = rect.height.saturating_sub(extra);
+        }
+        if let Some(rect) = &mut frame.reference {
+            rect.height = rect.height.saturating_sub(extra);
+        }
         let progress = self.progress_rows(area.width);
         if progress > 0 {
             frame.reading.y = frame.reading.y.saturating_add(progress);
@@ -1319,6 +1348,7 @@ impl<'a> Shell<'a> {
             selection: 0,
             document: None,
             source_lines: Vec::new(),
+            source_drag: false,
             headings: Vec::new(),
             sidebar_hidden: false,
             outline_folded: false,
@@ -1353,6 +1383,8 @@ impl<'a> Shell<'a> {
             finish_scroll: 0,
             request_scroll: 0,
             agent_status: String::new(),
+            request_counts: (0, 0),
+            queued_notice: None,
             pointer: RefCell::default(),
             workspace_search: WorkspaceSearch::default(),
             search_worker: None,
@@ -1370,13 +1402,20 @@ impl<'a> Shell<'a> {
             agent_prompt: None,
             request_poll: std::time::Instant::now(),
             recovery_poll: std::time::Instant::now(),
+            integration_preview: None,
+            setup_preview: None,
             request_panel: None,
+            request_ids: Vec::new(),
+            request_selection: 0,
+            request_details: false,
+            request_other_desks: false,
             editor: None,
             capture_after_edit: false,
             redraw: true,
             background_pending: false,
             color: options.color,
             notice: None,
+            notice_subject: std::cell::RefCell::new(None),
             quit_warning: false,
             quit: false,
             session_store: session::Store::from_git(operations.git()),
@@ -1751,6 +1790,7 @@ impl<'a> Shell<'a> {
 
     /// Stores one loaded document and resets the derived display state.
     fn absorb_document(&mut self, document: DocumentView) {
+        self.source_drag = false;
         self.anchors = self.navigation().anchors;
         self.invalidate_palette();
         self.headings = wrap::document_headings(&document.text);
@@ -1792,7 +1832,8 @@ impl<'a> Shell<'a> {
             View::Changes => match (&mut self.finish, &mut self.changes) {
                 (Some(panel), _) => {
                     if width != panel.width || panel.rows.is_empty() {
-                        panel.rows = wrap::wrap_rows(&panel.summary.lines(), width);
+                        panel.rows =
+                            wrap::wrap_rows(&panel.summary.display_lines(panel.details), width);
                         panel.width = width;
                     }
                 }
@@ -1893,7 +1934,147 @@ impl<'a> Shell<'a> {
     /// before and after, and any difference raises it. A resize raises it
     /// unconditionally, because the rows rewrap when the next frame
     /// prepares them.
+    pub fn accepts_source_drag(&self, event: &Event) -> bool {
+        self.source_drag
+            && self.overlay.is_none()
+            && self.agent_prompt.is_none()
+            && self.request_panel.is_none()
+            && self
+                .source_editor
+                .as_ref()
+                .is_some_and(|e| e.dialog.is_none())
+            && matches!(event, Event::Mouse(m) if matches!(m.kind, MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)))
+    }
+
     pub fn handle_event(&mut self, event: &Event) {
+        if self.accepts_source_drag(event) {
+            if let Event::Mouse(mouse) = event {
+                if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
+                    self.source_drag = false;
+                    return;
+                }
+                if let Some((offset, direction)) = self
+                    .pointer
+                    .borrow()
+                    .source_nearest(mouse.column, mouse.row)
+                {
+                    if let Some(editor) = &mut self.source_editor {
+                        editor.place_cursor(offset, true);
+                        if direction != 0 {
+                            editor.scroll(direction);
+                        }
+                    }
+                    self.redraw = true;
+                }
+            }
+            return;
+        }
+        if matches!(
+            event,
+            Event::Key(_) | Event::FocusLost | Event::Resize(_, _)
+        ) {
+            self.source_drag = false;
+        }
+        if self.integration_preview.is_some() {
+            if let Event::Key(key) = event {
+                match key.code {
+                    KeyCode::Esc => self.integration_preview = None,
+                    KeyCode::Enter => {
+                        self.integration_preview = None;
+                        let result = crate::integrations::claude::install(self.operations, false);
+                        self.notice = Some(if result.ok() {
+                            "Claude integration installed. Start a Claude session in this project."
+                                .into()
+                        } else {
+                            result.error.map(|e| e.message).unwrap_or_default()
+                        });
+                    }
+                    _ => {
+                        scroll_key(key, &mut self.request_scroll, self.viewport_rows, 200);
+                    }
+                }
+            }
+            self.redraw = true;
+            return;
+        }
+        if self.setup_preview.is_some() {
+            if let Event::Key(key) = event {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.setup_preview = None;
+                    }
+                    KeyCode::Enter => {
+                        let (mut request, _) = self.setup_preview.take().unwrap();
+                        request.dry_run = false;
+                        let result = self.operations.initialize_scope(&request);
+                        if result.ok() {
+                            self.refresh();
+                            self.notice =
+                                Some("Writing scope initialized. Press e to edit.".into());
+                        } else {
+                            self.notice = result.error.map(|e| e.message);
+                        }
+                    }
+                    _ => {
+                        scroll_key(
+                            key,
+                            &mut self.request_scroll,
+                            self.viewport_rows,
+                            wrap::dialog_rows(
+                                self.setup_preview
+                                    .as_ref()
+                                    .map(|(_, t)| t.as_str())
+                                    .unwrap_or(""),
+                                self.viewport_columns,
+                            )
+                            .len(),
+                        );
+                    }
+                }
+            }
+            self.redraw = true;
+            return;
+        }
+        let palette_key = matches!(event, Event::Key(k) if k.kind == KeyEventKind::Press && k.code == KeyCode::Char('p') && k.modifiers.contains(KeyModifiers::CONTROL));
+        if palette_key
+            && self.agent_prompt.is_none()
+            && self.finish.is_none()
+            && !self.history_preview_stands()
+            && !self
+                .source_editor
+                .as_ref()
+                .is_some_and(|e| e.dialog.is_some())
+        {
+            self.open_menu();
+            self.redraw = true;
+            return;
+        }
+        if matches!(self.overlay, Some(Overlay::Menu { .. })) {
+            match event {
+                Event::Key(k) if k.kind == KeyEventKind::Press => self.handle_key(k),
+                Event::Paste(text) => self.handle_paste(text),
+                Event::Mouse(m) if m.kind == MouseEventKind::ScrollUp => self.handle_wheel(-1),
+                Event::Mouse(m) if m.kind == MouseEventKind::ScrollDown => self.handle_wheel(1),
+                Event::Mouse(m)
+                    if matches!(
+                        m.kind,
+                        MouseEventKind::Down(MouseButton::Left | MouseButton::Right)
+                    ) =>
+                {
+                    self.handle_click(
+                        match m.kind {
+                            MouseEventKind::Down(b) => b,
+                            _ => unreachable!(),
+                        },
+                        m.column,
+                        m.row,
+                    )
+                }
+                _ => {}
+            }
+            self.redraw = true;
+            return;
+        }
         if super::pointer::ignored(event) {
             return;
         }
@@ -1937,8 +2118,59 @@ impl<'a> Shell<'a> {
             return;
         }
         if self.request_panel.is_some() {
+            if let Event::Mouse(mouse) = event {
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                    let target = self.pointer.borrow().at(mouse.column, mouse.row);
+                    match target {
+                        Some(super::pointer::Target::RequestAction(key)) => {
+                            self.request_action(key)
+                        }
+                        Some(super::pointer::Target::CommandPalette) => self.open_menu(),
+                        Some(super::pointer::Target::Requests) => self.request_panel = None,
+                        _ => {}
+                    }
+                } else if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) {
+                    let code = if mouse.kind == MouseEventKind::ScrollUp {
+                        KeyCode::Up
+                    } else {
+                        KeyCode::Down
+                    };
+                    scroll_key(
+                        &KeyEvent::new(code, KeyModifiers::NONE),
+                        &mut self.request_scroll,
+                        self.viewport_rows,
+                        wrap::dialog_rows(
+                            self.request_panel.as_deref().unwrap_or(""),
+                            self.viewport_columns,
+                        )
+                        .len(),
+                    );
+                }
+            }
             if let Event::Key(key) = event {
-                if scroll_key(
+                if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                    if !self.request_ids.is_empty() {
+                        let len = self.request_ids.len();
+                        self.request_selection = (self.request_selection
+                            + if key.code == KeyCode::BackTab {
+                                len - 1
+                            } else {
+                                1
+                            })
+                            % len;
+                        self.request_scroll = 0;
+                        self.open_request_panel();
+                    }
+                } else if matches!(
+                    key.code,
+                    KeyCode::Enter | KeyCode::Char('c' | 'r' | 'd' | 'o')
+                ) && key.modifiers.is_empty()
+                {
+                    self.request_action(key.code);
+                } else if scroll_key(
                     key,
                     &mut self.request_scroll,
                     self.viewport_rows,
@@ -2008,16 +2240,19 @@ impl<'a> Shell<'a> {
                 Event::Mouse(mouse)
                     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) =>
                 {
-                    if self.park_source_editor() {
-                        self.handle_click(MouseButton::Right, mouse.column, mouse.row);
-                    }
+                    self.open_menu();
                 }
                 Event::Mouse(mouse)
                     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
                 {
                     let target = self.pointer.borrow().at(mouse.column, mouse.row);
-                    if let Some(super::pointer::Target::SourceOffset(offset)) = target {
+                    if target == Some(super::pointer::Target::CommandPalette) {
+                        self.open_menu();
+                    } else if target == Some(super::pointer::Target::Requests) {
+                        self.open_request_panel();
+                    } else if let Some(super::pointer::Target::SourceOffset(offset)) = target {
                         if !self.source_editor.as_ref().unwrap().dialog.is_some() {
+                            self.source_drag = true;
                             self.source_editor.as_mut().unwrap().place_cursor(
                                 offset,
                                 mouse.modifiers.contains(KeyModifiers::SHIFT),
@@ -2060,7 +2295,9 @@ impl<'a> Shell<'a> {
                     Some("Source exceeds the 1 MiB editing limit; input was not inserted".into());
             }
             self.redraw = true;
-            self.clear_pointer_targets();
+            if !self.source_drag {
+                self.clear_pointer_targets();
+            }
             return;
         }
         let before = self.fingerprint();
@@ -2163,6 +2400,8 @@ impl<'a> Shell<'a> {
         self.notice = None;
         self.quit_warning = false;
         match (&self.overlay, target) {
+            (None, Target::CommandPalette) => self.open_menu(),
+            (None, Target::Requests) => self.open_request_panel(),
             (Some(Overlay::Menu { .. }), Target::MenuEntry(index)) => {
                 self.overlay = Some(Overlay::Menu { selection: index });
                 self.submit_palette(index);
@@ -2230,6 +2469,9 @@ impl<'a> Shell<'a> {
     /// Remote navigation refuses unfinished local interactions and never
     /// changes the pinned comparison or the writer's review decisions.
     pub fn remote_busy(&self) -> bool {
+        if self.setup_preview.is_some() || self.integration_preview.is_some() {
+            return true;
+        }
         self.source_editor
             .as_ref()
             .is_some_and(|editor| editor.dialog.is_some())
@@ -2417,6 +2659,11 @@ impl<'a> Shell<'a> {
             // other key reaches the plan or the column beneath, and none
             // of the three applies anything on its own.
             match (key.code, control) {
+                (KeyCode::Char('d'), false) => {
+                    let panel = self.finish.as_mut().unwrap();
+                    panel.details = !panel.details;
+                    panel.rows.clear();
+                }
                 (KeyCode::Enter, false) => self.apply_finish(),
                 (KeyCode::Char(']'), false) => {
                     self.cancel_finish();
@@ -2857,18 +3104,88 @@ impl<'a> Shell<'a> {
     /// Opens the action menu (SPEC 11.3 `:`): every action, its binding,
     /// and the reason a disabled action cannot run.
     fn open_menu(&mut self) {
+        self.notice = None;
         self.menu_origin = self.focus;
+        self.palette.requests = self
+            .operations
+            .list_edit_requests()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| super::palette::Entry {
+                id: format!("request:{}", r.id),
+                kind: super::palette::Kind::Request,
+                action: None,
+                label: r.instruction.chars().take(160).collect(),
+                path: r.base.path.clone(),
+                context: format!("{} {}", r.id, r.display_state()),
+                line: 0,
+                fingerprint: 0,
+            })
+            .collect();
+        self.palette.suggestions = if self.descriptor.is_none() {
+            vec![Action::Initialize, Action::InstallClaude]
+        } else if self
+            .source_editor
+            .as_ref()
+            .is_some_and(|e| e.conflicting_request.is_some())
+        {
+            vec![
+                Action::CompareAgent,
+                Action::KeepWriterText,
+                Action::UseAgentProposal,
+                Action::AgentRequests,
+            ]
+        } else if self.source_editor.is_some() {
+            vec![
+                Action::AskAgent,
+                Action::AgentRequests,
+                Action::CheckpointDraft,
+                Action::UndoAgentEdit,
+            ]
+        } else {
+            match self.view {
+                View::Read => vec![
+                    Action::EditDocument,
+                    Action::AskAgent,
+                    Action::CheckpointDraft,
+                    Action::AgentRequests,
+                ],
+                View::Changes => vec![
+                    Action::NextUndecided,
+                    Action::KeepGroup,
+                    Action::RestoreGroup,
+                    Action::FinishReview,
+                ],
+                View::History => vec![
+                    Action::PreviewRestore,
+                    Action::HistoryCheckpoints,
+                    Action::PinVersion,
+                ],
+            }
+        };
         self.palette.query.clear();
         self.palette.matched_query.clear();
         self.palette.choose_reference = false;
         self.palette.edited = None;
         self.palette.pending = None;
         self.palette.hits = super::palette::matching("", super::palette::actions()).0;
+        self.rank_palette_suggestions();
         self.overlay = Some(Overlay::Menu { selection: 0 });
         self.focus = Focus::Actions;
         self.request_palette();
     }
 
+    fn rank_palette_suggestions(&mut self) {
+        if self.palette.query.is_empty() {
+            let order = &self.palette.suggestions;
+            self.palette.hits.sort_by_key(|h| {
+                h.entry
+                    .action
+                    .and_then(|a| order.iter().position(|x| *x == a))
+                    .unwrap_or(order.len())
+            });
+        }
+    }
     pub fn palette(&self) -> &super::palette::Palette {
         &self.palette
     }
@@ -2926,7 +3243,20 @@ impl<'a> Shell<'a> {
                 None
             };
             self.palette.metadata = Some(reply.metadata);
-            self.palette.hits = reply.hits;
+            self.palette.hits = if self.palette.choose_reference {
+                reply.hits
+            } else {
+                super::palette::matching(
+                    &reply.query,
+                    reply
+                        .hits
+                        .into_iter()
+                        .map(|h| h.entry)
+                        .chain(self.palette.requests.clone()),
+                )
+                .0
+            };
+            self.rank_palette_suggestions();
             self.palette.additional = reply.additional;
             self.palette.matched_query = reply.query;
             self.palette.pending = None;
@@ -2987,7 +3317,27 @@ impl<'a> Shell<'a> {
             // The action sees its original pane, including reference restrictions.
             self.overlay = None;
             self.focus = self.menu_origin;
+            self.request_panel = None;
             self.activate(action);
+            return;
+        }
+        if entry.kind == super::palette::Kind::Request {
+            self.overlay = None;
+            self.focus = self.menu_origin;
+            self.open_request_panel();
+            if let Some(index) = self
+                .request_ids
+                .iter()
+                .position(|id| entry.id == format!("request:{id}"))
+            {
+                self.request_selection = index;
+                self.open_request_panel();
+            } else {
+                self.notice = Some("Request is no longer available".into());
+            }
+            return;
+        }
+        if self.source_editor.is_some() && !self.park_source_editor() {
             return;
         }
         if !self.fresh_listed(&entry.path) {
@@ -3097,17 +3447,19 @@ impl<'a> Shell<'a> {
             }
         );
         text.push_str("/ search · a all shortcuts · arrows/PgUp/PgDn scroll · Esc closes help\n\nCurrent blockers\n");
-        let blockers = self.blockers();
-        if blockers.is_empty() {
-            text.push_str("  none\n");
-        }
-        for blocker in blockers {
-            text.push_str(&format!("  {blocker}\n"));
-        }
-        if let Some(editor) = &self.source_editor
-            && let Some(error) = &editor.autosave_error
-        {
-            text.push_str(&format!("  Autosave paused: {error}\n"));
+        if self.help_query.is_empty() {
+            let blockers = self.blockers();
+            if blockers.is_empty() {
+                text.push_str("  none\n");
+            }
+            for blocker in blockers {
+                text.push_str(&format!("  {blocker}\n"));
+            }
+            if let Some(editor) = &self.source_editor
+                && let Some(error) = &editor.autosave_error
+            {
+                text.push_str(&format!("  Autosave paused: {error}\n"));
+            }
         }
         text.push('\n');
         let query = self.help_query.to_lowercase();
@@ -3565,6 +3917,17 @@ impl<'a> Shell<'a> {
             .iter()
             .map(|&action| {
                 let disabled = match action {
+                    Action::Initialize => self
+                        .descriptor
+                        .is_some()
+                        .then(|| "Writing scope is already initialized".into()),
+                    Action::UseAgentProposal | Action::KeepWriterText | Action::CompareAgent => {
+                        (!self
+                            .source_editor
+                            .as_ref()
+                            .is_some_and(|e| e.conflicting_request.is_some()))
+                        .then(|| "Open a request that needs comparison".into())
+                    }
                     Action::PreviewRestore
                     | Action::UndoAgentEdit
                     | Action::KeepGroup
@@ -3661,6 +4024,9 @@ impl<'a> Shell<'a> {
                     }
                     Action::DocumentPicker | Action::WorkspaceSearch => (self.documents.is_empty())
                         .then(|| "no documents are listed to find".to_string()),
+                    Action::EditDocument if self.source_editor.is_some() => {
+                        Some("Already editing this document".into())
+                    }
                     Action::EditDocument | Action::AskAgent => self
                         .document
                         .is_none()
@@ -3724,7 +4090,51 @@ impl<'a> Shell<'a> {
     /// branch is the handler of the action's default binding, so the
     /// menu and the keys cannot disagree.
     fn activate(&mut self, action: Action) {
+        if self.source_editor.is_some()
+            && matches!(
+                action,
+                Action::ReadView
+                    | Action::ChangesView
+                    | Action::HistoryView
+                    | Action::DocumentPicker
+                    | Action::ExternalEditor
+            )
+            && !self.park_source_editor()
+        {
+            return;
+        }
         match action {
+            Action::InstallClaude => {
+                self.request_scroll = 0;
+                let result = crate::integrations::claude::install(self.operations, true);
+                if let Some(data) = result.data {
+                    self.integration_preview = Some(format!(
+                        "Install Claude integration\n\nManaged settings: {}\nManaged instructions:\n{}\n\nInstalls Margin hooks and the /margin skill. Preserves unrelated settings.\n\nEnter installs · Esc cancels without changes",
+                        data.path.display(),
+                        data.instructions
+                            .iter()
+                            .map(|p| p.path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ));
+                } else {
+                    self.notice = result.error.map(|e| e.message);
+                }
+            }
+            Action::Initialize => self.open_setup(),
+            Action::UseAgentProposal => self.resolve_agent_conflict(true),
+            Action::KeepWriterText => self.resolve_agent_conflict(false),
+            Action::CompareAgent => {
+                if let Some(editor) = self.source_editor.as_mut()
+                    && let Some(conflict) = &editor.conflict
+                {
+                    editor.dialog = Some(super::editor::EditorDialog::Comparison {
+                        kind: super::editor::ComparisonKind::Agent,
+                        text: format!("Your text:\n{}\n\n{}", editor.text, conflict),
+                        offset: 0,
+                    });
+                }
+            }
             Action::Refresh => self.refresh(),
             Action::HistoryCheckpoints => self.toggle_history_checkpoints(),
             Action::PreviewRestore => self.open_history_preview(),
@@ -3843,7 +4253,10 @@ impl<'a> Shell<'a> {
             Action::EditDocument => self.open_source_editor(),
             Action::ExternalEditor => self.request_editor(),
             Action::AskAgent => self.open_agent_request(),
-            Action::AgentRequests => self.open_request_panel(),
+            Action::AgentRequests => {
+                self.request_scroll = 0;
+                self.open_request_panel();
+            }
             Action::CheckpointDraft => self.checkpoint_edited_draft(),
             Action::UndoAgentEdit => self.undo_agent_edit(),
             Action::FinishReview => self.open_finish(),
@@ -3954,6 +4367,9 @@ impl<'a> Shell<'a> {
             .chain(self.retained_editors.iter_mut())
             .filter(|e| e.base.path == path && !e.dirty())
         {
+            if editor.text != base.text {
+                self.source_drag = false;
+            }
             editor.accept_disk(base.clone());
         }
         if self.source_editor.is_none() && self.document.as_ref().is_some_and(|d| d.path == path) {
@@ -4043,6 +4459,14 @@ impl<'a> Shell<'a> {
                     editor.conflicting_request = None;
                     editor.conflict = None;
                     editor.dialog = None;
+                    editor.activity = Some(
+                        if use_agent {
+                            "Agent edit applied"
+                        } else {
+                            "Your text kept"
+                        }
+                        .into(),
+                    );
                 }
                 if use_agent {
                     self.checkpoint_boundary();
@@ -4059,31 +4483,202 @@ impl<'a> Shell<'a> {
             Err(error) => self.notice = Some(error.message),
         }
     }
+    pub fn request_label(&self) -> String {
+        let (pending, attention) = self.request_counts;
+        if pending + attention == 0 {
+            " Requests ".into()
+        } else {
+            format!(" Requests {pending} · {attention}! ")
+        }
+    }
     pub fn request_panel(&self) -> Option<&str> {
         self.request_panel.as_deref()
     }
     fn open_request_panel(&mut self) {
-        self.request_scroll = 0;
+        self.source_drag = false;
         self.request_panel = Some(match self.operations.list_edit_requests() {
-            Ok(requests) => {
-                let mut text = "Agent requests · Esc closes\nUse margin requests inspect ID --json for full context.\n".to_string();
-                for r in requests.into_iter().rev() {
-                    let passage: String = r.base.text[r.start..r.end].chars().take(160).collect();
+            Ok(mut requests) => {
+                use crate::requests::State;
+                let desk = std::env::var("MARGIN_DESK_SOCKET").ok();
+                requests.retain(|r| self.request_other_desks || r.desk == desk || r.desk.is_none());
+                requests.sort_by_key(|r| {
+                    (
+                        r.desk != desk && r.desk.is_some(),
+                        match r.state {
+                            State::Stale | State::Failed | State::Applying | State::Undoing => 0,
+                            State::Queued => 1,
+                            State::Claimed | State::ResultReady => 2,
+                            _ => 3,
+                        },
+                        std::cmp::Reverse(r.created_at),
+                    )
+                });
+                self.request_ids = requests.iter().map(|r| r.id.clone()).collect();
+                self.request_selection =
+                    self.request_selection.min(requests.len().saturating_sub(1));
+                let mut text = "Requests · Tab next · Shift+Tab previous · Esc closes\nEnter open / compare · c cancel · r retry last delivery · d details · o other desks\n".to_string();
+                if requests.is_empty() {
+                    text.push_str("\nNo requests. Use Ask agent to create one.");
+                }
+                for (index, r) in requests.iter().enumerate() {
+                    let group = match r.state {
+                        State::Stale | State::Failed | State::Applying | State::Undoing => {
+                            "Needs your choice"
+                        }
+                        State::Queued => "Waiting",
+                        State::Claimed | State::ResultReady => "Working",
+                        _ => "Finished",
+                    };
                     text.push_str(&format!(
-                        "\n{} · {} · {}\nPassage: {}\nYou: {}\nAgent: {}\n{}\n",
+                        "\n{} {} · {}{}\n{}\n{}\n",
+                        if index == self.request_selection {
+                            "›"
+                        } else {
+                            " "
+                        },
+                        group,
                         r.base.path,
+                        if r.desk != desk && r.desk.is_some() {
+                            " · Other desk"
+                        } else {
+                            ""
+                        },
                         r.display_state(),
-                        r.id,
-                        passage,
-                        r.instruction,
-                        r.explanation.unwrap_or_default(),
-                        r.error.unwrap_or_default()
+                        r.instruction
                     ));
+                    if index == self.request_selection {
+                        text.push_str(&format!(
+                            "{}\n{}\n",
+                            r.explanation.as_deref().unwrap_or(""),
+                            if matches!(
+                                r.state,
+                                State::Stale | State::Failed | State::Applying | State::Undoing
+                            ) {
+                                r.error.as_deref().unwrap_or("")
+                            } else {
+                                ""
+                            }
+                        ));
+                        if self.request_details {
+                            if let Some(error) = &r.error {
+                                text.push_str(&format!("Recorded error: {error}\n"));
+                            }
+                            text.push_str(&format!("ID: {}\nOwner: {}\nDelivery receipts: {} (emission does not confirm agent acceptance)\nSource: {}\nProposal: {}\n", r.id, r.owner.as_deref().unwrap_or("Unclaimed"), r.deliveries.len(), &r.base.text[r.start..r.end], r.result.as_deref().unwrap_or("No proposal yet")));
+                        }
+                    }
                 }
                 text
             }
             Err(e) => e.message,
         });
+    }
+    fn request_action(&mut self, key: KeyCode) {
+        if key == KeyCode::Esc {
+            self.request_panel = None;
+            return;
+        }
+        if matches!(key, KeyCode::Tab | KeyCode::BackTab) {
+            if !self.request_ids.is_empty() {
+                let len = self.request_ids.len();
+                self.request_selection = (self.request_selection
+                    + if key == KeyCode::BackTab { len - 1 } else { 1 })
+                    % len;
+                self.request_scroll = 0;
+                self.open_request_panel();
+            }
+            return;
+        }
+        if key == KeyCode::Char('o') {
+            self.request_other_desks = !self.request_other_desks;
+            self.request_selection = 0;
+            self.open_request_panel();
+            return;
+        }
+        if key == KeyCode::Char('d') {
+            self.request_details = !self.request_details;
+            self.open_request_panel();
+            return;
+        }
+        let Some(id) = self.request_ids.get(self.request_selection).cloned() else {
+            return;
+        };
+        let request = match self.operations.inspect_edit_request(&id) {
+            Ok(r) => r,
+            Err(e) => {
+                self.notice = Some(e.message);
+                return;
+            }
+        };
+        match key {
+            KeyCode::Char('c') => {
+                match self.operations.cancel_edit_request(&id) {
+                    Ok(_) => {
+                        self.notice = Some("Request cancelled; your text is kept".into());
+                        self.notify_edit_requests();
+                    }
+                    Err(e) => self.notice = Some(e.message),
+                }
+                self.open_request_panel();
+            }
+            KeyCode::Char('r') => {
+                if let Some(delivery) = request.deliveries.last() {
+                    match self.operations.redeliver_edit_request(&id, &delivery.session) {
+                        Ok(_) => self.notice = Some("Delivery reset for the last session. Its next prompt can receive the request; ownership is unchanged.".into()),
+                        Err(e) => self.notice = Some(e.message),
+                    }
+                } else {
+                    self.notice = Some("No delivery to retry. Waiting for an agent prompt.".into());
+                }
+                self.open_request_panel();
+            }
+            KeyCode::Enter => {
+                self.request_panel = None;
+                match self.open_remote(&crate::desk::Request {
+                    path: request.base.path.clone(),
+                    line: None,
+                }) {
+                    Ok(()) => {
+                        self.open_source_editor();
+                        self.notify_edit_requests();
+                        self.poll_edit_requests();
+                        if request.state == crate::requests::State::Stale
+                            && let Some(editor) = self.source_editor.as_mut()
+                        {
+                            editor.conflicting_request = Some(id);
+                            editor.conflict = Some(format!(
+                                "Compare versions · F3 use agent proposal · F4 keep my text\nYour text:\n{}\nAgent proposal:\n{}",
+                                editor.text,
+                                request.result.as_deref().unwrap_or("No proposal")
+                            ));
+                            editor.dialog = Some(super::editor::EditorDialog::Comparison {
+                                kind: super::editor::ComparisonKind::Agent,
+                                text: editor.conflict.clone().unwrap_or_default(),
+                                offset: 0,
+                            });
+                        }
+                    }
+                    Err(e) => self.notice = Some(e),
+                }
+            }
+            _ => {}
+        }
+    }
+    pub fn request_scope_summary(&self) -> Option<String> {
+        let (base, span, _) = self.agent_prompt.as_ref()?;
+        let (label, text) = match span {
+            Some(span) => ("Selected passage", &base.text[span.clone()]),
+            None => ("Whole document", base.text.as_str()),
+        };
+        Some(format!(
+            "{label} · {} characters\n{}{}",
+            text.chars().count(),
+            text.chars().take(240).collect::<String>(),
+            if text.chars().count() > 240 {
+                "…"
+            } else {
+                ""
+            }
+        ))
     }
     pub fn agent_prompt(&self) -> Option<(&str, &str)> {
         self.agent_prompt
@@ -4168,6 +4763,7 @@ impl<'a> Shell<'a> {
                                 "Request {} queued; Claude receives it on the next prompt; other agents use margin requests list --json",
                                 request.id
                             ));
+                            self.queued_notice = Some((request.id, self.notice.clone().unwrap()));
                         }
                         Err(e) => self.notice = Some(e.message),
                     }
@@ -4217,6 +4813,17 @@ impl<'a> Shell<'a> {
         let Ok(requests) = self.operations.list_edit_requests() else {
             return;
         };
+        if let Some((id, message)) = &self.queued_notice
+            && !requests
+                .iter()
+                .any(|r| &r.id == id && r.state == crate::requests::State::Queued)
+        {
+            if self.notice.as_ref() == Some(message) {
+                self.notice = None;
+            }
+            self.queued_notice = None;
+            self.redraw = true;
+        }
         let desk = std::env::var("MARGIN_DESK_SOCKET").ok();
         let owned = requests
             .iter()
@@ -4268,6 +4875,17 @@ impl<'a> Shell<'a> {
         };
         self.redraw |= status != self.agent_status;
         self.agent_status = status;
+        self.request_counts = (pending, attention);
+        if self.request_panel.is_some() {
+            let selected = self.request_ids.get(self.request_selection).cloned();
+            self.open_request_panel();
+            if let Some(index) =
+                selected.and_then(|id| self.request_ids.iter().position(|r| r == &id))
+            {
+                self.request_selection = index;
+                self.open_request_panel();
+            }
+        }
         if self.remote_busy()
             || self.pending_document.is_some()
             || self
@@ -4291,9 +4909,7 @@ impl<'a> Shell<'a> {
                 .find(|r| r.base.path == editor.base.path && (r.desk == desk || r.desk.is_none()));
             let previous_activity = editor.activity.clone();
             editor.activity = latest.and_then(|r| match r.state {
-                crate::requests::State::Queued => {
-                    Some("Request queued · delivered on the next agent turn".into())
-                }
+                crate::requests::State::Queued => Some(request_state_text(r)),
                 crate::requests::State::Claimed => Some("Agent working on your request".into()),
                 crate::requests::State::ResultReady => {
                     Some("Agent result waiting for your typing pause".into())
@@ -4303,8 +4919,26 @@ impl<'a> Shell<'a> {
                 _ => None,
             });
             self.redraw |= editor.activity != previous_activity;
-            if let Some(request) = latest.filter(|r| {
-                r.state == crate::requests::State::Stale
+            if editor.conflicting_request.as_ref().is_some_and(|id| {
+                requests.iter().any(|r| {
+                    &r.id == id
+                        && matches!(
+                            r.state,
+                            crate::requests::State::Cancelled
+                                | crate::requests::State::Applied
+                                | crate::requests::State::Undone
+                        )
+                })
+            }) {
+                editor.conflicting_request = None;
+                editor.conflict = None;
+                editor.dialog = None;
+                self.redraw = true;
+            }
+            if let Some(request) = requests.iter().rev().find(|r| {
+                r.base.path == editor.base.path
+                    && (r.desk == desk || r.desk.is_none())
+                    && r.state == crate::requests::State::Stale
                     && editor.conflicting_request.as_deref() != Some(r.id.as_str())
             }) {
                 editor.conflicting_request = Some(request.id.clone());
@@ -4359,6 +4993,7 @@ impl<'a> Shell<'a> {
 
     /// Keep buffers across reading, document switches, and external refreshes.
     fn park_source_editor(&mut self) -> bool {
+        self.source_drag = false;
         if self.source_editor.is_none() {
             return true;
         }
@@ -4464,7 +5099,7 @@ impl<'a> Shell<'a> {
             self.autosave_worker = None;
             self.absorb_autosave(reply);
         }
-        if self.autosave_worker.is_some() {
+        if self.autosave_worker.is_some() || matches!(self.overlay, Some(Overlay::Menu { .. })) {
             return;
         }
         if let Some(editor) = self
@@ -4546,7 +5181,44 @@ impl<'a> Shell<'a> {
         self.source_editor.as_ref()
     }
 
+    pub fn setup_preview(&self) -> Option<&str> {
+        self.setup_preview
+            .as_ref()
+            .map(|(_, text)| text.as_str())
+            .or(self.integration_preview.as_deref())
+    }
+    fn open_setup(&mut self) {
+        self.request_scroll = 0;
+        let roots = self.workspace.setup_roots(&self.documents);
+        let request = app::InitRequest {
+            scope: Some(crate::domain::ScopeInput {
+                include: vec![roots.clone()],
+                suffixes: vec![".md".into()],
+                ..Default::default()
+            }),
+            dry_run: true,
+            ..Default::default()
+        };
+        let preview = self.operations.initialize_scope(&request);
+        if !preview.ok() {
+            self.notice = preview
+                .error
+                .map(|e| format!("Setup unavailable: {}", e.message));
+            return;
+        }
+        self.setup_preview = Some((
+            request,
+            format!(
+                "Set up writing scope\n\nScope: {roots} · Markdown (.md) files\n{}\n\nCreates Margin settings and a starting checkpoint. Existing files stay in place.\nAgent integration is a separate explicit action.\n\nEnter initializes · Esc cancels without changes",
+                self.documents.join("\n")
+            ),
+        ));
+    }
     fn open_source_editor(&mut self) {
+        if self.descriptor.is_none() {
+            self.open_setup();
+            return;
+        }
         if let Some(reason) = self.pending_preview() {
             self.notice = Some(reason);
             return;
@@ -5071,6 +5743,7 @@ impl<'a> Shell<'a> {
     ) {
         let page = self.viewport_rows.saturating_sub(1).max(1) as i32;
         match (key.code, control) {
+            (KeyCode::Char('d'), false) => self.toggle_details(),
             (KeyCode::Esc, false) => self.cancel_history_preview(),
             (KeyCode::Char('c'), true) | (KeyCode::Char('q'), false) => {
                 self.request_quit(quit_warning_stood)
@@ -5407,6 +6080,7 @@ impl<'a> Shell<'a> {
         self.finish_scroll = 0;
         self.finish = Some(FinishPanel {
             summary,
+            details: false,
             rows: Vec::new(),
             width: 0,
         });
@@ -6292,7 +6966,17 @@ impl<'a> Shell<'a> {
 
     /// The standing notice, when one exists.
     pub fn notice(&self) -> Option<&str> {
-        self.notice.as_deref()
+        let message = self.notice.as_deref()?;
+        let subject = self.document.as_ref().map(|d| d.path.clone());
+        let mut previous = self.notice_subject.borrow_mut();
+        if let Some((text, path)) = previous.as_ref()
+            && text == message
+            && path != &subject
+        {
+            return None;
+        }
+        *previous = Some((message.to_string(), subject));
+        Some(message)
     }
 
     /// The standing overlay, when one stands (SPEC 11.3).
@@ -6683,4 +7367,8 @@ impl Drop for Shell<'_> {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.flush_progress()));
         }
     }
+}
+
+fn request_state_text(request: &crate::requests::Request) -> String {
+    request.display_state().to_string()
 }

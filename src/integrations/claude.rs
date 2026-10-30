@@ -476,15 +476,14 @@ pub fn run(operations: &Operations<'_>, workspace_root: &Path, bytes: &[u8]) -> 
                     "hookEventName": event.name, "additionalContext": session_context(&event, context),
                 });
                 outcome.stdout = Some(render(&response));
-                if let Some(session) = &event.session_id {
-                    if let Err(error) =
+                if let Some(session) = &event.session_id
+                    && let Err(error) =
                         operations.record_request_delivery(session, &delivery_entries)
-                    {
-                        outcome.stderr = Some(format!(
-                            "margin hook: delivery tracking unavailable: {}\n",
-                            bounded_message(&error.message)
-                        ));
-                    }
+                {
+                    outcome.stderr = Some(format!(
+                        "margin hook: delivery tracking unavailable: {}\n",
+                        bounded_message(&error.message)
+                    ));
                 }
             }
             Some(Err(error)) => {

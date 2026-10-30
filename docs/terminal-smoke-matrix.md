@@ -162,3 +162,19 @@ continue to run. The external editor binding is now `E`; `e` opens source.
 
 See [editing validation](editing-validation.md) for the current run. These
 checks do not claim a live model session or physical terminal rasterization.
+
+## Command palette and request checks
+
+At 80×24 and 120×34, repeat these checks with color off and reduced updates:
+
+1. Open `Ctrl+P` while source has an unsaved selection. Search, then cancel.
+   Confirm that text, selection, cursor, and file bytes stay unchanged.
+2. Select Unicode source with Shift+arrows, Shift-click, and backward dragging.
+   Open `F2`. Check the document, selection preview, and character count.
+3. Open **Requests**, select a request, and inspect details. Test pointer and
+   keyboard controls. Retry delivery and confirm the owner stays unchanged.
+4. Restart with a retained conflict. Open its comparison, then keep writer text.
+   Confirm that the proposal remains inspectable and conflict status clears.
+5. Preview setup and integration installation. Cancel each and compare files.
+6. Open finish review. Check scope, unseen counts, and `d` details before cancel.
+7. Restore a historical version. Confirm that the new version needs review.

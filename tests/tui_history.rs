@@ -419,7 +419,9 @@ fn enter_previews_the_document_against_the_current_candidate() {
         "the dry run proves the result",
     );
     assert!(screen.contains("Files rewritten: notes/a.md"));
-    assert!(screen.contains("Result tree "));
+    assert!(!screen.contains("Result tree "));
+    shell.handle_event(&key(KeyCode::Char('d')));
+    assert!(joined(&draw(&mut shell, 110, 40)).contains("Result tree "));
     assert!(screen.contains("The review baseline stays unchanged; this approves nothing else."),);
     assert!(
         screen.contains("Enter  Restore this document from the selected revision"),

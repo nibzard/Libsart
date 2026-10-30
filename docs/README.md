@@ -1,6 +1,6 @@
 # Documentation and plan status
 
-Status checked against the integrated code on 2026-10-16. Implemented means the
+Status checked against the integrated code on 2026-10-30. Implemented means the
 code exists locally. It does not mean every change is committed or released.
 
 ## Active work
@@ -19,6 +19,7 @@ These are proposals; implementation has not started.
 
 | Document | Status | Evidence |
 | --- | --- | --- |
+| [Interface and interaction improvements](ui-ux-improvement-plan.md) | Software complete; human usability observation pending | `tests/source_editing.rs`, interface suites, and the recorded verification results |
 | [Review workspace](review-workspace-spec.md) | Implemented; integrated with source editing and pointer navigation | [Workspace verification](review-workspace-verification.md), `tests/tui_workspace.rs` |
 | [Desk opening](desk-open-plan.md) | Implemented, including the explicit-link follow-up | `tests/desk_open.rs`, `tests/tmux_desk.rs` |
 | [Keyboard hover and navigation](tui-hover-navigation.md) | All 11 numbered items implemented | `tests/tui_hover.rs`, the budgets gate |

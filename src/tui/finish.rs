@@ -163,6 +163,20 @@ impl FinishSummary {
 
     /// The lines of the summary: the entire scope, the intended result,
     /// and the explicit keep-remaining intent (SPEC 5.2, 11.3).
+    pub fn display_lines(&self, details: bool) -> Vec<ComposedLine> {
+        let mut lines = self.lines();
+        if !details {
+            lines.retain(|line| {
+                !line.text.starts_with("B ") && !line.text.starts_with("Result tree ")
+            });
+        }
+        lines.insert(
+            lines.len().saturating_sub(1),
+            ComposedLine::meta("d      Show / hide technical details"),
+        );
+        lines
+    }
+
     pub fn lines(&self) -> Vec<ComposedLine> {
         let counts = self.counts;
         let mut lines = Vec::new();

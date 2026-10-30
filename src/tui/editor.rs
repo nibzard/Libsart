@@ -10,7 +10,7 @@ pub fn help_text() -> String {
     for action in super::actions::EditorAction::ALL {
         text.push_str(&format!("{} · {}\n", action.binding(), action.name()));
     }
-    text.push_str("Ctrl+Shift+A · Ask agent (alias for F2)\nClick · Place source cursor\nShift-click · Extend source selection\nWheel · Scroll without moving cursor\n");
+    text.push_str("Ctrl+P · Command palette\nDrag · Select source (release stops selection)\nCtrl+Shift+A · Ask agent (alias for F2)\nClick · Place source cursor\nShift-click · Extend source selection\nWheel · Scroll without moving cursor\n");
     text
 }
 
@@ -91,13 +91,18 @@ impl Editor {
         self.base = base;
         self.autosave_error = None;
         self.disk_comparison = None;
-        self.conflict = None;
+        if self.conflicting_request.is_none() {
+            self.conflict = None;
+        }
     }
     /// External changes update a clean buffer and become one undo step.
     pub fn accept_disk(&mut self, base: Version) {
-        if self.text != base.text {
-            self.remember();
+        if self.text == base.text {
+            // Observation is not a save or a resolution of an agent conflict.
+            self.base = base;
+            return;
         }
+        self.remember();
         self.text = base.text.clone();
         self.cursor = self.cursor.min(self.text.len());
         while !self.text.is_char_boundary(self.cursor) {

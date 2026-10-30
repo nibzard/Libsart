@@ -16,6 +16,7 @@ pub enum Kind {
     Action,
     Document,
     Heading,
+    Request,
 }
 impl Kind {
     pub fn label(self) -> &'static str {
@@ -23,6 +24,7 @@ impl Kind {
             Self::Action => "Action",
             Self::Document => "Document",
             Self::Heading => "Heading",
+            Self::Request => "Request",
         }
     }
 }
@@ -76,6 +78,8 @@ pub struct Palette {
     pub pending: Option<u64>,
     pub edited: Option<Instant>,
     pub choose_reference: bool,
+    pub requests: Vec<Entry>,
+    pub suggestions: Vec<Action>,
 }
 impl Palette {
     pub fn ready(&self) -> bool {

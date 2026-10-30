@@ -97,6 +97,12 @@ to the repository root.
 
 ### Edit and navigate
 
+Click **Commands** or press `Ctrl+P` to find actions, documents, headings,
+and requests. The palette preserves your text and selection when you cancel.
+Use **Requests** to inspect work, compare proposals, cancel, or retry delivery.
+In an uninitialized Git repository, `e` opens a writing-scope preview.
+Confirm it with `Enter`, or cancel with `Esc`.
+
 Press `e` in **Read** to edit Markdown source. Margin saves after a
 750-millisecond pause. Press `Esc` to save and return to reading.
 Switching documents retains your cursor and undo history.
