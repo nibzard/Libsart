@@ -1,0 +1,1 @@
+Unicode regression tests failed before the fixes and passed afterward. Search offsets account for lowercase expansion; disk refresh reuses grapheme-aware cursor placement. The five simplifications preserve matching precedence and both recovery journal writes. Validation: 1,052 tests passed before the simplifications; 271 relevant tests passed afterward.
