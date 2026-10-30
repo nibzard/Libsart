@@ -1,0 +1,19 @@
+# Design: Four-second open reply wait
+
+## Problem
+The viewer binds open.sock before its event loop drains requests.
+On a loaded macos runner the first reply took over the 2 s wait, so
+the healthy viewer answered OPERATION_UNAVAILABLE (desk_open flake,
+nightly run 41027528544).
+
+## Approach
+Raise the server-side wait to 4 s. The client caps at 5 s
+(DEFAULT_TIMEOUT_MS is 10 s, open_at clamps to 5 s), so a truly
+unanswered request still surfaces the same bounded messages.
+
+## Rejected alternative
+Retrying in open_at. A re-send queues a second request behind the
+first undrained one; the full sync channel then answers
+"viewer busy", and transport_bounds_invalid_busy_unresponsive_and_
+expired_requests pins that a queued, never-drained request must
+surface "unresponsive". The retry failed that test locally.
