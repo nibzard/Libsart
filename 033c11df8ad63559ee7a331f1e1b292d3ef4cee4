@@ -1,0 +1,22 @@
+# Context
+
+## Background
+The stress gate ran C1, C2, and C3 in one job with
+timeout-minutes: 420. GitHub cancels every job at 360 minutes, so
+that budget was unreachable. Hosted-runner throughput drifted: the
+job took 3 h 07 m on 2026-10-27 (same commit as 2026-10-29), 5 h 43 m
+on 2026-10-28 with C3 at 291 min, then hit the 6 h cap and was
+cancelled on 2026-10-29 and 2026-10-30, cutting all three corpora.
+
+## Why This Way
+Splitting uses only the documented MARGIN_BENCH_FULL_* switches;
+ci/run-tier.sh keeps its defaults. C3 gets 350 min so the workflow
+timeout fires before the platform cancel and the annotation names
+the right cause. If C3 alone outgrows 350 min, the next lever is a
+smaller nightly C3 scale or a larger runner, not a longer budget.
+
+## Gotchas
+- Job names changed ("Full-scale benchmark corpora" became
+  "… C1 C2" and "… C3"); anything matching on job names must follow.
+- A dev machine measured C3 full at ~51 min (19 days earlier); the
+  291-350 min figures are shared-runner reality, not regression.
