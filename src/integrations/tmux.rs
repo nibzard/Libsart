@@ -233,6 +233,39 @@ fn session_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Splits one `-P -F "#{window_id} #{pane_id}"` report into its two ids.
+/// Missing words stay empty.
+fn split_ids(report: &str) -> (String, String) {
+    let mut words = report.split_whitespace();
+    (
+        words.next().unwrap_or_default().to_string(),
+        words.next().unwrap_or_default().to_string(),
+    )
+}
+
+/// Says whether the desk's agent pane has closed: a captured pane id that
+/// no longer exists on the server. The margin pane can keep a session or
+/// window alive after the agent closed its pane, so the desk watches the
+/// agent's own pane. An empty id means the creation report was unexpected;
+/// the session and window checks alone then decide, and every client
+/// failure counts as still running.
+fn agent_pane_closed(pane: &str) -> bool {
+    if pane.is_empty() {
+        return false;
+    }
+    let Ok(output) = Command::new("tmux")
+        .args(["list-panes", "-a", "-F", "#{pane_id}"])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let panes = String::from_utf8_lossy(&output.stdout);
+    !panes.lines().any(|line| line.trim() == pane)
+}
+
 /// Ends one session this desk created; a session that already ended is not
 /// an error here.
 fn kill_session(name: &str) {
@@ -348,13 +381,15 @@ fn compose_outside(
 
     // The session starts detached with the terminal's own size, so the
     // arrangement matches what the first attach shows. The agent argv
-    // follows the direct-exec separator verbatim.
+    // follows the direct-exec separator verbatim. The printed ids name
+    // the agent window and its own pane, so the desk can tell later
+    // whether the agent itself is still running.
     let mut session = words(&[
         "new-session",
         "-d",
         "-P",
         "-F",
-        "#{window_id}",
+        "#{window_id} #{pane_id}",
         "-x",
         &columns.to_string(),
         "-y",
@@ -367,7 +402,7 @@ fn compose_outside(
         &cwd.display().to_string(),
     ]);
     direct_exec(&mut session, agent, socket);
-    let window = run(&session)?;
+    let (window, agent_pane) = split_ids(&run(&session)?);
     let built = build_desk_surfaces(&name, &window, layout, cwd, margin, &[], socket)
         .or_else(|error| desk_or_agent_failure(&name, agent, error));
 
@@ -379,9 +414,12 @@ fn compose_outside(
             return Err(error);
         }
     }
-    // An agent that exited before the desk finished leaves no session to
+    // An agent that exited before the desk finished leaves nothing to
     // attach; the writer gets the honest reason, not an attach failure.
-    if !session_exists(&name) {
+    // The margin pane can keep the session alive after the agent pane
+    // closed, so the desk checks the agent's own pane, not the session.
+    if !session_exists(&name) || agent_pane_closed(&agent_pane) {
+        kill_session(&name);
         return Err(agent_did_not_run(&agent[0]));
     }
     let attached = attach(&name);
@@ -414,20 +452,21 @@ fn compose_inside(
     }
 
     // The new window carries the agent argv verbatim and reports its own
-    // id, which addresses the window regardless of the names in the
-    // writer's session.
+    // ids, which address the window regardless of the names in the
+    // writer's session and name the agent's own pane for the liveness
+    // check below.
     let mut created = words(&[
         "new-window",
         "-P",
         "-F",
-        "#{window_id}",
+        "#{window_id} #{pane_id}",
         "-n",
         DESK_WINDOW,
         "-c",
         &cwd.display().to_string(),
     ]);
     direct_exec(&mut created, agent, socket);
-    let window = run(&created)?;
+    let (window, agent_pane) = split_ids(&run(&created)?);
     let width = run(&words(&[
         "display-message",
         "-p",
@@ -456,7 +495,7 @@ fn compose_inside(
             return Err(error);
         }
     }
-    if !window_exists(&window) {
+    if !window_exists(&window) || agent_pane_closed(&agent_pane) {
         kill_window(&window);
         return Err(agent_did_not_run(&agent[0]));
     }
