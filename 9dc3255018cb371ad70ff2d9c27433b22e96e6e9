@@ -1,0 +1,11 @@
+Prepare Margin 0.3.0 with isolated fuzz targets for Markdown analysis and
+text wrapping. The fuzz workspace keeps its dependencies separate from
+the application. Seed attributes preserve exact whitespace and controls.
+
+Validation: all 1,052 tests pass with no ignored tests. Lints, Rust 1.89
+compatibility, source packaging, release size/startup, and all four
+expected formal profile outcomes pass. Earlier fuzz smoke checks complete
+370,197 Markdown runs and 388,784 wrapping runs without failures.
+
+The latest hosted nightly run has a macOS dead-agent test timeout and an
+unfinished stress job. These remain disclosed release validation limits.
