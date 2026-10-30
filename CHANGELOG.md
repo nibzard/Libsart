@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Integrate Claude sessions with writing context, request delivery, and review feedback.
+- Improve source editing, pointer selection, and navigation in the writing workspace.
+- Preserve Unicode search matches and grapheme boundaries when refreshing edited text.
+- Reuse manifest data during review application and expand benchmark verification.
+- Add fuzz targets for Markdown analysis and text wrapping, with seed inputs and replay instructions.
+
 ## 0.2.0
 
 - We are rocking.

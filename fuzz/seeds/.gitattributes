@@ -1,0 +1,3 @@
+# Seeds contain exact bytes, including deliberate trailing spaces and controls.
+markdown/** -text -diff -whitespace
+wrapping/** -text -diff -whitespace

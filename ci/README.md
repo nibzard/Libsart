@@ -133,3 +133,9 @@ The pins and their roles:
 Raise the floor pin only with recorded evidence: the flag probes and the
 gate run against the candidate. Raise the latest pin together with
 `ci/git.sha256` whenever a new upstream release should join the matrix.
+
+## Local fuzz checks
+
+See [Fuzz testing](../fuzz/README.md) for coverage-guided checks of Markdown
+analysis and text wrapping. These optional checks use a separate nightly
+Rust workspace and do not change the verification tiers above.

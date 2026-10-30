@@ -1,0 +1,19 @@
+P---
+title: Draft
+---
+# Heading
+
+- [ ] item
+  - nested
+
+> quote
+
+| A | B |
+|---|---|
+| x | y |
+
+```rust
+fn main() {}
+```
+
+[^note]: footnote

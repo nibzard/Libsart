@@ -1,0 +1,30 @@
+[package]
+name = "margin-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+margin = { path = ".." }
+
+# Keep fuzz dependencies and build output separate from the application.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "markdown"
+path = "fuzz_targets/markdown.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wrapping"
+path = "fuzz_targets/wrapping.rs"
+test = false
+doc = false
+bench = false
