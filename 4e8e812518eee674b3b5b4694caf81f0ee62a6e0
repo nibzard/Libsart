@@ -1,0 +1,12 @@
+Implement the interface plan in docs/ui-ux-improvement-plan.md.
+Reuse the existing palette and guarded operations. Preserve source
+selection and conflicts across unchanged disk observations.
+
+Validation: all 1,050 tests pass in the PR tier. Strict Clippy, Rust 1.89,
+release budgets, and four formal profiles pass their expected outcomes.
+Live Claude application, guarded undo, restart comparison, and terminal
+mouse input also pass. Local evidence includes 36 captures under
+/home/agent/margin-ui-artifacts/ui-improvements-20261029-200959/.
+
+Drag edge scrolling advances with pointer events. Delivery retry targets
+the last recorded session and preserves request ownership.
