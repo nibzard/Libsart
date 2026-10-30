@@ -18,7 +18,14 @@ use std::{
     time::{Duration, Instant},
 };
 const LIMIT: u64 = 8192;
-const WAIT: Duration = Duration::from_secs(2);
+/// How long the server thread waits for the viewer's own loop to answer
+/// one forwarded request. The viewer's socket exists before its event
+/// loop drains requests, so the wait must bridge viewer startup on slow
+/// shared machines; the client's own five-second cap bounds it in turn.
+const WAIT: Duration = Duration::from_secs(4);
+/// The reply when the viewer's own loop does not answer within `WAIT`.
+const UNANSWERED: &str =
+    "viewer busy or unresponsive; retry after closing the editor or dialog";
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Navigation only: no repository mutation or terminal selection.
@@ -264,7 +271,7 @@ impl Server {
                                 error: Some("viewer busy".into()),
                             }
                         } else {
-                            rx.recv_timeout(WAIT).unwrap_or(Reply { displayed: false, error: Some("viewer busy or unresponsive; retry after closing the editor or dialog".into()) })
+                            rx.recv_timeout(WAIT).unwrap_or(Reply { displayed: false, error: Some(UNANSWERED.into()) })
                         }
                     }
                 };
