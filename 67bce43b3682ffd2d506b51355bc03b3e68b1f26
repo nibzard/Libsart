@@ -1,0 +1,27 @@
+# Design: Agent-pane liveness check before attach
+
+## Problem
+Nightly run 41027528544 (and the three nights before it) hung
+an_agent_that_exits_at_once_leaves_nothing_behind on macos-15 only.
+
+## Root cause
+compose_outside splits a margin pane into the agent window before
+attaching. If that split lands before /bin/false exits, the margin
+pane keeps the session alive after the agent pane closes. The old
+session_exists check then passed, attach() (which has no timeout)
+blocked forever, and wait_exit(20s) returned None. Linux runners
+always lost the race the other way: the agent pane was already gone
+when split-window arrived, so the desk_or_agent_failure path fired.
+
+## Approach
+Record the agent pane id from new-session/new-window -P -F
+'#{window_id} #{pane_id}' and refuse to attach once that pane is
+missing from list-panes -a. Verified on a private socket that the
+macos state is detectable: session survives, pane list does not.
+
+## Gotchas
+- An agent that dies after the liveness check still leaves the desk
+  attached to the surviving margin pane; that is a normal desk losing
+  its agent, not a composition failure.
+- agent_pane_closed treats an empty captured id as alive, so an
+  unexpected -P report degrades to the old session/window checks.
